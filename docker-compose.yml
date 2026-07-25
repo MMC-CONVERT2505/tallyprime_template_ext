@@ -1,0 +1,42 @@
+# Local dev infrastructure only: Postgres + Redis.
+#
+# NOTE: TallyPrime is intentionally NOT here. Tally is a Windows desktop app that
+# must run natively on the client machine to expose localhost:9000 — it is never
+# containerized. In dev, point TALLY_HOST/TALLY_PORT at wherever Tally is running.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tally_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-tally}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tally}
+      POSTGRES_DB: ${DB_NAME:-tally_migration}
+    ports:
+      - '${DB_PORT:-5432}:5432'
+    volumes:
+      - tally_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-tally} -d ${DB_NAME:-tally_migration}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tally_redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - tally_redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  tally_pgdata:
+  tally_redisdata:
