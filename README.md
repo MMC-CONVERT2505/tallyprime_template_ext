@@ -55,8 +55,11 @@ talks to Tally directly via `TALLY_HOST` / `TALLY_PORT`.
 | Framework          | NestJS 11 (TypeScript, strict null)      |
 | Tally transport    | `@nestjs/axios` + `iconv-lite` (charset) |
 | XML parsing        | `fast-xml-parser`                        |
-| Identity/job state | PostgreSQL via TypeORM                   |
+| Identity/job state | PostgreSQL via Prisma                    |
+| Auth               | Email/password, `@nestjs/jwt` + `argon2` (self-hosted, no external IdP) |
+| Job queue          | BullMQ (Redis-backed)                    |
 | Cache / health     | Redis via `ioredis`                      |
+| Notifications       | Nodemailer                              |
 | Validation         | `class-validator` + `joi` (env)          |
 | Health checks      | `@nestjs/terminus`                       |
 
@@ -114,9 +117,14 @@ All routes are under the `/api` prefix.
 | ------ | --------------------- | --------------------------------------------------------------- |
 | GET    | `/health`             | Infra liveness (Postgres + Redis). Use for container probes.    |
 | GET    | `/health/tally`       | Tally reachability, **separate** so a closed Tally ≠ app down.   |
+| POST   | `/auth/register`      | Creates a new Org + its first User. No separate invite/join flow yet. |
+| POST   | `/auth/login`         | Email/password login, returns a JWT.                             |
+| GET    | `/auth/me`            | Returns the decoded token payload — requires `Authorization: Bearer <token>`. |
 | GET    | `/tally/probe`        | Connectivity + discovery: lists open companies + round-trip ms. |
 | GET    | `/tally/companies`    | All companies loaded in Tally (short-cached; `?fresh=true`).     |
 | GET    | `/tally/ledgers`      | Lean ledger master (Name, Parent, Opening/Closing, AlterID).    |
+| POST   | `/tally/ledgers`      | Creates a Ledger master (write).                                 |
+| GET    | `/tally/stock-items`  | Lean stock item master (Name, Parent, BaseUnits, Opening/Closing balance+value, AlterID). |
 | GET    | `/tally/vouchers`     | Vouchers for a date range, optional voucher-type filter.        |
 | POST   | `/tally/raw`          | Escape hatch: request any Tally report by name, get raw XML.     |
 
@@ -169,6 +177,7 @@ handled centrally in [`src/tally/xml`](src/tally/xml) and covered by unit tests.
 | **Charset** (win-1252 / ISO-8859-1)      | Response decoded via `iconv-lite`; override with `TALLY_RESPONSE_ENCODING`.     |
 | **`<LINEERROR>` returned with HTTP 200** | Detected and surfaced as a `TallyResponseException` (422).                      |
 | **XML injection via names** (`AT&T`)     | All request values XML-escaped in the envelope builder.                        |
+| **Literal `&#4; ` prefix on built-in group refs** | Tally sends this as raw text (not a real, decodable numeric character reference) on PARENT fields pointing at top-level groups like "Primary". Stripped in `readText()`. |
 
 ## Project structure
 
@@ -180,7 +189,7 @@ src/
 ├── common/                     # global exception filter + logging interceptor
 ├── database/
 │   ├── entities/               # TallyConnection (registry) + ExtractionJob (audit)
-│   └── database.module.ts      # TypeORM setup
+│   └── database.module.ts      # Prisma setup
 ├── redis/redis.module.ts       # global ioredis provider + graceful shutdown
 ├── health/                     # /health (infra) + /health/tally, custom indicators
 └── tally/                      # ★ the connectivity core

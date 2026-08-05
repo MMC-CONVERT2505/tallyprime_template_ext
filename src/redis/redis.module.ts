@@ -6,6 +6,37 @@ import { RedisConfig } from '../config/configuration';
 
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
+export const createRedisClient = (
+  redis: RedisConfig,
+  logger: (message: string) => void = (message) => console.error(message),
+): Redis => {
+  const client = new Redis({
+    host: redis.host,
+    port: redis.port,
+    password: redis.password,
+    db: redis.db,
+    lazyConnect: true,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+    retryStrategy: (times) => Math.min(times * 200, 5000),
+  });
+
+  let lastErrorMessage = '';
+  client.on('error', (err) => {
+    const message = `[redis] connection error: ${err.message}`;
+    if (message !== lastErrorMessage) {
+      lastErrorMessage = message;
+      logger(message);
+    }
+  });
+
+  client.on('connect', () => {
+    lastErrorMessage = '';
+  });
+
+  return client;
+};
+
 /**
  * Thin, global ioredis provider. Kept deliberately minimal for Phase 1 (cache +
  * health). It is the same client that will later back the Socket.IO adapter and
@@ -23,24 +54,7 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
       inject: [ConfigService],
       useFactory: (config: ConfigService): Redis => {
         const redis = config.getOrThrow<RedisConfig>('redis');
-        const client = new Redis({
-          host: redis.host,
-          port: redis.port,
-          password: redis.password,
-          db: redis.db,
-          lazyConnect: false,
-          maxRetriesPerRequest: null,
-          enableReadyCheck: true,
-          retryStrategy: (times) => Math.min(times * 200, 5000),
-        });
-
-        client.on('error', (err) => {
-          // Do not throw here — a background reconnect must not crash the app.
-          // eslint-disable-next-line no-console
-          console.error(`[redis] connection error: ${err.message}`);
-        });
-
-        return client;
+        return createRedisClient(redis);
       },
     },
   ],

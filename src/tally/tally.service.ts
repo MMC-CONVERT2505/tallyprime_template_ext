@@ -1,19 +1,17 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
+import { ExtractionJob, ExtractionStatus, ExtractionType, Prisma } from '@prisma/client';
 import Redis from 'ioredis';
-import { Repository } from 'typeorm';
 import { TallyConfig } from '../config/configuration';
-import {
-  ExtractionJob,
-  ExtractionStatus,
-  ExtractionType,
-} from '../database/entities/extraction-job.entity';
 import { REDIS_CLIENT } from '../redis/redis.module';
+import { CreateLedgerDto } from './dto/create-ledger.dto';
 import { ExtractVouchersDto, RawReportDto } from './dto/extract.dto';
+import { TallyResponseException } from './exceptions/tally.exceptions';
 import {
   TallyCompany,
+  TallyImportResult,
   TallyLedger,
+  TallyStockItem,
   TallyVoucher,
 } from './interfaces/tally.interfaces';
 import { TallyHttpClient } from './tally-http.client';
@@ -36,10 +34,36 @@ export interface RawExtractionResult {
   bytes: number;
 }
 
+// Re-exported so callers (controller, tests) don't need to reach into
+// @prisma/client directly — the Prisma schema is the single source of truth
+// for these values now (see prisma/schema.prisma).
+export { ExtractionStatus, ExtractionType };
+
+type NewExtractionJob = Pick<ExtractionJob, 'type' | 'company' | 'status'> & {
+  params: Prisma.InputJsonValue;
+};
+
+interface ExtractionJobRepository {
+  create(data: NewExtractionJob): NewExtractionJob;
+  save(entity: NewExtractionJob): Promise<ExtractionJob>;
+  update(
+    id: string,
+    data: Partial<Pick<ExtractionJob, 'status' | 'recordCount' | 'durationMs' | 'error'>>,
+  ): Promise<ExtractionJob>;
+}
+
 /**
  * High-level Tally operations. Composes the builder + http client + parser into
  * clean domain calls, and records an ExtractionJob audit row for each one so
  * every pull against a client's Tally is traceable (who/what/when/status/count).
+ *
+ * The job repository and Redis cache are both @Optional() — this class is also
+ * instantiated on the connector/agent (see src/agent/), which has neither
+ * Postgres nor Redis by design (docs/architecture.md: persistence and caching
+ * both live in the cloud, never on the client machine). Every use of either was
+ * already best-effort/try-catch'd for "audit write failed, continue anyway" —
+ * treating "not present at all" the same way is a natural extension, not a
+ * workaround.
  */
 @Injectable()
 export class TallyService {
@@ -50,9 +74,10 @@ export class TallyService {
     private readonly httpClient: TallyHttpClient,
     private readonly parser: TallyResponseParser,
     private readonly config: ConfigService,
-    @InjectRepository(ExtractionJob)
-    private readonly jobs: Repository<ExtractionJob>,
-    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    @Optional()
+    @Inject('EXTRACTION_JOB_REPOSITORY')
+    private readonly jobs: ExtractionJobRepository | undefined,
+    @Optional() @Inject(REDIS_CLIENT) private readonly redis: Redis | undefined,
   ) {}
 
   private get tally(): TallyConfig {
@@ -102,6 +127,52 @@ export class TallyService {
         const xml = this.builder.buildLedgersRequest(resolved);
         const raw = await this.httpClient.post(xml);
         return this.parser.mapLedgers(raw);
+      },
+    );
+  }
+
+  async getStockItems(company?: string): Promise<TallyStockItem[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(
+      ExtractionType.STOCK_ITEMS,
+      resolved,
+      { company: resolved },
+      async () => {
+        const xml = this.builder.buildStockItemsRequest(resolved);
+        const raw = await this.httpClient.post(xml);
+        return this.parser.mapStockItems(raw);
+      },
+    );
+  }
+
+  /**
+   * Creates a single Ledger master in Tally (an actual write to the live
+   * company — not reversible via this API; delete/rename it from the Tally UI
+   * if it was only a test).
+   */
+  async createLedger(dto: CreateLedgerDto): Promise<TallyImportResult> {
+    const resolved = this.resolveCompany(dto.company);
+
+    return this.runExtraction(
+      ExtractionType.CREATE_LEDGER,
+      resolved,
+      { name: dto.name, parent: dto.parent, openingBalance: dto.openingBalance ?? null },
+      async () => {
+        const xml = this.builder.buildCreateLedgerRequest(
+          dto.name,
+          dto.parent,
+          resolved,
+          dto.openingBalance,
+        );
+        const raw = await this.httpClient.post(xml);
+        const result = this.parser.parseImportResponse(raw);
+        if (result.errors > 0 || result.created === 0) {
+          throw new TallyResponseException(
+            result.lineError ??
+              `Tally did not create the ledger (created=${result.created}, errors=${result.errors}).`,
+          );
+        }
+        return result;
       },
     );
   }
@@ -213,11 +284,12 @@ export class TallyService {
     company: string | null,
     params: Record<string, unknown>,
   ): Promise<ExtractionJob | null> {
+    if (!this.jobs) return null;
     try {
       const job = this.jobs.create({
         type,
         company,
-        params,
+        params: params as Prisma.InputJsonValue,
         status: ExtractionStatus.PENDING,
       });
       return await this.jobs.save(job);
@@ -232,7 +304,7 @@ export class TallyService {
     status: ExtractionStatus,
     patch: Partial<Pick<ExtractionJob, 'recordCount' | 'durationMs' | 'error'>>,
   ): Promise<void> {
-    if (!job) return;
+    if (!job || !this.jobs) return;
     try {
       await this.jobs.update(job.id, { status, ...patch });
     } catch (err) {
@@ -241,6 +313,7 @@ export class TallyService {
   }
 
   private async readCache<T>(key: string): Promise<T | null> {
+    if (!this.redis) return null;
     try {
       const raw = await this.redis.get(key);
       return raw ? (JSON.parse(raw) as T) : null;
@@ -251,6 +324,7 @@ export class TallyService {
   }
 
   private async writeCache(key: string, value: unknown, ttlSeconds: number): Promise<void> {
+    if (!this.redis) return;
     try {
       await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);
     } catch (err) {

@@ -3,10 +3,12 @@ import { XMLParser } from 'fast-xml-parser';
 import { TallyResponseException } from '../exceptions/tally.exceptions';
 import {
   TallyCompany,
+  TallyImportResult,
   TallyInventoryEntry,
   TallyLedger,
   TallyLedgerEntry,
   TallyResponseMeta,
+  TallyStockItem,
   TallyVoucher,
 } from '../interfaces/tally.interfaces';
 import {
@@ -132,6 +134,23 @@ export class TallyResponseParser {
     }));
   }
 
+  mapStockItems(rawXml: string): TallyStockItem[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'STOCKITEM');
+    return items.map((s) => ({
+      name: readText(s?.NAME) ?? readText(s?.['@_NAME']) ?? '',
+      parent: readText(s?.PARENT),
+      baseUnit: readText(s?.BASEUNITS),
+      openingBalance: parseTallyAmount(readText(s?.OPENINGBALANCE)),
+      openingValue: parseTallyAmount(readText(s?.OPENINGVALUE)),
+      closingBalance: parseTallyAmount(readText(s?.CLOSINGBALANCE)),
+      closingValue: parseTallyAmount(readText(s?.CLOSINGVALUE)),
+      alterId: readInt(s?.ALTERID),
+    }));
+  }
+
   mapVouchers(rawXml: string): TallyVoucher[] {
     const { envelope, meta } = this.parse(rawXml);
     if (meta.isEmpty) return [];
@@ -209,6 +228,37 @@ export class TallyResponseParser {
     }
     if (amount === null) return null;
     return amount < 0; // best-effort fallback
+  }
+
+  /**
+   * Parses the reply to an Import Data (write) request. Unlike every other
+   * reply in this file, Tally does NOT wrap this one in <ENVELOPE> — it is a
+   * bare <RESPONSE>CREATED/ALTERED/ERRORS/LINEERROR</RESPONSE>, so this bypasses
+   * {@link parse}'s envelope sanity check rather than reusing it.
+   */
+  parseImportResponse(rawXml: string): TallyImportResult {
+    const xml = sanitizeTallyXml(rawXml ?? '');
+
+    let tree: any;
+    try {
+      tree = this.parser.parse(xml);
+    } catch (err) {
+      const snippet = xml.slice(0, 300);
+      this.logger.error(`Failed to parse Tally import response. First 300 chars: ${snippet}`);
+      throw new TallyResponseException('import response was not valid XML', err);
+    }
+
+    const resp = tree?.RESPONSE ?? tree?.ENVELOPE?.RESPONSE ?? tree ?? {};
+    return {
+      created: readInt(resp?.CREATED) ?? 0,
+      altered: readInt(resp?.ALTERED) ?? 0,
+      deleted: readInt(resp?.DELETED) ?? 0,
+      combined: readInt(resp?.COMBINED) ?? 0,
+      ignored: readInt(resp?.IGNORED) ?? 0,
+      errors: readInt(resp?.ERRORS) ?? 0,
+      lastMasterId: readInt(resp?.LASTMASTERID),
+      lineError: readText(resp?.LINEERROR),
+    };
   }
 
   // ── Navigation helpers ────────────────────────────────────────────────────

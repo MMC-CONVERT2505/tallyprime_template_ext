@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-exe
+coverage
+.git
+.localdb
+*.log
+.env
+.env.example
+docs
+Zoho WorkDrive

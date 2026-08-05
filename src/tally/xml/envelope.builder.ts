@@ -131,6 +131,27 @@ export class EnvelopeBuilder {
     return this.buildCollectionRequest('Lean Ledgers', collection, company);
   }
 
+  /**
+   * Lean stock item master export: Name, Parent (Stock Group), BaseUnits,
+   * Opening/Closing balance (quantity) and value, and AlterID. Same "lean, not
+   * Tally's bloated default report" pattern as buildLedgersRequest.
+   */
+  buildStockItemsRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Stock Items" ISINITIALIZE="Yes">
+        <TYPE>StockItem</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>Parent</NATIVEMETHOD>
+        <NATIVEMETHOD>BaseUnits</NATIVEMETHOD>
+        <NATIVEMETHOD>OpeningBalance</NATIVEMETHOD>
+        <NATIVEMETHOD>OpeningValue</NATIVEMETHOD>
+        <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>
+        <NATIVEMETHOD>ClosingValue</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Stock Items', collection, company);
+  }
+
   /** Day Book vouchers for a date range, optionally filtered by voucher type. */
   buildVouchersRequest(
     company: string,
@@ -145,6 +166,55 @@ export class EnvelopeBuilder {
       toDate,
       voucherType,
     });
+  }
+
+  /**
+   * Import Data request that creates (or, on a name match, alters) a single
+   * Ledger master. This is a WRITE against the live Tally company — unlike
+   * every other builder method here, which only ever exports/reads data.
+   */
+  buildCreateLedgerRequest(
+    name: string,
+    parent: string,
+    company?: string,
+    openingBalance?: number,
+  ): string {
+    const staticVars: string[] = [];
+    if (company) {
+      staticVars.push(`<SVCURRENTCOMPANY>${escapeXml(company)}</SVCURRENTCOMPANY>`);
+    }
+
+    const openingBalanceTag =
+      openingBalance !== undefined
+        ? `<OPENINGBALANCE>${escapeXml(String(openingBalance))}</OPENINGBALANCE>`
+        : '';
+
+    const message = `
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <LEDGER NAME="${escapeXml(name)}" ACTION="Create">
+          <NAME>${escapeXml(name)}</NAME>
+          <PARENT>${escapeXml(parent)}</PARENT>
+          ${openingBalanceTag}
+        </LEDGER>
+      </TALLYMESSAGE>`;
+
+    return this.wrap(`
+      <HEADER>
+        <TALLYREQUEST>Import Data</TALLYREQUEST>
+      </HEADER>
+      <BODY>
+        <IMPORTDATA>
+          <REQUESTDESC>
+            <REPORTNAME>All Masters</REPORTNAME>
+            <STATICVARIABLES>
+              ${staticVars.join('\n              ')}
+            </STATICVARIABLES>
+          </REQUESTDESC>
+          <REQUESTDATA>
+            ${message}
+          </REQUESTDATA>
+        </IMPORTDATA>
+      </BODY>`);
   }
 
   private wrap(inner: string): string {

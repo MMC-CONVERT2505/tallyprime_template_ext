@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Query, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { CreateLedgerDto } from './dto/create-ledger.dto';
 import { ExtractLedgersDto, ExtractVouchersDto, RawReportDto } from './dto/extract.dto';
 import { TallyService } from './tally.service';
 
@@ -26,6 +27,23 @@ export class TallyController {
   @Get('ledgers')
   ledgers(@Query() query: ExtractLedgersDto) {
     return this.tally.getLedgers(query.company);
+  }
+
+  /**
+   * Creates a single Ledger master in Tally. This is a WRITE against the live
+   * company (unlike every other endpoint here) — verify with
+   * GET /tally/ledgers?fresh=true afterward.
+   */
+  @Post('ledgers')
+  @HttpCode(HttpStatus.CREATED)
+  createLedger(@Body() body: CreateLedgerDto) {
+    return this.tally.createLedger(body);
+  }
+
+  /** Lean stock item master list (Name, Parent, BaseUnits, Opening/Closing balance+value, AlterID). */
+  @Get('stock-items')
+  stockItems(@Query() query: ExtractLedgersDto) {
+    return this.tally.getStockItems(query.company);
   }
 
   /** Vouchers for a date range, optionally filtered by voucher type. */

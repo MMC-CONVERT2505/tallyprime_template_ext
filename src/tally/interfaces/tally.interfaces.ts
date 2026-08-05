@@ -33,6 +33,19 @@ export interface TallyLedgerEntry {
   isDebit: boolean | null;
 }
 
+export interface TallyStockItem {
+  name: string;
+  parent: string | null;
+  baseUnit: string | null;
+  /** Quantity, not currency — Tally reports this as "<qty> <unit>" (e.g. "100 Nos"). */
+  openingBalance: number | null;
+  openingValue: number | null;
+  /** Quantity, not currency — see openingBalance. */
+  closingBalance: number | null;
+  closingValue: number | null;
+  alterId: number | null;
+}
+
 export interface TallyInventoryEntry {
   stockItemName: string;
   quantity: number | null;
@@ -57,4 +70,16 @@ export interface TallyResponseMeta {
   isEmpty: boolean;
   /** Raw <LINEERROR>/description text if Tally flagged an error. */
   error?: string;
+}
+
+/** Result of an Import Data (write) request — Tally's <RESPONSE> counters. */
+export interface TallyImportResult {
+  created: number;
+  altered: number;
+  deleted: number;
+  combined: number;
+  ignored: number;
+  errors: number;
+  lastMasterId: number | null;
+  lineError: string | null;
 }

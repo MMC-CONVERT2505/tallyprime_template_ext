@@ -74,6 +74,15 @@ describe('xml.utils', () => {
       expect(readText(undefined)).toBeNull();
       expect(readText({})).toBeNull();
     });
+
+    it('strips Tally\'s non-standard "&#N; " level marker on built-in group references', () => {
+      // Observed live: Tally sends this as literal text (not a real numeric
+      // character reference the XML parser decodes) on PARENT fields that
+      // point at a built-in top-level group like "Primary".
+      expect(readText('&#4; Primary')).toBe('Primary');
+      expect(readText({ '#text': '&#4; Primary' })).toBe('Primary');
+      expect(readText('&#1; Primary')).toBe('Primary'); // marker digit may vary
+    });
   });
 
   describe('readInt / readYesNo', () => {

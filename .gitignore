@@ -1,3 +1,6 @@
+# Local-only standalone Postgres (dev convenience when Docker/WSL isn't available)
+.localdb/
+
 # Logs
 logs
 *.log

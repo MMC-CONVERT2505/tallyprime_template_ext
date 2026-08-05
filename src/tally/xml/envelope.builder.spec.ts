@@ -37,4 +37,36 @@ describe('EnvelopeBuilder', () => {
     expect(xml).toContain('<TYPE>Company</TYPE>');
     expect(xml).not.toContain('<SVCURRENTCOMPANY>');
   });
+
+  it('builds a lean stock item collection request scoped to a company', () => {
+    const xml = builder.buildStockItemsRequest('ABC Ltd');
+    expect(xml).toContain('<TYPE>StockItem</TYPE>');
+    expect(xml).toContain('<SVCURRENTCOMPANY>ABC Ltd</SVCURRENTCOMPANY>');
+    expect(xml).toContain('<NATIVEMETHOD>BaseUnits</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>OpeningValue</NATIVEMETHOD>');
+  });
+
+  describe('buildCreateLedgerRequest', () => {
+    it('builds an Import Data request for a new ledger', () => {
+      const xml = builder.buildCreateLedgerRequest('Test Ledger', 'Sundry Debtors', 'ABC Ltd', 0);
+      expect(xml).toContain('<TALLYREQUEST>Import Data</TALLYREQUEST>');
+      expect(xml).toContain('<SVCURRENTCOMPANY>ABC Ltd</SVCURRENTCOMPANY>');
+      expect(xml).toContain('<LEDGER NAME="Test Ledger" ACTION="Create">');
+      expect(xml).toContain('<NAME>Test Ledger</NAME>');
+      expect(xml).toContain('<PARENT>Sundry Debtors</PARENT>');
+      expect(xml).toContain('<OPENINGBALANCE>0</OPENINGBALANCE>');
+    });
+
+    it('escapes ampersands in the ledger name and parent', () => {
+      const xml = builder.buildCreateLedgerRequest('Smith & Co', 'Sundry Debtors');
+      expect(xml).toContain('<NAME>Smith &amp; Co</NAME>');
+      expect(xml).toContain('LEDGER NAME="Smith &amp; Co"');
+    });
+
+    it('omits OPENINGBALANCE and SVCURRENTCOMPANY when not supplied', () => {
+      const xml = builder.buildCreateLedgerRequest('Test Ledger', 'Sundry Debtors');
+      expect(xml).not.toContain('<OPENINGBALANCE>');
+      expect(xml).not.toContain('<SVCURRENTCOMPANY>');
+    });
+  });
 });

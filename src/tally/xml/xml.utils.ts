@@ -75,6 +75,16 @@ export function parseTallyAmount(value: unknown): number | null {
 }
 
 /**
+ * Tally prefixes references to certain built-in top-level objects (e.g. the
+ * "Primary" group) with a literal, non-standard marker that looks like an XML
+ * numeric character reference but is actually sent as raw text — Tally itself
+ * never encodes it, so it is NOT decoded by the XML parser. Observed as
+ * `&#4; Primary` in a stock item / ledger PARENT field; strip it so callers
+ * see the clean name Tally's own UI shows, not this internal rendering artifact.
+ */
+const TALLY_LEVEL_MARKER = /^&#\d+;\s*/;
+
+/**
  * Read a value that Tally may deliver either as text or as `{ '#text': '...' }`
  * (fast-xml-parser wraps a tag that carries both attributes and text). Returns
  * a trimmed string, or null when the tag is absent/empty — never assume a key
@@ -85,10 +95,10 @@ export function readText(value: unknown): string | null {
   if (typeof value === 'object') {
     const text = (value as Record<string, unknown>)['#text'];
     if (text === undefined || text === null) return null;
-    const s = String(text).trim();
+    const s = String(text).trim().replace(TALLY_LEVEL_MARKER, '');
     return s === '' ? null : s;
   }
-  const s = String(value).trim();
+  const s = String(value).trim().replace(TALLY_LEVEL_MARKER, '');
   return s === '' ? null : s;
 }
 

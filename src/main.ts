@@ -1,6 +1,7 @@
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
@@ -22,9 +23,13 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  // Enable graceful shutdown so RedisModule.onApplicationShutdown / TypeORM close cleanly.
+  // Enable graceful shutdown so RedisModule.onApplicationShutdown / PrismaService close cleanly.
   app.enableShutdownHooks();
   app.enableCors();
+
+  // Raw `ws` instead of the default socket.io adapter — agents speak plain
+  // WebSocket (see src/agent/), not the socket.io handshake/framing protocol.
+  app.useWebSocketAdapter(new WsAdapter(app));
 
   const port = config.get<number>('port', 3000);
   await app.listen(port);

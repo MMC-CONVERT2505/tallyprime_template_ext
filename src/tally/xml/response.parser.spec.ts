@@ -88,6 +88,40 @@ describe('TallyResponseParser', () => {
     });
   });
 
+  describe('mapStockItems', () => {
+    it('parses quantity/value fields (stripping the unit suffix) and AlterID, tolerating omitted tags', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<STOCKITEM><NAME>Widget A</NAME><PARENT>Finished Goods</PARENT><BASEUNITS>Nos</BASEUNITS>' +
+        '<OPENINGBALANCE>100 Nos</OPENINGBALANCE><OPENINGVALUE>5000.00</OPENINGVALUE>' +
+        '<CLOSINGBALANCE>-20 Nos</CLOSINGBALANCE><CLOSINGVALUE>-1000.00</CLOSINGVALUE><ALTERID>7</ALTERID></STOCKITEM>' +
+        '<STOCKITEM><NAME>Widget B</NAME></STOCKITEM>' + // no parent/balances/alterid
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      const items = parser.mapStockItems(xml);
+      expect(items).toHaveLength(2);
+      expect(items[0]).toEqual({
+        name: 'Widget A',
+        parent: 'Finished Goods',
+        baseUnit: 'Nos',
+        openingBalance: 100,
+        openingValue: 5000,
+        closingBalance: -20,
+        closingValue: -1000,
+        alterId: 7,
+      });
+      expect(items[1]).toEqual({
+        name: 'Widget B',
+        parent: null,
+        baseUnit: null,
+        openingBalance: null,
+        openingValue: null,
+        closingBalance: null,
+        closingValue: null,
+        alterId: null,
+      });
+    });
+  });
+
   describe('mapVouchers', () => {
     const salesVoucher =
       '<ENVELOPE><BODY><DATA>' +
@@ -146,6 +180,35 @@ describe('TallyResponseParser', () => {
       const [voucher] = parser.mapVouchers(xml);
       expect(voucher.ledgerEntries).toHaveLength(1);
       expect(voucher.ledgerEntries[0]).toMatchObject({ ledgerName: 'Only One', amount: 50 });
+    });
+  });
+
+  describe('parseImportResponse', () => {
+    it('parses a bare (non-ENVELOPE) <RESPONSE> reply on success', () => {
+      const xml =
+        '<RESPONSE><CREATED>1</CREATED><ALTERED>0</ALTERED><DELETED>0</DELETED>' +
+        '<LASTMASTERID>1310721</LASTMASTERID><COMBINED>0</COMBINED><IGNORED>0</IGNORED>' +
+        '<ERRORS>0</ERRORS><CANCELLED>0</CANCELLED><LINEERROR></LINEERROR></RESPONSE>';
+      expect(parser.parseImportResponse(xml)).toEqual({
+        created: 1,
+        altered: 0,
+        deleted: 0,
+        combined: 0,
+        ignored: 0,
+        errors: 0,
+        lastMasterId: 1310721,
+        lineError: null,
+      });
+    });
+
+    it('surfaces a failed import (created=0, errors>0) via its counters', () => {
+      const xml =
+        '<RESPONSE><CREATED>0</CREATED><ALTERED>0</ALTERED><ERRORS>1</ERRORS>' +
+        '<LINEERROR>Could not create ledger: parent does not exist</LINEERROR></RESPONSE>';
+      const result = parser.parseImportResponse(xml);
+      expect(result.created).toBe(0);
+      expect(result.errors).toBe(1);
+      expect(result.lineError).toBe('Could not create ledger: parent does not exist');
     });
   });
 });
