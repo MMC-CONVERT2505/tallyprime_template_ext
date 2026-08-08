@@ -1,0 +1,137 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// Every value here is a READ from Tally — this service extracts data, it
+/// never writes to Tally. (CREATE_LEDGER, a write, existed early on and was
+/// removed — see migration 20260808130000_remove_create_ledger_write.)
+enum ExtractionType {
+  COMPANIES
+  LEDGERS
+  VOUCHERS
+  RAW
+  STOCK_ITEMS
+  GROUPS
+}
+
+enum ExtractionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum DeviceAuthorizationStatus {
+  PENDING
+  APPROVED
+  CONSUMED
+  EXPIRED
+}
+
+/// Audit trail for every Tally read/write the backend performs. Deliberately
+/// holds only metadata (type, company, status, counts, timing) — never the raw
+/// extracted financial records. See docs/architecture.md for why.
+///
+/// orgId/connectionId are nullable: the direct local `/tally/*` endpoints
+/// (kept for dev/testing against a Tally on the same machine — see
+/// tally.module.ts) create rows with neither, since there's no org/agent
+/// context for a direct call. The async job API (Phase 4, ExtractionsModule)
+/// always sets both.
+model ExtractionJob {
+  id           String            @id @default(uuid())
+  type         ExtractionType
+  status       ExtractionStatus  @default(PENDING)
+  company      String?
+  params       Json
+  recordCount  Int?
+  durationMs   Int?
+  error        String?
+  org          Org?              @relation(fields: [orgId], references: [id])
+  orgId        String?
+  connection   TallyConnection?  @relation(fields: [connectionId], references: [id])
+  connectionId String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@map("extraction_jobs")
+}
+
+/// Registry of connector installs — one per paired agent (docs/architecture.md
+/// Phase 3). `host`/`port` from the earlier local-first sketch are gone: in the
+/// cloud-tunnel model the agent connects OUT to the gateway, so the cloud never
+/// needs to know where Tally is — that lives only in the agent's own local env.
+model TallyConnection {
+  id             String    @id @default(uuid())
+  label          String
+  /// argon2 hash of the device credential. The raw token is shown to the user
+  /// exactly once at creation (see ConnectionsService.create) and never stored.
+  tokenHash      String    @unique
+  defaultCompany String?
+  isActive       Boolean   @default(true)
+  lastSeenAt     DateTime?
+  org            Org       @relation(fields: [orgId], references: [id])
+  orgId          String
+  extractionJobs ExtractionJob[]
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@map("tally_connections")
+}
+
+/// A customer account. Agent pairing (Phase 3) and future multi-user access
+/// are both scoped to an Org, not to an individual User.
+model Org {
+  id                   String                @id @default(uuid())
+  name                 String
+  users                User[]
+  connections          TallyConnection[]
+  extractionJobs       ExtractionJob[]
+  deviceAuthorizations DeviceAuthorization[]
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  @@map("orgs")
+}
+
+/// Device Authorization Grant (RFC 8628-style) for zero-manual-token connector
+/// pairing: the bridge calls /connections/device/start (unauthenticated — it
+/// has no identity yet) and gets back a long, opaque `deviceCode` it polls
+/// with, plus a short human-typeable `userCode` it displays. A signed-in user
+/// approves that code via /connections/device/approve (this is the one
+/// unavoidable human trust decision — see docs/architecture.md). Only once
+/// APPROVED does the next poll mint the real TallyConnection + device token
+/// and mark this row CONSUMED (single-use). orgId is null until approval.
+model DeviceAuthorization {
+  id             String                    @id @default(uuid())
+  deviceCode     String                    @unique
+  userCode       String
+  status         DeviceAuthorizationStatus @default(PENDING)
+  org            Org?                      @relation(fields: [orgId], references: [id])
+  orgId          String?
+  label          String?
+  defaultCompany String?
+  /// Set once CONSUMED — the TallyConnection this pairing produced, for audit traceability.
+  connectionId   String?
+  expiresAt      DateTime
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  @@index([userCode])
+  @@map("device_authorizations")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  org          Org      @relation(fields: [orgId], references: [id])
+  orgId        String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("users")
+}

@@ -1,0 +1,839 @@
+{
+  "info": {
+    "_postman_id": "8f5c2a10-4b3e-4a1e-9b7a-tally-connector-e2e",
+    "name": "Tally Connector Bridge API",
+    "description": "End-to-end collection for the Tally extraction backend + connector bridge.\n\n**Run order (top to bottom, or via Collection Runner):**\n1. Health — confirm the backend is up.\n2. Auth — Register once, then Login on later runs (same email).\n3. Device Pairing — the recommended, zero-manual-token way to connect a bridge. Requires the real bridge process (`npm run start:agent`, no `AGENT_TOKEN` set) running against this same backend so it can poll and consume the code — Postman fires the HTTP calls but cannot run the bridge itself.\n4. Connections (Manual) — the alternative scripted/enterprise-rollout path (mints a token directly, no pairing).\n5. Tally Direct — dev-only sanity checks; the backend talks to Tally itself, no bridge involved.\n6. Extractions — the real job API, driven through whichever connector is currently online (from step 3 or 4).\n7. Negative / Error-Path Tests — regression coverage for real issues hit during development (ambiguous connectors, offline bridge, expired pairing codes, etc.).\n\nSet `tallyCompanyName` (collection variable) to the **exact** company name as shown in Tally before running anything company-scoped — get it from the \"Tally Direct → Probe\" request's `companies` list if unsure.\n\nSee `docs/connector-bridge-setup-guide.md` in the repo for the full narrative walkthrough this collection mirrors.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000/api", "type": "string", "description": "Backend base URL, including the /api prefix." },
+    { "key": "accessToken", "value": "", "type": "string", "description": "Set automatically after Register/Login." },
+    { "key": "orgId", "value": "", "type": "string", "description": "Set automatically after Register/Login." },
+    { "key": "userEmail", "value": "", "type": "string", "description": "Set automatically after Register; reused by Login on later runs." },
+    { "key": "userPassword", "value": "TallyDemo#2026", "type": "string", "description": "Fixed so Login can reuse it after Register on the first run." },
+    { "key": "tallyCompanyName", "value": "COREDGE.IO INDIA PRIVATE LIMITED", "type": "string", "description": "EXACT Tally company name — replace with your own (see Tally Direct → Probe)." },
+    { "key": "deviceCode", "value": "", "type": "string", "description": "Set automatically by Device Pairing → Start." },
+    { "key": "userCode", "value": "", "type": "string", "description": "Set automatically by Device Pairing → Start; also printed in the bridge's own console logs." },
+    { "key": "connectionId", "value": "", "type": "string", "description": "Set automatically by Connections (Manual) → Create, or paste one from GET /connections." },
+    { "key": "connectionToken", "value": "", "type": "string", "description": "Set automatically by Connections (Manual) → Create / Rotate Token. This is what goes in the bridge's own .env as AGENT_TOKEN — shown once." },
+    { "key": "jobId", "value": "", "type": "string", "description": "Set automatically by whichever extraction request ran most recently." },
+    { "key": "groupsJobId", "value": "", "type": "string", "description": "Set automatically by Extractions → Fetch Master — Groups. Needed by the Ledgers Excel export." },
+    { "key": "stockItemsJobId", "value": "", "type": "string", "description": "Set automatically by Extractions → Fetch Master — Stock Items." },
+    { "key": "ledgersJobId", "value": "", "type": "string", "description": "Set automatically by Extractions → Fetch Master — Ledgers." }
+  ],
+  "item": [
+    {
+      "name": "1. Health",
+      "item": [
+        {
+          "name": "Infra Health (Postgres + Redis)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] },
+            "description": "Deliberately does NOT check Tally — see /health/tally. Use this for container/orchestrator liveness probes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('reports status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tally Health (separate — closed Tally ≠ app down)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/health/tally", "host": ["{{baseUrl}}"], "path": ["health", "tally"] },
+            "description": "Talks to Tally directly using the BACKEND's own TALLY_HOST/TALLY_PORT. A 503 here is normal/expected if Tally isn't reachable from wherever the backend runs — it does not mean the app is broken."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responds (200 up or 503 down, both are valid)', () => pm.expect([200, 503]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Auth",
+      "item": [
+        {
+          "name": "Register (first run only)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{$randomEmail}}\",\n  \"password\": \"{{userPassword}}\",\n  \"name\": \"{{$randomFirstName}} {{$randomLastName}}\",\n  \"orgName\": \"Postman E2E Org\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/register", "host": ["{{baseUrl}}"], "path": ["auth", "register"] },
+            "description": "Creates a new Org + its first User. Uses a random email so re-running this doesn't 409 — but that also means every re-run is a NEW org with NO paired connectors. On later runs, prefer **Login** instead so you keep reusing the same org/connections."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns an accessToken', () => pm.expect(body.accessToken).to.be.a('string'));",
+                  "pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "pm.collectionVariables.set('orgId', body.user.orgId);",
+                  "pm.collectionVariables.set('userEmail', body.user.email);",
+                  "console.log('Registered as', body.user.email, '— org', body.user.orgId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (subsequent runs)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "description": "Requires userEmail to already be set (from a prior Register run in this same collection, or paste in your own known account's email)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "pm.collectionVariables.set('orgId', body.user.orgId);",
+                  "console.log('Logged in as', body.user.email, '— org', body.user.orgId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Current User (Me)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/auth/me", "host": ["{{baseUrl}}"], "path": ["auth", "me"] },
+            "description": "Proves the bearer token works end-to-end. Returns the decoded JWT payload (sub/email/orgId)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('orgId matches what we captured at login', () => pm.expect(pm.response.json().orgId).to.eql(pm.collectionVariables.get('orgId')));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Device Pairing (recommended — no manual token)",
+      "item": [
+        {
+          "name": "Start Device Pairing",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/connections/device/start", "host": ["{{baseUrl}}"], "path": ["connections", "device", "start"] },
+            "description": "No auth — the bridge has no identity yet. In real use, the CONNECTOR calls this itself on first boot (see AgentPairingService); calling it from Postman lets you drive/inspect the same flow by hand.\n\nAfter running this, either:\n(a) start the real bridge with AGENT_TOKEN unset — it will print its OWN code and poll on its own, ignore this request's code, or\n(b) use the userCode this request captured and run Approve + Poll Device Token below manually to simulate the whole flow without a real bridge process."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns deviceCode and userCode', () => {",
+                  "  pm.expect(body.deviceCode).to.be.a('string');",
+                  "  pm.expect(body.userCode).to.match(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);",
+                  "});",
+                  "pm.collectionVariables.set('deviceCode', body.deviceCode);",
+                  "pm.collectionVariables.set('userCode', body.userCode);",
+                  "console.log('Pairing code to approve:', body.userCode);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve Device (the one human step)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userCode\": \"{{userCode}}\",\n  \"label\": \"Postman E2E Bridge\",\n  \"defaultCompany\": \"{{tallyCompanyName}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/connections/device/approve", "host": ["{{baseUrl}}"], "path": ["connections", "device", "approve"] },
+            "description": "Requires accessToken (Auth → Register/Login) and userCode (Device Pairing → Start, or copied from the bridge's own console output). Omit defaultCompany if this bridge should serve multiple companies."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, approved', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().approved).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Poll Device Token (normally called by the bridge itself)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceCode\": \"{{deviceCode}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/connections/device/token", "host": ["{{baseUrl}}"], "path": ["connections", "device", "token"] },
+            "description": "No auth. Returns { status: 'pending' } (200) until Approve has run, then { status: 'approved', id, label, token } on the NEXT call — which also consumes the code (single-use).\n\n⚠️ If a real bridge is ALSO polling this device code, whichever call lands first consumes it — the other side will then see \"already been used\". Use this manual request for isolated endpoint testing, not alongside a live bridge run of the same code."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "console.log('Poll status:', body.status);",
+                  "if (body.status === 'approved') {",
+                  "  pm.collectionVariables.set('connectionId', body.id);",
+                  "  pm.collectionVariables.set('connectionToken', body.token);",
+                  "  console.log('Paired! connectionId =', body.id, ' token (save this, shown once) =', body.token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Connections (Manual — scripted/enterprise rollout)",
+      "item": [
+        {
+          "name": "Create Connection (mint token directly)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"Postman Manual Connection\",\n  \"defaultCompany\": \"{{tallyCompanyName}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/connections", "host": ["{{baseUrl}}"], "path": ["connections"] },
+            "description": "Always creates a NEW connection row — not idempotent. Don't re-run this for a device you already paired; use Rotate Token instead, or you'll end up with the exact ambiguous-connector bug this collection has a regression test for below."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('connectionId', body.id);",
+                  "pm.collectionVariables.set('connectionToken', body.token);",
+                  "console.log('connectionId =', body.id, ' token (shown once) =', body.token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Connections",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/connections", "host": ["{{baseUrl}}"], "path": ["connections"] },
+            "description": "Includes live `connected` status cross-referenced from the gateway's in-memory registry — true only if a bridge process currently has a live socket for that connection."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, array', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json()).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rotate Connection Token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/connections/{{connectionId}}/rotate-token",
+              "host": ["{{baseUrl}}"],
+              "path": ["connections", "{{connectionId}}", "rotate-token"]
+            },
+            "description": "Mints a FRESH token for the SAME connection id — use this instead of Create Connection when re-connecting an already-paired device. Disconnects any live session using the old token."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('connectionToken', body.token);",
+                  "console.log('New token (shown once) =', body.token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoke Connection",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/connections/{{connectionId}}/revoke",
+              "host": ["{{baseUrl}}"],
+              "path": ["connections", "{{connectionId}}", "revoke"]
+            },
+            "description": "Marks the connection inactive AND disconnects its live tunnel session if one's open. Irreversible — pair/rotate again for a fresh token."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, revoked', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().revoked).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Tally Direct (dev sanity checks — no bridge needed)",
+      "item": [
+        {
+          "name": "Probe (connectivity + discover exact company names)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/tally/probe", "host": ["{{baseUrl}}"], "path": ["tally", "probe"] },
+            "description": "The BACKEND talks to Tally directly (TALLY_HOST/TALLY_PORT) — no bridge, no auth needed conceptually, but this collection sends the bearer token anyway (harmless, ignored by this route). Use the `companies` array in the response to get the EXACT string for tallyCompanyName."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, reachable', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().reachable).to.eql(true);",
+                  "});",
+                  "console.log('Companies Tally reports:', pm.response.json().companies);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Companies",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tally/companies?fresh=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["tally", "companies"],
+              "query": [{ "key": "fresh", "value": "true", "description": "Bypass the 15s cache." }]
+            }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"] } }
+          ]
+        },
+        {
+          "name": "Ledgers (period-scoped)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tally/ledgers?company={{tallyCompanyName}}&fromDate=20260401&toDate=20260430",
+              "host": ["{{baseUrl}}"],
+              "path": ["tally", "ledgers"],
+              "query": [
+                { "key": "company", "value": "{{tallyCompanyName}}" },
+                { "key": "fromDate", "value": "20260401", "description": "YYYYMMDD — note: NOT the ISO format fetch-master uses." },
+                { "key": "toDate", "value": "20260430" }
+              ]
+            }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK, array', () => { pm.response.to.have.status(200); pm.expect(pm.response.json()).to.be.an('array'); });"] } }
+          ]
+        },
+        {
+          "name": "Stock Items (period-scoped)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tally/stock-items?company={{tallyCompanyName}}&fromDate=20260401&toDate=20260430",
+              "host": ["{{baseUrl}}"],
+              "path": ["tally", "stock-items"],
+              "query": [
+                { "key": "company", "value": "{{tallyCompanyName}}" },
+                { "key": "fromDate", "value": "20260401" },
+                { "key": "toDate", "value": "20260430" }
+              ]
+            }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK, array', () => { pm.response.to.have.status(200); pm.expect(pm.response.json()).to.be.an('array'); });"] } }
+          ]
+        },
+        {
+          "name": "Groups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tally/groups?company={{tallyCompanyName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["tally", "groups"],
+              "query": [{ "key": "company", "value": "{{tallyCompanyName}}" }]
+            }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK, array', () => { pm.response.to.have.status(200); pm.expect(pm.response.json()).to.be.an('array'); });"] } }
+          ]
+        },
+        {
+          "name": "Vouchers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tally/vouchers?company={{tallyCompanyName}}&from=20260401&to=20260430&voucherType=Sales",
+              "host": ["{{baseUrl}}"],
+              "path": ["tally", "vouchers"],
+              "query": [
+                { "key": "company", "value": "{{tallyCompanyName}}" },
+                { "key": "from", "value": "20260401" },
+                { "key": "to", "value": "20260430" },
+                { "key": "voucherType", "value": "Sales", "description": "Optional — omit for all voucher types." }
+              ]
+            }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK, array', () => { pm.response.to.have.status(200); pm.expect(pm.response.json()).to.be.an('array'); });"] } }
+          ]
+        },
+        {
+          "name": "Raw Report (escape hatch)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reportName\": \"Trial Balance\",\n  \"company\": \"{{tallyCompanyName}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/tally/raw", "host": ["{{baseUrl}}"], "path": ["tally", "raw"] },
+            "description": "For onboarding/exploring a report this project hasn't modelled a typed extraction for yet. Returns raw XML."
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Extractions (job API via the connector bridge)",
+      "item": [
+        {
+          "name": "Create Extraction (by connectionId)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"connectionId\": \"{{connectionId}}\",\n  \"type\": \"GROUPS\",\n  \"payload\": {\n    \"company\": \"{{tallyCompanyName}}\"\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/extractions", "host": ["{{baseUrl}}"], "path": ["extractions"] },
+            "description": "type: COMPANIES | LEDGERS | STOCK_ITEMS | GROUPS | VOUCHERS | RAW. Requires connectionId to be an ONLINE connector (see List Connections → connected: true) — pair one via folder 3 or 4 first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('jobId', body.id);",
+                  "console.log('jobId =', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fetch Master — Companies (by companyName)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyName\": \"{{tallyCompanyName}}\",\n  \"masterType\": \"COMPANIES\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/extractions/fetch-master", "host": ["{{baseUrl}}"], "path": ["extractions", "fetch-master"] },
+            "description": "Resolves the connector automatically by exact companyName match — no connectionId needed. Requires exactly one ACTIVE, ONLINE connection paired to this company (see the Negative Tests folder for what happens when that's not true)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('jobId', body.id);",
+                  "console.log('jobId =', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fetch Master — Groups (saves groupsJobId for Excel)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyName\": \"{{tallyCompanyName}}\",\n  \"masterType\": \"GROUPS\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/extractions/fetch-master", "host": ["{{baseUrl}}"], "path": ["extractions", "fetch-master"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('jobId', body.id);",
+                  "pm.collectionVariables.set('groupsJobId', body.id);",
+                  "console.log('groupsJobId =', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fetch Master — Ledgers (period-scoped, ISO dates)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyName\": \"{{tallyCompanyName}}\",\n  \"masterType\": \"LEDGERS\",\n  \"fromDate\": \"2026-04-01\",\n  \"toDate\": \"2026-04-30\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/extractions/fetch-master", "host": ["{{baseUrl}}"], "path": ["extractions", "fetch-master"] },
+            "description": "fromDate/toDate here are ISO YYYY-MM-DD (converted internally to Tally's YYYYMMDD) — different convention from the Tally Direct folder's raw endpoints."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('jobId', body.id);",
+                  "pm.collectionVariables.set('ledgersJobId', body.id);",
+                  "console.log('ledgersJobId =', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fetch Master — Stock Items",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyName\": \"{{tallyCompanyName}}\",\n  \"masterType\": \"STOCK_ITEMS\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/extractions/fetch-master", "host": ["{{baseUrl}}"], "path": ["extractions", "fetch-master"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('jobId', body.id);",
+                  "pm.collectionVariables.set('stockItemsJobId', body.id);",
+                  "console.log('stockItemsJobId =', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Job Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/extractions/{{jobId}}", "host": ["{{baseUrl}}"], "path": ["extractions", "{{jobId}}"] },
+            "description": "Poll this (re-send) until status flips from PENDING to SUCCESS or FAILED — uses whichever jobId was set by the most recently run Create/Fetch Master request above."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "console.log('status =', body.status, ' recordCount =', body.recordCount, ' error =', body.error);",
+                  "pm.test('status is a known value', () => pm.expect(['PENDING','SUCCESS','FAILED']).to.include(body.status));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Job Result",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/extractions/{{jobId}}/result", "host": ["{{baseUrl}}"], "path": ["extractions", "{{jobId}}", "result"] },
+            "description": "Only available while status=SUCCESS and within EXTRACTION_RESULT_TTL_SECONDS of completion."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "console.log('Records returned:', Array.isArray(pm.response.json()) ? pm.response.json().length : 1);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Job Excel — Stock Items",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/extractions/{{stockItemsJobId}}/excel", "host": ["{{baseUrl}}"], "path": ["extractions", "{{stockItemsJobId}}", "excel"] },
+            "description": "Run Fetch Master — Stock Items first. Response is a binary .xlsx — use Postman's \"Save Response\" to inspect the file."
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK, spreadsheet content-type', () => { pm.response.to.have.status(200); pm.expect(pm.response.headers.get('Content-Type')).to.include('spreadsheetml'); });"] } }
+          ]
+        },
+        {
+          "name": "Get Job Excel — Ledgers (needs groupsJobId)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/extractions/{{ledgersJobId}}/excel?groupsJobId={{groupsJobId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["extractions", "{{ledgersJobId}}", "excel"],
+              "query": [{ "key": "groupsJobId", "value": "{{groupsJobId}}", "description": "Must reference a completed GROUPS job — needed to classify each ledger's Account Type." }]
+            },
+            "description": "Run Fetch Master — Groups AND Fetch Master — Ledgers first (both must be SUCCESS)."
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK, spreadsheet content-type', () => { pm.response.to.have.status(200); pm.expect(pm.response.headers.get('Content-Type')).to.include('spreadsheetml'); });"] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Negative / Error-Path Tests",
+      "item": [
+        {
+          "name": "Fetch Master — Unknown Company (expect 404)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyName\": \"This Company Does Not Exist Pvt Ltd\",\n  \"masterType\": \"GROUPS\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/extractions/fetch-master", "host": ["{{baseUrl}}"], "path": ["extractions", "fetch-master"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('message explains why', () => pm.expect(pm.response.json().message).to.include('No active connector'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fetch Master — Missing masterType (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyName\": \"{{tallyCompanyName}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/extractions/fetch-master", "host": ["{{baseUrl}}"], "path": ["extractions", "fetch-master"] },
+            "description": "Validates the global ValidationPipe (whitelist + forbidNonWhitelisted) rejects an incomplete DTO with a 400, not a 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('400 Bad Request', () => pm.response.to.have.status(400));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Extractions — Nonexistent Job (expect 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/extractions/00000000-0000-0000-0000-000000000000", "host": ["{{baseUrl}}"], "path": ["extractions", "00000000-0000-0000-0000-000000000000"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('404 Not Found', () => pm.response.to.have.status(404));"] } }
+          ]
+        },
+        {
+          "name": "Device Approve — Unknown/Expired Code (expect 404)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userCode\": \"ZZZZ-9999\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/connections/device/approve", "host": ["{{baseUrl}}"], "path": ["connections", "device", "approve"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('404 Not Found', () => pm.response.to.have.status(404));"] } }
+          ]
+        },
+        {
+          "name": "Create Extraction — connectionId not online (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"connectionId\": \"{{connectionId}}\",\n  \"type\": \"GROUPS\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/extractions", "host": ["{{baseUrl}}"], "path": ["extractions"] },
+            "description": "Run this against a connectionId with no bridge currently connected (check List Connections first) to reproduce \"This connector is not currently online.\" — jobs are rejected immediately rather than queued to fail later."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request (if offline) or 202 (if actually online)', () => pm.expect([202, 400]).to.include(pm.response.code));",
+                  "if (pm.response.code === 400) {",
+                  "  pm.test('explains why', () => pm.expect(pm.response.json().message).to.include('not currently online'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

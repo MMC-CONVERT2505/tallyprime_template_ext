@@ -1,0 +1,208 @@
+.app-shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 20px 60px;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs button {
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px 6px 0 0;
+  border: 1px solid transparent;
+  padding: 8px 14px;
+}
+
+.tabs button.active {
+  background: var(--bg-subtle);
+  color: var(--text-h);
+  border-color: var(--border);
+  border-bottom-color: var(--bg-subtle);
+  margin-bottom: -1px;
+}
+
+.tabs-small {
+  margin-bottom: 16px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  background: var(--bg);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.form-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-h);
+  flex: 1 1 160px;
+}
+
+.form-row button {
+  align-self: flex-end;
+}
+
+.muted {
+  color: var(--text);
+  opacity: 0.75;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.error-banner {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--off-bg);
+  color: var(--off);
+  font-size: 13px;
+}
+
+.json-view {
+  background: var(--code-bg);
+  color: var(--text-h);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+  margin: 8px 0 0;
+}
+
+.callout {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.callout-success {
+  border-color: var(--ok);
+}
+
+.token-box {
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.user-code {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--accent);
+  text-align: center;
+  padding: 8px 0;
+}
+
+.pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--code-bg);
+  color: var(--text);
+}
+
+.pill-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.pill-off {
+  background: var(--off-bg);
+  color: var(--off);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.job-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.job-chip {
+  background: var(--bg-subtle);
+  color: var(--text-h);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+}
+
+.job-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.auth-card {
+  max-width: 420px;
+  margin: 80px auto;
+}
