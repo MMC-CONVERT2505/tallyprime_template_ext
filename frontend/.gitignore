@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# dotenv environment variable files
+.env
+.env.*
+!.env.example
+
 # Playwright smoke-test screenshots (see e2e-smoke.mjs) — regenerated, not committed.
 e2e-shots/
 
