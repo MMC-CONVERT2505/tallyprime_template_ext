@@ -33,14 +33,19 @@ export class TallyUnreachableException extends TallyException {
   }
 }
 
-/** Connected, but Tally did not answer within TALLY_TIMEOUT_MS. */
+/** Connected, but Tally did not answer within the applicable timeout (TALLY_TIMEOUT_MS for
+ *  real extraction calls, the much shorter TALLY_PROBE_TIMEOUT_MS for /tally/probe and
+ *  /health/tally — this exception covers both, so the hint names whichever applies). */
 export class TallyTimeoutException extends TallyException {
   constructor(baseUrl: string, timeoutMs: number, cause?: unknown) {
     super(
       `Tally at ${baseUrl} did not respond within ${timeoutMs}ms.`,
       HttpStatus.GATEWAY_TIMEOUT,
-      'Large companies or wide date ranges can exceed the timeout. Chunk the ' +
-        'request by month, or raise TALLY_TIMEOUT_MS for one-off big pulls.',
+      'If this is a real extraction, large companies or wide date ranges can exceed the ' +
+        'timeout — chunk the request by month, or raise TALLY_TIMEOUT_MS for one-off big pulls. ' +
+        'If this is a probe/health check, Tally itself is likely slow to respond or hung — check ' +
+        "it's actually running and responsive, not just that its window is open " +
+        '(raising TALLY_PROBE_TIMEOUT_MS only masks a slow Tally, it will not fix a hung one).',
       cause,
     );
   }

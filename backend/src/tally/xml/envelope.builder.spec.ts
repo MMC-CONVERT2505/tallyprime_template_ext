@@ -77,5 +77,4 @@ describe('EnvelopeBuilder', () => {
     expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
     expect(xml).toContain('<NATIVEMETHOD>Parent</NATIVEMETHOD>');
   });
-
 });

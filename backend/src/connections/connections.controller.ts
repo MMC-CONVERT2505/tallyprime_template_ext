@@ -23,7 +23,12 @@ export class ConnectionsController {
     private readonly tunnel: TallyTunnelGateway,
   ) {}
 
-  /** The returned `token` is shown exactly once — it's what goes in the connector's own .env as AGENT_TOKEN. */
+  /**
+   * The returned `token` is shown exactly once — it's what goes in the connector's own .env as AGENT_TOKEN.
+   * Safe to re-run for a company you've already paired: if an active connection already exists for
+   * `defaultCompany` within this org, its token is rotated and `reused: true` is returned instead of
+   * inserting a duplicate row — see ConnectionsService.upsertForCompany.
+   */
   @Post()
   @HttpCode(HttpStatus.CREATED)
   create(@CurrentUser() user: JwtPayload, @Body() dto: CreateConnectionDto) {

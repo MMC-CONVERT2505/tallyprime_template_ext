@@ -53,13 +53,17 @@ function makePrisma(overrides: { findUnique?: jest.Mock; update?: jest.Mock } = 
   };
 }
 
+function makeConfig(commandTimeoutMs = 30_000) {
+  return { getOrThrow: jest.fn().mockReturnValue({ commandTimeoutMs }) };
+}
+
 describe('TallyTunnelGateway', () => {
   let prisma: ReturnType<typeof makePrisma>;
   let gateway: TallyTunnelGateway;
 
   beforeEach(() => {
     prisma = makePrisma();
-    gateway = new TallyTunnelGateway(prisma as any);
+    gateway = new TallyTunnelGateway(prisma as any, makeConfig() as any);
   });
 
   async function sendHello(socket: ReturnType<typeof makeFakeSocket>, token: string) {
@@ -129,7 +133,10 @@ describe('TallyTunnelGateway', () => {
   it('ignores non-hello messages before authentication and closes the socket', () => {
     const socket = makeFakeSocket();
     gateway.handleConnection(socket as any);
-    socket.emit('message', Buffer.from(JSON.stringify({ type: 'result', requestId: 'x', ok: true })));
+    socket.emit(
+      'message',
+      Buffer.from(JSON.stringify({ type: 'result', requestId: 'x', ok: true })),
+    );
     expect(socket.close).toHaveBeenCalledWith(4001, 'not authenticated');
   });
 
@@ -195,7 +202,12 @@ describe('TallyTunnelGateway', () => {
       socket.emit(
         'message',
         Buffer.from(
-          JSON.stringify({ type: 'result', requestId: sentCommand.requestId, ok: true, data: { reachable: true } }),
+          JSON.stringify({
+            type: 'result',
+            requestId: sentCommand.requestId,
+            ok: true,
+            data: { reachable: true },
+          }),
         ),
       );
 
@@ -233,6 +245,19 @@ describe('TallyTunnelGateway', () => {
       await expect(gateway.sendCommand(CONNECTION_ID, 'probe', {}, 20)).rejects.toThrow(
         'did not respond within 20ms',
       );
+    });
+
+    it("defaults the timeout to ExtractionConfig.commandTimeoutMs (not a hardcoded constant) when the caller doesn't pass one", async () => {
+      const config = makeConfig(25);
+      const scopedGateway = new TallyTunnelGateway(prisma as any, config as any);
+      const socket = makeFakeSocket();
+      scopedGateway.handleConnection(socket as any);
+      await sendHello(socket, VALID_TOKEN);
+
+      await expect(scopedGateway.sendCommand(CONNECTION_ID, 'probe', {})).rejects.toThrow(
+        'did not respond within 25ms',
+      );
+      expect(config.getOrThrow).toHaveBeenCalledWith('extraction');
     });
   });
 });

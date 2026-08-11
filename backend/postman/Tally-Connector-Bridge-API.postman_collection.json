@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "8f5c2a10-4b3e-4a1e-9b7a-tally-connector-e2e",
     "name": "Tally Connector Bridge API",
-    "description": "End-to-end collection for the Tally extraction backend + connector bridge.\n\n**Run order (top to bottom, or via Collection Runner):**\n1. Health — confirm the backend is up.\n2. Auth — Register once, then Login on later runs (same email).\n3. Device Pairing — the recommended, zero-manual-token way to connect a bridge. Requires the real bridge process (`npm run start:agent`, no `AGENT_TOKEN` set) running against this same backend so it can poll and consume the code — Postman fires the HTTP calls but cannot run the bridge itself.\n4. Connections (Manual) — the alternative scripted/enterprise-rollout path (mints a token directly, no pairing).\n5. Tally Direct — dev-only sanity checks; the backend talks to Tally itself, no bridge involved.\n6. Extractions — the real job API, driven through whichever connector is currently online (from step 3 or 4).\n7. Negative / Error-Path Tests — regression coverage for real issues hit during development (ambiguous connectors, offline bridge, expired pairing codes, etc.).\n\nSet `tallyCompanyName` (collection variable) to the **exact** company name as shown in Tally before running anything company-scoped — get it from the \"Tally Direct → Probe\" request's `companies` list if unsure.\n\nSee `docs/connector-bridge-setup-guide.md` in the repo for the full narrative walkthrough this collection mirrors.",
+    "description": "End-to-end collection for the Tally extraction backend + connector bridge.\n\n**Run order (top to bottom, or via Collection Runner):**\n1. Health — confirm the backend is up.\n2. Auth — Register once, then Login on later runs (same email).\n3. Device Pairing — the recommended, zero-manual-token way to connect a bridge. Requires the real bridge process (`npm run start:agent`, no `AGENT_TOKEN` set) running against this same backend so it can poll and consume the code — Postman fires the HTTP calls but cannot run the bridge itself.\n4. Connections (Manual) — the alternative scripted/enterprise-rollout path (mints a token directly, no pairing).\n5. Tally Direct — dev-only sanity checks; the backend talks to Tally itself, no bridge involved.\n6. Extractions — the real job API, driven through whichever connector is currently online (from step 3 or 4).\n7. Negative / Error-Path Tests — regression coverage for real issues hit during development (offline bridge, expired pairing codes, etc.). Duplicate/ambiguous connectors per company used to be a hard error here; connection creation is now upsert-safe per company and fetch-master auto-resolves any pre-existing ambiguity instead of erroring — see ConnectionsService.upsertForCompany and ExtractionsService.resolveConnectionByCompany.\n\nSet `tallyCompanyName` (collection variable) to the **exact** company name as shown in Tally before running anything company-scoped — get it from the \"Tally Direct → Probe\" request's `companies` list if unsure.\n\nSee `docs/connector-bridge-setup-guide.md` in the repo for the full narrative walkthrough this collection mirrors.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -272,7 +272,7 @@
               "options": { "raw": { "language": "json" } }
             },
             "url": { "raw": "{{baseUrl}}/connections", "host": ["{{baseUrl}}"], "path": ["connections"] },
-            "description": "Always creates a NEW connection row — not idempotent. Don't re-run this for a device you already paired; use Rotate Token instead, or you'll end up with the exact ambiguous-connector bug this collection has a regression test for below."
+            "description": "Safe to re-run for a company you've already paired: if an active connection already exists for defaultCompany in this org, its token is rotated on that same row (response has reused: true) instead of inserting a duplicate. Only inserts a new row the first time a given (org, defaultCompany) pair is seen — enforced at the DB level too via a partial unique index, see schema.prisma."
           },
           "event": [
             {
@@ -550,7 +550,7 @@
               "options": { "raw": { "language": "json" } }
             },
             "url": { "raw": "{{baseUrl}}/extractions/fetch-master", "host": ["{{baseUrl}}"], "path": ["extractions", "fetch-master"] },
-            "description": "Resolves the connector automatically by exact companyName match — no connectionId needed. Requires exactly one ACTIVE, ONLINE connection paired to this company (see the Negative Tests folder for what happens when that's not true)."
+            "description": "Resolves the connector automatically by exact companyName match — no connectionId needed. Requires at least one ACTIVE connection paired to this company, and it must be ONLINE right now (see the Negative Tests folder for what happens when that's not true). Multiple active matches auto-resolve to whichever is online / last authenticated rather than erroring."
           },
           "event": [
             {

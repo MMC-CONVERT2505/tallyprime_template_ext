@@ -71,4 +71,38 @@ describe('TallyHttpClient — retry with backoff', () => {
     await expect(client.post('<ENVELOPE/>')).rejects.toThrow(TallyHttpException);
     expect(httpPost).toHaveBeenCalledTimes(1);
   });
+
+  describe('per-call opts override (used by probe() for a fast-fail health check)', () => {
+    it('overrides retries: 0 to skip the configured maxRetries entirely', async () => {
+      const { client, httpPost } = makeClient({ maxRetries: 2 });
+      httpPost.mockReturnValue(throwError(connectionRefused));
+
+      await expect(client.post('<ENVELOPE/>', { retries: 0 })).rejects.toThrow(
+        TallyUnreachableException,
+      );
+      expect(httpPost).toHaveBeenCalledTimes(1);
+    });
+
+    it('overrides timeoutMs, passed straight through to the underlying axios call', async () => {
+      const { client, httpPost } = makeClient();
+      httpPost.mockReturnValueOnce(
+        of({ status: 200, headers: {}, data: Buffer.from('<ENVELOPE></ENVELOPE>') }),
+      );
+
+      await client.post('<ENVELOPE/>', { timeoutMs: 1234 });
+
+      expect(httpPost.mock.calls[0][2]).toMatchObject({ timeout: 1234 });
+    });
+
+    it('leaves the configured defaults untouched when no opts are passed', async () => {
+      const { client, httpPost } = makeClient();
+      httpPost.mockReturnValueOnce(
+        of({ status: 200, headers: {}, data: Buffer.from('<ENVELOPE></ENVELOPE>') }),
+      );
+
+      await client.post('<ENVELOPE/>');
+
+      expect(httpPost.mock.calls[0][2]).toMatchObject({ timeout: 60000 });
+    });
+  });
 });

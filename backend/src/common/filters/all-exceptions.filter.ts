@@ -33,9 +33,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
 
     const status =
-      exception instanceof HttpException
-        ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
+      exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 
     let message: string | string[] = 'Internal server error';
     let error = 'InternalServerError';
@@ -75,7 +73,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
         cause instanceof Error ? cause.stack : undefined,
       );
     } else {
-      this.logger.debug(`${request.method} ${request.url} -> ${status}: ${JSON.stringify(message)}`);
+      this.logger.debug(
+        `${request.method} ${request.url} -> ${status}: ${JSON.stringify(message)}`,
+      );
     }
 
     response.status(status).json(body);

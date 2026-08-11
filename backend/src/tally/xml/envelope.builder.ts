@@ -30,9 +30,7 @@ export interface ReportRequestOptions {
 export class EnvelopeBuilder {
   /** Report-export style request (REQUESTDESC + STATICVARIABLES). */
   buildReportRequest(opts: ReportRequestOptions): string {
-    const staticVars: string[] = [
-      `<SVEXPORTFORMAT>${SV_EXPORT_FORMAT_XML}</SVEXPORTFORMAT>`,
-    ];
+    const staticVars: string[] = [`<SVEXPORTFORMAT>${SV_EXPORT_FORMAT_XML}</SVEXPORTFORMAT>`];
 
     if (opts.company) {
       staticVars.push(`<SVCURRENTCOMPANY>${escapeXml(opts.company)}</SVCURRENTCOMPANY>`);
@@ -73,9 +71,7 @@ export class EnvelopeBuilder {
     company?: string,
     extraStaticVariables?: Record<string, string>,
   ): string {
-    const staticVars: string[] = [
-      `<SVEXPORTFORMAT>${SV_EXPORT_FORMAT_XML}</SVEXPORTFORMAT>`,
-    ];
+    const staticVars: string[] = [`<SVEXPORTFORMAT>${SV_EXPORT_FORMAT_XML}</SVEXPORTFORMAT>`];
     if (company) {
       staticVars.push(`<SVCURRENTCOMPANY>${escapeXml(company)}</SVCURRENTCOMPANY>`);
     }

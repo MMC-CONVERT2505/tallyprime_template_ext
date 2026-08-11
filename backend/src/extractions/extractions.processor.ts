@@ -44,7 +44,12 @@ export class ExtractionsProcessor extends WorkerHost {
       const durationMs = Date.now() - startedAt;
 
       const { resultTtlSeconds } = this.config.getOrThrow<ExtractionConfig>('extraction');
-      await this.redis.set(extractionResultKey(extractionJobId), JSON.stringify(data), 'EX', resultTtlSeconds);
+      await this.redis.set(
+        extractionResultKey(extractionJobId),
+        JSON.stringify(data),
+        'EX',
+        resultTtlSeconds,
+      );
 
       await this.prisma.extractionJob.update({
         where: { id: extractionJobId },
@@ -83,9 +88,14 @@ export class ExtractionsProcessor extends WorkerHost {
       }
 
       await this.prisma.extractionJob
-        .update({ where: { id: extractionJobId }, data: { status: 'FAILED', error: message, durationMs } })
+        .update({
+          where: { id: extractionJobId },
+          data: { status: 'FAILED', error: message, durationMs },
+        })
         .catch((updateErr) =>
-          this.logger.error(`Could not record failure for job ${extractionJobId}: ${String(updateErr)}`),
+          this.logger.error(
+            `Could not record failure for job ${extractionJobId}: ${String(updateErr)}`,
+          ),
         );
 
       await this.notifications.sendExtractionComplete(notifyEmail, {

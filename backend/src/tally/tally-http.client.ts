@@ -5,7 +5,7 @@ import { AxiosError, AxiosResponse } from 'axios';
 import * as iconv from 'iconv-lite';
 import { firstValueFrom } from 'rxjs';
 import { TallyConfig } from '../config/configuration';
-import { TallyConnector } from './tally-connector.interface';
+import { TallyConnector, TallyPostOptions } from './tally-connector.interface';
 import {
   TallyHttpException,
   TallyTimeoutException,
@@ -47,14 +47,17 @@ export class TallyHttpClient implements TallyConnector {
    * change the outcome.
    * @throws TallyUnreachableException | TallyTimeoutException | TallyHttpException
    */
-  async post(xml: string): Promise<string> {
-    const { maxRetries, retryBaseMs } = this.tally;
+  async post(xml: string, opts?: TallyPostOptions): Promise<string> {
+    const { retryBaseMs } = this.tally;
+    const maxRetries = opts?.retries ?? this.tally.maxRetries;
+    const timeoutMs = opts?.timeoutMs ?? this.tally.timeoutMs;
 
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.postOnce(xml);
+        return await this.postOnce(xml, timeoutMs);
       } catch (err) {
-        const transient = err instanceof TallyTimeoutException || err instanceof TallyUnreachableException;
+        const transient =
+          err instanceof TallyTimeoutException || err instanceof TallyUnreachableException;
         if (!transient || attempt >= maxRetries) throw err;
 
         const delayMs = retryBaseMs * 2 ** attempt;
@@ -67,8 +70,8 @@ export class TallyHttpClient implements TallyConnector {
     }
   }
 
-  private async postOnce(xml: string): Promise<string> {
-    const { baseUrl, timeoutMs } = this.tally;
+  private async postOnce(xml: string, timeoutMs: number): Promise<string> {
+    const { baseUrl } = this.tally;
     const startedAt = Date.now();
 
     try {

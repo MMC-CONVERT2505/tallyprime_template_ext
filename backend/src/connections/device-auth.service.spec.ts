@@ -1,12 +1,9 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DeviceAuthService } from './device-auth.service';
-import { parseConnectionToken } from './token.util';
 
 describe('DeviceAuthService', () => {
   function makePrisma(
-    overrides: Partial<
-      Record<'create' | 'findFirst' | 'findUnique' | 'update' | '$transaction', jest.Mock>
-    > = {},
+    overrides: Partial<Record<'create' | 'findFirst' | 'findUnique' | 'update', jest.Mock>> = {},
   ) {
     return {
       deviceAuthorization: {
@@ -15,10 +12,20 @@ describe('DeviceAuthService', () => {
         findUnique: overrides.findUnique ?? jest.fn().mockResolvedValue(null),
         update: overrides.update ?? jest.fn().mockResolvedValue({}),
       },
-      tallyConnection: {
-        create: jest.fn(),
-      },
-      $transaction: overrides.$transaction ?? jest.fn().mockResolvedValue([]),
+    };
+  }
+
+  /** Stands in for ConnectionsService — poll() only ever calls upsertForCompany on it. */
+  function makeConnections(upsertForCompany?: jest.Mock) {
+    return {
+      upsertForCompany:
+        upsertForCompany ??
+        jest.fn().mockResolvedValue({
+          id: 'conn-1',
+          label: 'Accounts PC',
+          token: 'conn-1.secret',
+          reused: false,
+        }),
     };
   }
 
@@ -26,7 +33,7 @@ describe('DeviceAuthService', () => {
     it('creates a PENDING row with a device code, a human-typeable user code, and a poll interval', async () => {
       const create = jest.fn().mockResolvedValue({});
       const prisma = makePrisma({ create });
-      const service = new DeviceAuthService(prisma as any);
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
       const result = await service.start();
 
@@ -46,7 +53,7 @@ describe('DeviceAuthService', () => {
         .mockResolvedValueOnce({ id: 'taken' })
         .mockResolvedValueOnce(null);
       const prisma = makePrisma({ findFirst });
-      const service = new DeviceAuthService(prisma as any);
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
       const result = await service.start();
 
@@ -66,7 +73,7 @@ describe('DeviceAuthService', () => {
       const findFirst = jest.fn().mockResolvedValue(PENDING_ROW);
       const update = jest.fn().mockResolvedValue({});
       const prisma = makePrisma({ findFirst, update });
-      const service = new DeviceAuthService(prisma as any);
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
       await service.approve('org-1', {
         userCode: 'ABCD-1234',
@@ -87,7 +94,7 @@ describe('DeviceAuthService', () => {
 
     it('404s when no pending request has that user code', async () => {
       const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(null) });
-      const service = new DeviceAuthService(prisma as any);
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
       await expect(service.approve('org-1', { userCode: 'NOPE-0000' })).rejects.toThrow(
         NotFoundException,
@@ -98,7 +105,7 @@ describe('DeviceAuthService', () => {
       const expired = { ...PENDING_ROW, expiresAt: new Date(Date.now() - 1000) };
       const update = jest.fn().mockResolvedValue({});
       const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(expired), update });
-      const service = new DeviceAuthService(prisma as any);
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
       await expect(service.approve('org-1', { userCode: 'ABCD-1234' })).rejects.toThrow(
         BadRequestException,
@@ -116,15 +123,19 @@ describe('DeviceAuthService', () => {
         expiresAt: new Date(Date.now() + 60_000),
       };
       const prisma = makePrisma({ findUnique: jest.fn().mockResolvedValue(row) });
-      const service = new DeviceAuthService(prisma as any);
+      const upsertForCompany = jest.fn();
+      const service = new DeviceAuthService(
+        prisma as any,
+        makeConnections(upsertForCompany) as any,
+      );
 
       const result = await service.poll(row.deviceCode);
 
       expect(result).toEqual({ status: 'pending' });
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(upsertForCompany).not.toHaveBeenCalled();
     });
 
-    it('mints a real connection and consumes the row exactly once when APPROVED', async () => {
+    it('mints (or reuses) a connection via ConnectionsService and consumes the row exactly once when APPROVED', async () => {
       const row = {
         id: 'da-1',
         deviceCode: 'x'.repeat(64),
@@ -134,26 +145,66 @@ describe('DeviceAuthService', () => {
         label: 'Accounts PC',
         defaultCompany: 'ABC Ltd',
       };
-      const transaction = jest.fn().mockResolvedValue([{}, {}]);
-      const prisma = makePrisma({
-        findUnique: jest.fn().mockResolvedValue(row),
-        $transaction: transaction,
+      const upsertForCompany = jest.fn().mockResolvedValue({
+        id: 'conn-1',
+        label: 'Accounts PC',
+        token: 'conn-1.deadbeef',
+        reused: false,
       });
-      const service = new DeviceAuthService(prisma as any);
+      const update = jest.fn().mockResolvedValue({});
+      const prisma = makePrisma({ findUnique: jest.fn().mockResolvedValue(row), update });
+      const service = new DeviceAuthService(
+        prisma as any,
+        makeConnections(upsertForCompany) as any,
+      );
 
       const result = await service.poll(row.deviceCode);
 
+      expect(upsertForCompany).toHaveBeenCalledWith('org-1', 'Accounts PC', 'ABC Ltd');
       expect(result.status).toBe('approved');
       if (result.status !== 'approved') throw new Error('unreachable');
+      expect(result.id).toBe('conn-1');
       expect(result.label).toBe('Accounts PC');
-      const parsed = parseConnectionToken(result.token);
-      expect(parsed!.id).toBe(result.id);
-      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(result.token).toBe('conn-1.deadbeef');
+      expect(result.reused).toBe(false);
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'da-1' },
+        data: { status: 'CONSUMED', connectionId: 'conn-1' },
+      });
+    });
+
+    it('surfaces reused: true from ConnectionsService when this poll rotated an existing company pairing instead of creating one', async () => {
+      const row = {
+        id: 'da-1',
+        deviceCode: 'x'.repeat(64),
+        status: 'APPROVED',
+        expiresAt: new Date(Date.now() + 60_000),
+        orgId: 'org-1',
+        label: 'Accounts PC',
+        defaultCompany: 'ABC Ltd',
+      };
+      const upsertForCompany = jest.fn().mockResolvedValue({
+        id: 'conn-existing',
+        label: 'Accounts PC',
+        token: 'conn-existing.deadbeef',
+        reused: true,
+      });
+      const prisma = makePrisma({ findUnique: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(
+        prisma as any,
+        makeConnections(upsertForCompany) as any,
+      );
+
+      const result = await service.poll(row.deviceCode);
+
+      if (result.status !== 'approved') throw new Error('unreachable');
+      expect(result.id).toBe('conn-existing');
+      expect(result.reused).toBe(true);
     });
 
     it('404s on an unknown device code', async () => {
       const prisma = makePrisma({ findUnique: jest.fn().mockResolvedValue(null) });
-      const service = new DeviceAuthService(prisma as any);
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
       await expect(service.poll('unknown')).rejects.toThrow(NotFoundException);
     });
@@ -166,7 +217,7 @@ describe('DeviceAuthService', () => {
         expiresAt: new Date(Date.now() + 60_000),
       };
       const prisma = makePrisma({ findUnique: jest.fn().mockResolvedValue(row) });
-      const service = new DeviceAuthService(prisma as any);
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
       await expect(service.poll(row.deviceCode)).rejects.toThrow(BadRequestException);
     });
@@ -180,7 +231,7 @@ describe('DeviceAuthService', () => {
       };
       const update = jest.fn().mockResolvedValue({});
       const prisma = makePrisma({ findUnique: jest.fn().mockResolvedValue(row), update });
-      const service = new DeviceAuthService(prisma as any);
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
       await expect(service.poll(row.deviceCode)).rejects.toThrow(BadRequestException);
       expect(update).toHaveBeenCalledWith({ where: { id: 'da-1' }, data: { status: 'EXPIRED' } });

@@ -6,9 +6,7 @@ import * as Joi from 'joi';
  * crash three layers deep once a request arrives.
  */
 export const envValidationSchema = Joi.object({
-  NODE_ENV: Joi.string()
-    .valid('development', 'test', 'production')
-    .default('development'),
+  NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
   PORT: Joi.number().port().default(3000),
   APP_GLOBAL_PREFIX: Joi.string().allow('').default('api'),
 
@@ -16,6 +14,10 @@ export const envValidationSchema = Joi.object({
   TALLY_HOST: Joi.string().hostname().default('127.0.0.1'),
   TALLY_PORT: Joi.number().port().default(9000),
   TALLY_TIMEOUT_MS: Joi.number().integer().min(1000).max(600000).default(60000),
+  // Deliberately much shorter than TALLY_TIMEOUT_MS and never retried — see
+  // TallyConfig.probeTimeoutMs. A health check that takes as long as a real
+  // extraction call defeats the point of having one.
+  TALLY_PROBE_TIMEOUT_MS: Joi.number().integer().min(500).max(60000).default(8000),
   TALLY_RESPONSE_ENCODING: Joi.string()
     .valid('auto', 'utf-8', 'utf8', 'latin1', 'win1252', 'windows-1252', 'ascii')
     .default('auto'),
@@ -60,4 +62,8 @@ export const envValidationSchema = Joi.object({
   SMTP_SECURE: Joi.boolean().default(false),
 
   EXTRACTION_RESULT_TTL_SECONDS: Joi.number().integer().min(60).max(86400).default(3600),
+  // See ExtractionConfig.commandTimeoutMs — must comfortably exceed a
+  // connected agent's own worst-case Tally round trip, not just a single
+  // request's timeout.
+  EXTRACTION_COMMAND_TIMEOUT_MS: Joi.number().integer().min(5000).max(600000).default(180000),
 });

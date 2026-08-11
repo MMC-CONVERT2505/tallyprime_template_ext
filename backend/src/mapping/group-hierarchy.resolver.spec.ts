@@ -9,7 +9,9 @@ describe('GroupHierarchyResolver', () => {
   it('walks up a single level of custom sub-group to the standard ancestor', () => {
     // Real shape observed against a live Tally company: "Employee" is a
     // custom sub-group directly under the standard "Current Liabilities".
-    const resolver = new GroupHierarchyResolver([{ name: 'Employee', parent: 'Current Liabilities' }]);
+    const resolver = new GroupHierarchyResolver([
+      { name: 'Employee', parent: 'Current Liabilities' },
+    ]);
     expect(resolver.resolveToStandardGroup('Employee')).toBe('Current Liabilities');
   });
 
@@ -22,7 +24,9 @@ describe('GroupHierarchyResolver', () => {
   });
 
   it('returns null for an unknown/custom root group with no resolvable ancestor', () => {
-    const resolver = new GroupHierarchyResolver([{ name: 'Mystery Group', parent: 'Also Unknown' }]);
+    const resolver = new GroupHierarchyResolver([
+      { name: 'Mystery Group', parent: 'Also Unknown' },
+    ]);
     expect(resolver.resolveToStandardGroup('Mystery Group')).toBeNull();
   });
 

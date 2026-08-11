@@ -1,10 +1,9 @@
-import { randomBytes, randomInt, randomUUID } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { DeviceAuthorizationStatus } from '@prisma/client';
-import * as argon2 from 'argon2';
 import { PrismaService } from '../database/prisma.service';
+import { ConnectionsService } from './connections.service';
 import { ApproveDeviceDto } from './dto/approve-device.dto';
-import { formatConnectionToken } from './token.util';
 
 export interface DeviceStartResult {
   deviceCode: string;
@@ -16,7 +15,8 @@ export interface DeviceStartResult {
 }
 
 export type DevicePollResult =
-  { status: 'pending' } | { status: 'approved'; id: string; label: string; token: string };
+  | { status: 'pending' }
+  | { status: 'approved'; id: string; label: string; token: string; reused: boolean };
 
 const EXPIRES_IN_SECONDS = 600; // 10 minutes — long enough for a human to switch tabs and paste a code, short enough to bound abuse.
 const POLL_INTERVAL_SECONDS = 5;
@@ -34,7 +34,10 @@ const USER_CODE_GROUP_LEN = 4;
  */
 @Injectable()
 export class DeviceAuthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly connections: ConnectionsService,
+  ) {}
 
   /** Called by an unauthenticated bridge on first boot — it has no identity yet. */
   async start(): Promise<DeviceStartResult> {
@@ -110,30 +113,33 @@ export class DeviceAuthService {
       return { status: 'pending' };
     }
 
-    // APPROVED — mint the real connection now, on this poll, and consume the
-    // row atomically so a second poll (or a race) can never mint twice.
+    // APPROVED — mint (or reuse) the real connection now, on this poll.
     if (!row.orgId) {
       // Not reachable via the API (approve() always sets orgId), but guards
       // against a corrupted row rather than minting an orphaned connection.
       throw new BadRequestException('Approved pairing is missing an organization.');
     }
 
-    const id = randomUUID();
-    const secret = randomBytes(32).toString('hex');
-    const tokenHash = await argon2.hash(secret);
     const label = row.label ?? 'Paired via device code';
+    // Goes through the same upsert as manual create — a company already
+    // paired gets its token rotated on the existing row rather than a new
+    // one, so two overlapping polls (or a retried poll) can't produce a
+    // duplicate connection. That idempotency is what let this drop the
+    // single-transaction guarantee the old create+consume pair relied on: a
+    // crash between this mint and the CONSUMED write below just means the
+    // next poll upserts the same row again instead of creating a second one.
+    const result = await this.connections.upsertForCompany(
+      row.orgId,
+      label,
+      row.defaultCompany ?? undefined,
+    );
 
-    await this.prisma.$transaction([
-      this.prisma.tallyConnection.create({
-        data: { id, label, defaultCompany: row.defaultCompany, tokenHash, orgId: row.orgId },
-      }),
-      this.prisma.deviceAuthorization.update({
-        where: { id: row.id },
-        data: { status: DeviceAuthorizationStatus.CONSUMED, connectionId: id },
-      }),
-    ]);
+    await this.prisma.deviceAuthorization.update({
+      where: { id: row.id },
+      data: { status: DeviceAuthorizationStatus.CONSUMED, connectionId: result.id },
+    });
 
-    return { status: 'approved', id, label, token: formatConnectionToken(id, secret) };
+    return { status: 'approved', id: result.id, label, token: result.token, reused: result.reused };
   }
 
   private async markExpired(id: string): Promise<void> {

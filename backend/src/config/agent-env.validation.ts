@@ -6,6 +6,7 @@ export const agentEnvValidationSchema = Joi.object({
   TALLY_HOST: Joi.string().hostname().default('127.0.0.1'),
   TALLY_PORT: Joi.number().port().default(9000),
   TALLY_TIMEOUT_MS: Joi.number().integer().min(1000).max(600000).default(60000),
+  TALLY_PROBE_TIMEOUT_MS: Joi.number().integer().min(500).max(60000).default(8000),
   TALLY_RESPONSE_ENCODING: Joi.string()
     .valid('auto', 'utf-8', 'utf8', 'latin1', 'win1252', 'windows-1252', 'ascii')
     .default('auto'),

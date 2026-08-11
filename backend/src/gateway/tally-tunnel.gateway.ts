@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway } from '@nestjs/websockets';
+import { ConfigService } from '@nestjs/config';
 import * as argon2 from 'argon2';
 import { randomUUID } from 'crypto';
 import { WebSocket } from 'ws';
+import { ExtractionConfig } from '../config/configuration';
 import { PrismaService } from '../database/prisma.service';
 import { parseConnectionToken } from '../connections/token.util';
 import {
@@ -24,7 +26,6 @@ interface PendingRequest {
 }
 
 const AUTH_TIMEOUT_MS = 10_000;
-const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 /**
  * Terminates agent WebSocket connections and routes commands to them. Lives in
@@ -47,7 +48,10 @@ export class TallyTunnelGateway implements OnGatewayConnection, OnGatewayDisconn
   private readonly agents = new Map<string, TrackedSocket>();
   private readonly pending = new Map<string, PendingRequest>();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   handleConnection(client: TrackedSocket): void {
     // .unref() so a pile of never-authenticated sockets can't hold the process
@@ -116,12 +120,19 @@ export class TallyTunnelGateway implements OnGatewayConnection, OnGatewayDisconn
     return true;
   }
 
-  /** Sends a command to a specific connected agent and waits for its result. */
+  /**
+   * Sends a command to a specific connected agent and waits for its result.
+   * Defaults to ExtractionConfig.commandTimeoutMs — sized to comfortably
+   * outlast the agent's own worst-case Tally round trip (its timeout ×
+   * retries), not just one Tally request, so a slow-but-working call isn't
+   * misreported as "agent did not respond" out from under a result that was
+   * actually about to arrive.
+   */
   async sendCommand(
     connectionId: string,
     action: TunnelAction,
     payload: Record<string, unknown> = {},
-    timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+    timeoutMs = this.config.getOrThrow<ExtractionConfig>('extraction').commandTimeoutMs,
   ): Promise<unknown> {
     const client = this.agents.get(connectionId);
     if (!client || client.readyState !== WebSocket.OPEN) {
@@ -173,7 +184,9 @@ export class TallyTunnelGateway implements OnGatewayConnection, OnGatewayDisconn
 
     client.connectionId = connection.id;
     this.agents.set(connection.id, client);
-    this.logger.log(`Agent ${connection.id} (${connection.label}) connected — build ${message.version}.`);
+    this.logger.log(
+      `Agent ${connection.id} (${connection.label}) connected — build ${message.version}.`,
+    );
 
     await this.prisma.tallyConnection
       .update({ where: { id: connection.id }, data: { lastSeenAt: new Date() } })

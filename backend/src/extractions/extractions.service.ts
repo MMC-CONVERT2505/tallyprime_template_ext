@@ -38,7 +38,11 @@ export class ExtractionsService {
    * a few seconds later (same "live feedback over a post-hoc failure" idea
    * the rest of this project follows).
    */
-  async create(orgId: string, notifyEmail: string, dto: CreateExtractionDto): Promise<{ id: string; status: string }> {
+  async create(
+    orgId: string,
+    notifyEmail: string,
+    dto: CreateExtractionDto,
+  ): Promise<{ id: string; status: string }> {
     const connection = await this.prisma.tallyConnection.findFirst({
       where: { id: dto.connectionId, orgId },
     });
@@ -69,7 +73,9 @@ export class ExtractionsService {
     dto: FetchMasterDto,
   ): Promise<{ id: string; status: string }> {
     if (dto.fromDate && dto.toDate && dto.fromDate > dto.toDate) {
-      throw new BadRequestException(`fromDate (${dto.fromDate}) must not be after toDate (${dto.toDate}).`);
+      throw new BadRequestException(
+        `fromDate (${dto.fromDate}) must not be after toDate (${dto.toDate}).`,
+      );
     }
 
     const connection = await this.resolveConnectionByCompany(orgId, dto.companyName);
@@ -142,15 +148,22 @@ export class ExtractionsService {
     return requested;
   }
 
-  /** Resolves a connector by exact companyName match within the caller's org — the
-   *  inverse lookup of resolveCompany, used by fetchMaster where companyName (not
-   *  connectionId) is the primary input. */
-  private async resolveConnectionByCompany(orgId: string, companyName: string): Promise<TallyConnection> {
+  /**
+   * Resolves a connector by exact companyName match within the caller's org —
+   * the inverse lookup of resolveCompany, used by fetchMaster where
+   * companyName (not connectionId) is the primary input. `connectionId` is
+   * meant to stay an internal implementation detail on this path (see
+   * docs/architecture.md's "no UUIDs in the simplified flow" — the frontend
+   * never needs to know or show one), so ambiguity is resolved automatically
+   * here rather than surfaced back to the caller as a list of ids to choose
+   * from.
+   */
+  private async resolveConnectionByCompany(
+    orgId: string,
+    companyName: string,
+  ): Promise<TallyConnection> {
     // isActive: true is not optional here — a revoked connection is a dead
-    // credential, not a candidate. Without this filter, revoking a duplicate
-    // down to one real connection would never actually resolve the ambiguity
-    // (the revoked row would still count), defeating the whole point of
-    // "revoke the stale duplicate" as the fix for that error.
+    // credential, not a candidate.
     const matches = await this.prisma.tallyConnection.findMany({
       where: { orgId, defaultCompany: companyName, isActive: true },
     });
@@ -162,16 +175,21 @@ export class ExtractionsService {
           'with an explicit connectionId instead if this connector serves multiple companies.',
       );
     }
-    if (matches.length > 1) {
-      const candidateIds = matches.map((m) => m.id).join(', ');
-      throw new BadRequestException(
-        `${matches.length} connectors are paired with company "${companyName}" — ` +
-          `specify connectionId directly via POST /extractions instead. Candidates: ${candidateIds}. ` +
-          'If one of these is a stale duplicate from re-pairing the same device, revoke it via ' +
-          'POST /connections/:id/revoke (or rotate its token instead of re-pairing next time).',
-      );
+    if (matches.length === 1) {
+      return matches[0];
     }
-    return matches[0];
+
+    // A DB-level unique index (see schema.prisma's TallyConnection doc
+    // comment) now prevents new duplicates, so multiple matches here can only
+    // mean pre-existing data. Auto-resolve rather than error: prefer whichever
+    // is actually online right now (a dead pairing that never connected loses
+    // to a live one every time), then whichever last authenticated.
+    const online = new Set(this.tunnel.listConnectedAgents());
+    const onlineMatches = matches.filter((m) => online.has(m.id));
+    const pool = onlineMatches.length > 0 ? onlineMatches : matches;
+    return pool.reduce((best, candidate) =>
+      (candidate.lastSeenAt?.getTime() ?? 0) > (best.lastSeenAt?.getTime() ?? 0) ? candidate : best,
+    );
   }
 
   async getStatus(orgId: string, id: string): Promise<ExtractionJob> {
@@ -197,7 +215,11 @@ export class ExtractionsService {
    * completed jobs' results happens here, at export time, not by growing the
    * job payload.
    */
-  async getExcelResult(orgId: string, id: string, groupsJobId?: string): Promise<ExcelExportResult> {
+  async getExcelResult(
+    orgId: string,
+    id: string,
+    groupsJobId?: string,
+  ): Promise<ExcelExportResult> {
     const job = await this.getStatus(orgId, id);
     this.assertSuccessful(job);
 
@@ -206,7 +228,7 @@ export class ExtractionsService {
     // job's result also happens to have fallen out of its TTL.
     if (job.type === 'LEDGERS' && !groupsJobId) {
       throw new BadRequestException(
-        'LEDGERS Excel export requires a completed GROUPS job id via ?groupsJobId= (needed to classify each ledger\'s Account Type correctly).',
+        "LEDGERS Excel export requires a completed GROUPS job id via ?groupsJobId= (needed to classify each ledger's Account Type correctly).",
       );
     }
 
@@ -252,7 +274,10 @@ export class ExtractionsService {
     return JSON.parse(raw);
   }
 
-  private async loadSuccessfulResult(orgId: string, id: string): Promise<{ job: ExtractionJob; data: unknown }> {
+  private async loadSuccessfulResult(
+    orgId: string,
+    id: string,
+  ): Promise<{ job: ExtractionJob; data: unknown }> {
     const job = await this.getStatus(orgId, id);
     this.assertSuccessful(job);
     const data = await this.loadResultData(id);

@@ -201,5 +201,4 @@ describe('TallyResponseParser', () => {
       expect(voucher.ledgerEntries[0]).toMatchObject({ ledgerName: 'Only One', amount: 50 });
     });
   });
-
 });

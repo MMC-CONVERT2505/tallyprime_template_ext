@@ -20,7 +20,12 @@ import { ExtractionsService } from './extractions.service';
       useFactory: (config: ConfigService) => {
         const redis = config.getOrThrow<RedisConfig>('redis');
         return {
-          connection: { host: redis.host, port: redis.port, password: redis.password, db: redis.db },
+          connection: {
+            host: redis.host,
+            port: redis.port,
+            password: redis.password,
+            db: redis.db,
+          },
         };
       },
     }),

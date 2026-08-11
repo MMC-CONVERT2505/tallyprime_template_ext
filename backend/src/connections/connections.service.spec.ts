@@ -26,6 +26,7 @@ describe('ConnectionsService', () => {
       const result = await service.create('org-1', { label: 'Client XYZ - Accounts PC' });
 
       expect(result.label).toBe('Client XYZ - Accounts PC');
+      expect(result.reused).toBe(false);
       const parsed = parseConnectionToken(result.token);
       expect(parsed).not.toBeNull();
       expect(parsed!.id).toBe(result.id);
@@ -35,6 +36,70 @@ describe('ConnectionsService', () => {
       expect(created.tokenHash).not.toBe(parsed!.secret); // hashed, not stored raw
       expect(created.tokenHash).toMatch(/^\$argon2/);
       expect(result).not.toHaveProperty('tokenHash');
+    });
+
+    it('with no defaultCompany, always inserts a new row without ever checking for an existing one', async () => {
+      const create = jest.fn().mockResolvedValue({});
+      const findFirst = jest.fn();
+      const prisma = makePrisma({ create, findFirst });
+      const service = new ConnectionsService(prisma as any);
+
+      await service.create('org-1', { label: 'Generic agent' });
+
+      expect(findFirst).not.toHaveBeenCalled();
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    it('with a defaultCompany already actively paired in this org, reuses that row (rotates its token) instead of inserting a duplicate', async () => {
+      const existing = {
+        id: 'conn-existing',
+        label: 'Old label',
+        orgId: 'org-1',
+        defaultCompany: 'ABC Ltd',
+        isActive: true,
+      };
+      const create = jest.fn();
+      const update = jest.fn().mockResolvedValue({});
+      const findFirst = jest.fn().mockResolvedValue(existing);
+      const prisma = makePrisma({ create, update, findFirst });
+      const service = new ConnectionsService(prisma as any);
+
+      const result = await service.create('org-1', {
+        label: 'New label',
+        defaultCompany: 'ABC Ltd',
+      });
+
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { orgId: 'org-1', defaultCompany: 'ABC Ltd', isActive: true },
+      });
+      expect(create).not.toHaveBeenCalled();
+      expect(result.id).toBe('conn-existing');
+      expect(result.reused).toBe(true);
+      const parsed = parseConnectionToken(result.token);
+      expect(parsed!.id).toBe('conn-existing');
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'conn-existing' },
+        data: { tokenHash: expect.stringMatching(/^\$argon2/), label: 'New label' },
+      });
+    });
+
+    it('with a defaultCompany that has no active match yet, inserts a new row pinned to it', async () => {
+      const create = jest.fn().mockResolvedValue({});
+      const findFirst = jest.fn().mockResolvedValue(null);
+      const prisma = makePrisma({ create, findFirst });
+      const service = new ConnectionsService(prisma as any);
+
+      const result = await service.create('org-1', {
+        label: 'First pairing',
+        defaultCompany: 'New Co',
+      });
+
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create.mock.calls[0][0].data).toMatchObject({
+        orgId: 'org-1',
+        defaultCompany: 'New Co',
+      });
+      expect(result.reused).toBe(false);
     });
   });
 
@@ -66,6 +131,7 @@ describe('ConnectionsService', () => {
 
       expect(result.id).toBe('conn-1');
       expect(result.label).toBe('My Dev Machine');
+      expect(result.reused).toBe(true);
       const parsed = parseConnectionToken(result.token);
       expect(parsed!.id).toBe('conn-1');
       expect(create).not.toHaveBeenCalled();

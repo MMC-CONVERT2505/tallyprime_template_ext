@@ -56,6 +56,4 @@ export interface GatewayCommandMessage {
 }
 
 export type GatewayToAgentMessage =
-  | GatewayHelloAckMessage
-  | GatewayAuthErrorMessage
-  | GatewayCommandMessage;
+  GatewayHelloAckMessage | GatewayAuthErrorMessage | GatewayCommandMessage;

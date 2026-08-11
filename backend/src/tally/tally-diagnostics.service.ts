@@ -34,7 +34,13 @@ export class TallyDiagnosticsService extends TallyExtractionServiceBase {
   async probe(): Promise<TallyProbeResult> {
     const startedAt = Date.now();
     const xml = this.builder.buildCompaniesRequest();
-    const raw = await this.connector.post(xml);
+    // Fast-fail, no retries: this IS the health check — silently retrying
+    // internally before answering would make "is Tally up?" take as long as a
+    // real extraction call (up to timeoutMs * (maxRetries + 1) + backoff).
+    const raw = await this.connector.post(xml, {
+      timeoutMs: this.tally.probeTimeoutMs,
+      retries: 0,
+    });
     const companies = this.parser.mapCompanies(raw);
     return {
       reachable: true,

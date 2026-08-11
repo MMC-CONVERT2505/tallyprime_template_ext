@@ -63,6 +63,14 @@ model ExtractionJob {
 /// Phase 3). `host`/`port` from the earlier local-first sketch are gone: in the
 /// cloud-tunnel model the agent connects OUT to the gateway, so the cloud never
 /// needs to know where Tally is — that lives only in the agent's own local env.
+///
+/// NOT expressed here (Prisma's DSL has no partial-index syntax): a unique
+/// index on (orgId, defaultCompany) WHERE isActive AND defaultCompany IS NOT
+/// NULL, hand-written in migration 20260810052726_dedupe_and_unique_connection_per_company.
+/// It enforces "one active connection per company per org" at the DB level —
+/// don't let a future `prisma migrate dev` diff drop it just because it's
+/// invisible to schema.prisma. See ConnectionsService.upsertForCompany for
+/// the application-level half of this guarantee.
 model TallyConnection {
   id             String    @id @default(uuid())
   label          String

@@ -187,9 +187,7 @@ export class TallyResponseParser {
   private mapVoucher(v: any): TallyVoucher {
     const ledgerEntries: TallyLedgerEntry[] = toArray<any>(v?.['ALLLEDGERENTRIES.LIST'])
       // Some exports use LEDGERENTRIES.LIST instead — fall back to it.
-      .concat(
-        v?.['ALLLEDGERENTRIES.LIST'] ? [] : toArray<any>(v?.['LEDGERENTRIES.LIST']),
-      )
+      .concat(v?.['ALLLEDGERENTRIES.LIST'] ? [] : toArray<any>(v?.['LEDGERENTRIES.LIST']))
       .map((e) => {
         const amount = parseTallyAmount(readText(e?.AMOUNT));
         const isDeemedPositive = readYesNo(e?.ISDEEMEDPOSITIVE);
@@ -201,12 +199,8 @@ export class TallyResponseParser {
         };
       });
 
-    const inventoryEntries: TallyInventoryEntry[] = toArray<any>(
-      v?.['ALLINVENTORYENTRIES.LIST'],
-    )
-      .concat(
-        v?.['ALLINVENTORYENTRIES.LIST'] ? [] : toArray<any>(v?.['INVENTORYENTRIES.LIST']),
-      )
+    const inventoryEntries: TallyInventoryEntry[] = toArray<any>(v?.['ALLINVENTORYENTRIES.LIST'])
+      .concat(v?.['ALLINVENTORYENTRIES.LIST'] ? [] : toArray<any>(v?.['INVENTORYENTRIES.LIST']))
       .map((e) => ({
         stockItemName: readText(e?.STOCKITEMNAME) ?? '',
         quantity: parseTallyAmount(readText(e?.ACTUALQTY) ?? readText(e?.BILLEDQTY)),

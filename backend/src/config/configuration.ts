@@ -9,6 +9,15 @@ export interface TallyConfig {
   /** Full base URL Tally listens on, e.g. http://127.0.0.1:9000 */
   baseUrl: string;
   timeoutMs: number;
+  /**
+   * Short, no-retry timeout for connectivity probes/health checks (TallyDiagnosticsService.probe).
+   * Deliberately separate from `timeoutMs`: probing is itself a "is it alive"
+   * check, so it must fail fast — reusing the full extraction timeout+retry
+   * pipeline meant a probe could block for timeoutMs * (maxRetries + 1) plus
+   * backoff (with the 60s/2-retry defaults, up to ~3 minutes) before ever
+   * telling the caller Tally is unreachable.
+   */
+  probeTimeoutMs: number;
   /** 'auto' trusts the Content-Type header; otherwise force this decoder. */
   responseEncoding: string;
   defaultCompany: string;
@@ -61,6 +70,17 @@ export interface ExtractionConfig {
   /** How long a completed job's result stays fetchable from Redis before
    *  expiring — see docs/architecture.md's "transient, not persisted" decision. */
   resultTtlSeconds: number;
+  /**
+   * How long TallyTunnelGateway.sendCommand waits for a connected agent to
+   * answer one extraction command. Must comfortably exceed the agent's own
+   * worst-case Tally round trip (its TALLY_TIMEOUT_MS × (maxRetries + 1) +
+   * backoff — with that config's own 60s/2-retry defaults, up to ~180s), or
+   * a slow-but-working Tally call gets misreported as "agent did not
+   * respond" and the result silently dropped when it arrives late. This is
+   * a *ceiling* for one already-dispatched command, not added latency on the
+   * common path — a fast Tally still answers fast.
+   */
+  commandTimeoutMs: number;
 }
 
 export interface AppConfig {
@@ -94,6 +114,7 @@ export const buildTallyConfig = (): TallyConfig => {
     port: tallyPort,
     baseUrl: `http://${tallyHost}:${tallyPort}`,
     timeoutMs: toInt(process.env.TALLY_TIMEOUT_MS, 60000),
+    probeTimeoutMs: toInt(process.env.TALLY_PROBE_TIMEOUT_MS, 8000),
     responseEncoding: (process.env.TALLY_RESPONSE_ENCODING ?? 'auto').toLowerCase(),
     defaultCompany: process.env.TALLY_DEFAULT_COMPANY ?? '',
     maxRetries: toInt(process.env.TALLY_MAX_RETRIES, 2),
@@ -144,6 +165,7 @@ export default (): AppConfig => {
     },
     extraction: {
       resultTtlSeconds: toInt(process.env.EXTRACTION_RESULT_TTL_SECONDS, 3600),
+      commandTimeoutMs: toInt(process.env.EXTRACTION_COMMAND_TIMEOUT_MS, 180000),
     },
   };
 };

@@ -10,10 +10,38 @@ describe('LedgerMapper', () => {
 
   it('excludes ledgers whose direct parent is Sundry Debtors/Creditors/Duties & Taxes (Customer/Vendor/Tax territory)', () => {
     const rows = mapper.toAccountRows([
-      { name: 'ABC Traders', parent: 'Sundry Debtors', description: null, openingBalance: 0, closingBalance: 0, alterId: 1 },
-      { name: 'XYZ Supplies', parent: 'Sundry Creditors', description: null, openingBalance: 0, closingBalance: 0, alterId: 2 },
-      { name: 'CGST', parent: 'Duties & Taxes', description: null, openingBalance: 0, closingBalance: 0, alterId: 3 },
-      { name: 'Cash', parent: 'Cash-in-Hand', description: null, openingBalance: 0, closingBalance: 0, alterId: 4 },
+      {
+        name: 'ABC Traders',
+        parent: 'Sundry Debtors',
+        description: null,
+        openingBalance: 0,
+        closingBalance: 0,
+        alterId: 1,
+      },
+      {
+        name: 'XYZ Supplies',
+        parent: 'Sundry Creditors',
+        description: null,
+        openingBalance: 0,
+        closingBalance: 0,
+        alterId: 2,
+      },
+      {
+        name: 'CGST',
+        parent: 'Duties & Taxes',
+        description: null,
+        openingBalance: 0,
+        closingBalance: 0,
+        alterId: 3,
+      },
+      {
+        name: 'Cash',
+        parent: 'Cash-in-Hand',
+        description: null,
+        openingBalance: 0,
+        closingBalance: 0,
+        alterId: 4,
+      },
     ]);
 
     expect(rows).toHaveLength(1);
@@ -22,7 +50,14 @@ describe('LedgerMapper', () => {
 
   it('resolves a custom sub-group through the hierarchy to its Account Type', () => {
     const [row] = mapper.toAccountRows([
-      { name: 'Aaina Sinha', parent: 'Employee', description: null, openingBalance: 0, closingBalance: 0, alterId: 1 },
+      {
+        name: 'Aaina Sinha',
+        parent: 'Employee',
+        description: null,
+        openingBalance: 0,
+        closingBalance: 0,
+        alterId: 1,
+      },
     ]);
     expect(row['Account Type']).toBe('Other Current Liability'); // Employee -> Current Liabilities
     expect(row['Parent Account']).toBe('Employee'); // raw Tally parent, not the resolved standard group
@@ -30,7 +65,14 @@ describe('LedgerMapper', () => {
 
   it('maps a Bank Accounts ledger to Account Type "Bank" and puts the balance in Payment Account OB, not Opening Balance', () => {
     const [row] = mapper.toAccountRows([
-      { name: 'HDFC Current A/c', parent: 'Bank Accounts', description: null, openingBalance: -50000, closingBalance: -40000, alterId: 1 },
+      {
+        name: 'HDFC Current A/c',
+        parent: 'Bank Accounts',
+        description: null,
+        openingBalance: -50000,
+        closingBalance: -40000,
+        alterId: 1,
+      },
     ]);
     expect(row['Account Type']).toBe('Bank');
     expect(row['Opening Balance']).toBe('');
@@ -40,7 +82,14 @@ describe('LedgerMapper', () => {
 
   it('maps a non-bank ledger balance to Opening Balance with the correct Debit/Credit split', () => {
     const [row] = mapper.toAccountRows([
-      { name: 'Local Sales', parent: 'Sales Accounts', description: null, openingBalance: 10000, closingBalance: 10000, alterId: 1 },
+      {
+        name: 'Local Sales',
+        parent: 'Sales Accounts',
+        description: null,
+        openingBalance: 10000,
+        closingBalance: 10000,
+        alterId: 1,
+      },
     ]);
     expect(row['Account Type']).toBe('Income');
     expect(row['Opening Balance']).toBe(10000);
@@ -50,7 +99,14 @@ describe('LedgerMapper', () => {
 
   it('falls back to the default Account Type for a group with no resolvable standard ancestor', () => {
     const [row] = mapper.toAccountRows([
-      { name: 'Mystery Ledger', parent: 'Totally Unknown Group', description: null, openingBalance: null, closingBalance: null, alterId: 1 },
+      {
+        name: 'Mystery Ledger',
+        parent: 'Totally Unknown Group',
+        description: null,
+        openingBalance: null,
+        closingBalance: null,
+        alterId: 1,
+      },
     ]);
     expect(row['Account Type']).toBe('Other Current Liability');
     expect(row['Opening Balance']).toBe('');
@@ -59,7 +115,14 @@ describe('LedgerMapper', () => {
 
   it('passes through Description when present', () => {
     const [row] = mapper.toAccountRows([
-      { name: 'Cash', parent: 'Cash-in-Hand', description: 'Petty cash float', openingBalance: 0, closingBalance: 0, alterId: 1 },
+      {
+        name: 'Cash',
+        parent: 'Cash-in-Hand',
+        description: 'Petty cash float',
+        openingBalance: 0,
+        closingBalance: 0,
+        alterId: 1,
+      },
     ]);
     expect(row.Description).toBe('Petty cash float');
   });

@@ -5,11 +5,7 @@ import { ExtractVouchersDto, RawReportDto } from '../tally/dto/extract.dto';
 import { MasterExtractionService } from '../tally/extraction/master-extraction.service';
 import { TransactionExtractionService } from '../tally/extraction/transaction-extraction.service';
 import { TallyDiagnosticsService } from '../tally/tally-diagnostics.service';
-import {
-  AgentResultMessage,
-  GatewayToAgentMessage,
-  TunnelAction,
-} from '../tunnel/tunnel-protocol';
+import { AgentResultMessage, GatewayToAgentMessage, TunnelAction } from '../tunnel/tunnel-protocol';
 import { AgentPairingService } from './agent-pairing.service';
 
 const MIN_BACKOFF_MS = 1_000;

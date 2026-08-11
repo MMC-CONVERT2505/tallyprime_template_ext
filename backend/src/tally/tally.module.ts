@@ -24,7 +24,9 @@ const extractionJobRepositoryProvider = {
   useFactory: (prisma: PrismaService) => ({
     create: (data: Record<string, unknown>) => ({ ...data }),
     save: (data: Record<string, unknown>) =>
-      prisma.extractionJob.create({ data: data as Parameters<typeof prisma.extractionJob.create>[0]['data'] }),
+      prisma.extractionJob.create({
+        data: data as Parameters<typeof prisma.extractionJob.create>[0]['data'],
+      }),
     update: (id: string, data: Record<string, unknown>) =>
       prisma.extractionJob.update({ where: { id }, data }),
   }),

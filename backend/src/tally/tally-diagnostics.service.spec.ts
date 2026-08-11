@@ -3,13 +3,20 @@ import { EnvelopeBuilder } from './xml/envelope.builder';
 import { TallyResponseParser } from './xml/response.parser';
 
 describe('TallyDiagnosticsService', () => {
-  function makeService(overrides: { connectorPost?: jest.Mock; defaultCompany?: string } = {}) {
+  function makeService(
+    overrides: { connectorPost?: jest.Mock; defaultCompany?: string; probeTimeoutMs?: number } = {},
+  ) {
     const builder = new EnvelopeBuilder();
     const connector = {
       post: overrides.connectorPost ?? jest.fn().mockResolvedValue('<ENVELOPE></ENVELOPE>'),
     };
     const parser = new TallyResponseParser();
-    const config = { getOrThrow: () => ({ defaultCompany: overrides.defaultCompany ?? '' }) };
+    const config = {
+      getOrThrow: () => ({
+        defaultCompany: overrides.defaultCompany ?? '',
+        probeTimeoutMs: overrides.probeTimeoutMs ?? 8000,
+      }),
+    };
 
     const service = new TallyDiagnosticsService(
       builder,
@@ -41,6 +48,18 @@ describe('TallyDiagnosticsService', () => {
       });
 
       await expect(service.probe()).rejects.toThrow('unreachable');
+    });
+
+    it('uses the short probeTimeoutMs with retries disabled, not the full extraction timeout/retry pipeline', async () => {
+      const connectorPost = jest.fn().mockResolvedValue('<ENVELOPE></ENVELOPE>');
+      const { service } = makeService({ connectorPost, probeTimeoutMs: 4321 });
+
+      await service.probe();
+
+      expect(connectorPost).toHaveBeenCalledWith(expect.any(String), {
+        timeoutMs: 4321,
+        retries: 0,
+      });
     });
   });
 

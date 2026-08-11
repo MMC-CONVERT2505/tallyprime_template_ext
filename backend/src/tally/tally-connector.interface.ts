@@ -13,9 +13,16 @@
  * a test double, or a future alternate connector — without touching
  * extraction logic.
  */
+export interface TallyPostOptions {
+  /** Overrides TallyConfig.timeoutMs for this call only (e.g. a fast probe). */
+  timeoutMs?: number;
+  /** Overrides TallyConfig.maxRetries for this call only. 0 disables retrying. */
+  retries?: number;
+}
+
 export interface TallyConnector {
   /** Sends a request envelope to Tally and returns its raw (decoded) XML response. */
-  post(envelopeXml: string): Promise<string>;
+  post(envelopeXml: string, opts?: TallyPostOptions): Promise<string>;
 }
 
 export const TALLY_CONNECTOR = Symbol('TALLY_CONNECTOR');

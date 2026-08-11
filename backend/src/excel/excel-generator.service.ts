@@ -14,7 +14,11 @@ export interface ExcelColumn {
  */
 @Injectable()
 export class ExcelGeneratorService {
-  async generate<T extends object>(sheetName: string, columns: ExcelColumn[], rows: T[]): Promise<Buffer> {
+  async generate<T extends object>(
+    sheetName: string,
+    columns: ExcelColumn[],
+    rows: T[],
+  ): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet(sheetName);
     sheet.columns = columns.map((c) => ({ header: c.header, key: c.key, width: c.width ?? 22 }));
