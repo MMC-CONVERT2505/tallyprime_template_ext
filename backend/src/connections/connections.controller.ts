@@ -1,11 +1,13 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -35,10 +37,14 @@ export class ConnectionsController {
     return this.connections.create(user.orgId, dto);
   }
 
-  /** Includes live `connected` status by cross-referencing the gateway's in-memory registry. */
+  /**
+   * Includes live `connected` status by cross-referencing the gateway's
+   * in-memory registry. `?search=` filters by company name or label
+   * (case-insensitive substring) — the admin company search.
+   */
   @Get()
-  async list(@CurrentUser() user: JwtPayload) {
-    const connections = await this.connections.list(user.orgId);
+  async list(@CurrentUser() user: JwtPayload, @Query('search') search?: string) {
+    const connections = await this.connections.list(user.orgId, search);
     const online = new Set(this.tunnel.listConnectedAgents());
     return connections.map((c) => ({ ...c, connected: online.has(c.id) }));
   }
@@ -66,5 +72,19 @@ export class ConnectionsController {
     const result = await this.connections.rotateToken(user.orgId, id);
     this.tunnel.disconnectAgent(id, 'token rotated');
     return result;
+  }
+
+  /**
+   * Permanently removes the connection (unlike revoke, not reversible — see
+   * ConnectionsService.delete for why this is safe regardless of the
+   * connection's current state or live tunnel). Works on an active or
+   * already-revoked row.
+   */
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  async delete(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    await this.connections.delete(user.orgId, id);
+    this.tunnel.disconnectAgent(id, 'connection deleted');
+    return { deleted: true };
   }
 }

@@ -13,6 +13,8 @@ export const agentEnvValidationSchema = Joi.object({
   TALLY_DEFAULT_COMPANY: Joi.string().allow('').default(''),
   TALLY_MAX_RETRIES: Joi.number().integer().min(0).max(5).default(2),
   TALLY_RETRY_BASE_MS: Joi.number().integer().min(0).max(10000).default(500),
+  TALLY_VOUCHER_CHUNK_DAYS: Joi.number().integer().min(1).max(90).default(7),
+  TALLY_CHUNK_DELAY_MS: Joi.number().integer().min(0).max(30000).default(2000),
 
   GATEWAY_URL: Joi.string()
     .uri({ scheme: ['ws', 'wss'] })

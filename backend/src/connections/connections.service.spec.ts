@@ -5,13 +5,14 @@ import { parseConnectionToken } from './token.util';
 describe('ConnectionsService', () => {
   const makePrisma = (
     overrides: Partial<
-      Record<'create' | 'findMany' | 'updateMany' | 'findFirst' | 'update', jest.Mock>
+      Record<'create' | 'findMany' | 'updateMany' | 'deleteMany' | 'findFirst' | 'update', jest.Mock>
     > = {},
   ) => ({
     tallyConnection: {
       create: overrides.create ?? jest.fn(),
       findMany: overrides.findMany ?? jest.fn().mockResolvedValue([]),
       updateMany: overrides.updateMany ?? jest.fn().mockResolvedValue({ count: 1 }),
+      deleteMany: overrides.deleteMany ?? jest.fn().mockResolvedValue({ count: 1 }),
       findFirst: overrides.findFirst ?? jest.fn(),
       update: overrides.update ?? jest.fn().mockResolvedValue({}),
     },
@@ -104,7 +105,7 @@ describe('ConnectionsService', () => {
   });
 
   describe('list', () => {
-    it('scopes the query to the given org and never selects tokenHash', async () => {
+    it('scopes the query to the given org, orders company-first, and never selects tokenHash', async () => {
       const findMany = jest.fn().mockResolvedValue([]);
       const prisma = makePrisma({ findMany });
       const service = new ConnectionsService(prisma as any);
@@ -114,6 +115,27 @@ describe('ConnectionsService', () => {
       const args = findMany.mock.calls[0][0];
       expect(args.where).toEqual({ orgId: 'org-1' });
       expect(args.select.tokenHash).toBeUndefined();
+      expect(args.orderBy).toEqual([
+        { defaultCompany: { sort: 'asc', nulls: 'last' } },
+        { createdAt: 'desc' },
+      ]);
+    });
+
+    it('with a search term, filters by company name or label (case-insensitive substring)', async () => {
+      const findMany = jest.fn().mockResolvedValue([]);
+      const prisma = makePrisma({ findMany });
+      const service = new ConnectionsService(prisma as any);
+
+      await service.list('org-1', 'coredge');
+
+      const args = findMany.mock.calls[0][0];
+      expect(args.where).toEqual({
+        orgId: 'org-1',
+        OR: [
+          { defaultCompany: { contains: 'coredge', mode: 'insensitive' } },
+          { label: { contains: 'coredge', mode: 'insensitive' } },
+        ],
+      });
     });
   });
 
@@ -197,6 +219,28 @@ describe('ConnectionsService', () => {
       const service = new ConnectionsService(prisma as any);
 
       await expect(service.revoke('org-1', 'someone-elses-connection')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('delete', () => {
+    it("scopes the delete to the given org so one org cannot delete another org's connection", async () => {
+      const deleteMany = jest.fn().mockResolvedValue({ count: 1 });
+      const prisma = makePrisma({ deleteMany });
+      const service = new ConnectionsService(prisma as any);
+
+      await service.delete('org-1', 'conn-1');
+
+      expect(deleteMany).toHaveBeenCalledWith({ where: { id: 'conn-1', orgId: 'org-1' } });
+    });
+
+    it('throws NotFoundException when nothing matched (wrong org or unknown id)', async () => {
+      const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+      const prisma = makePrisma({ deleteMany });
+      const service = new ConnectionsService(prisma as any);
+
+      await expect(service.delete('org-1', 'someone-elses-connection')).rejects.toThrow(
         NotFoundException,
       );
     });

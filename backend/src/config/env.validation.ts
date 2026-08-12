@@ -26,6 +26,13 @@ export const envValidationSchema = Joi.object({
   // safe because every Tally request this app sends is a read.
   TALLY_MAX_RETRIES: Joi.number().integer().min(0).max(5).default(2),
   TALLY_RETRY_BASE_MS: Joi.number().integer().min(0).max(10000).default(500),
+  // Wider VOUCHERS (Day Book) requests are auto-split into chunks of this
+  // many days — see TallyConfig.voucherChunkDays. Does not apply to
+  // LEDGERS/STOCK_ITEMS (see that field's doc comment for why).
+  TALLY_VOUCHER_CHUNK_DAYS: Joi.number().integer().min(1).max(90).default(7),
+  // Pause between chunk requests so a chunked VOUCHERS pull doesn't hammer
+  // Tally back-to-back. 0 disables it.
+  TALLY_CHUNK_DELAY_MS: Joi.number().integer().min(0).max(30000).default(2000),
 
   // Postgres (Prisma)
   DB_HOST: Joi.string().default('127.0.0.1'),
@@ -65,5 +72,5 @@ export const envValidationSchema = Joi.object({
   // See ExtractionConfig.commandTimeoutMs — must comfortably exceed a
   // connected agent's own worst-case Tally round trip, not just a single
   // request's timeout.
-  EXTRACTION_COMMAND_TIMEOUT_MS: Joi.number().integer().min(5000).max(600000).default(180000),
+  EXTRACTION_COMMAND_TIMEOUT_MS: Joi.number().integer().min(5000).max(600000).default(360000),
 });

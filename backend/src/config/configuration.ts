@@ -25,6 +25,25 @@ export interface TallyConfig {
   maxRetries: number;
   /** Exponential backoff base, e.g. 500ms → 500ms, 1000ms, 2000ms, ... */
   retryBaseMs: number;
+  /**
+   * VOUCHERS (Day Book) requests wider than this many days are automatically
+   * split into contiguous sub-requests of at most this size — see
+   * date-range-chunker.ts and TransactionExtractionService.getVouchers. Does
+   * NOT apply to LEDGERS/STOCK_ITEMS: their balance-as-of-date computation
+   * doesn't get cheaper with a narrower window (Tally still walks history
+   * from the company's books-from date regardless), so chunking those by
+   * date would only multiply work, not reduce it.
+   */
+  voucherChunkDays: number;
+  /**
+   * Pause between successive VOUCHERS chunk requests. Tally's HTTP server
+   * handles one request at a time on a machine that's often
+   * resource-constrained (see the Tally-hang investigation this project has
+   * been through) — firing chunk N+1 the instant chunk N's response lands
+   * gives Tally, and the OS's memory manager, a moment to breathe instead of
+   * hammering it back-to-back. 0 disables the pause entirely.
+   */
+  chunkDelayMs: number;
 }
 
 export interface DatabaseConfig {
@@ -73,12 +92,19 @@ export interface ExtractionConfig {
   /**
    * How long TallyTunnelGateway.sendCommand waits for a connected agent to
    * answer one extraction command. Must comfortably exceed the agent's own
-   * worst-case Tally round trip (its TALLY_TIMEOUT_MS × (maxRetries + 1) +
-   * backoff — with that config's own 60s/2-retry defaults, up to ~180s), or
-   * a slow-but-working Tally call gets misreported as "agent did not
-   * respond" and the result silently dropped when it arrives late. This is
-   * a *ceiling* for one already-dispatched command, not added latency on the
-   * common path — a fast Tally still answers fast.
+   * worst-case Tally round trip for a SINGLE call (its TALLY_TIMEOUT_MS ×
+   * (maxRetries + 1) + backoff — with that config's own 60s/2-retry
+   * defaults, up to ~180s) — or a slow-but-working Tally call gets
+   * misreported as "agent did not respond" and the result silently dropped
+   * when it arrives late.
+   *
+   * A chunked VOUCHERS command (see date-range-chunker.ts) is several such
+   * calls in sequence, not one — worst case (all chunks time out, 0 retries
+   * each) is roughly chunks × (TALLY_TIMEOUT_MS + TALLY_CHUNK_DELAY_MS). At
+   * the 7-day/60s/2s defaults, a full month is 5 chunks ≈ 310s; the default
+   * here leaves headroom above that. This is a ceiling for one
+   * already-dispatched command, not added latency on the common path — a
+   * fast Tally still answers fast.
    */
   commandTimeoutMs: number;
 }
@@ -119,6 +145,8 @@ export const buildTallyConfig = (): TallyConfig => {
     defaultCompany: process.env.TALLY_DEFAULT_COMPANY ?? '',
     maxRetries: toInt(process.env.TALLY_MAX_RETRIES, 2),
     retryBaseMs: toInt(process.env.TALLY_RETRY_BASE_MS, 500),
+    voucherChunkDays: toInt(process.env.TALLY_VOUCHER_CHUNK_DAYS, 7),
+    chunkDelayMs: toInt(process.env.TALLY_CHUNK_DELAY_MS, 2000),
   };
 };
 
@@ -165,7 +193,7 @@ export default (): AppConfig => {
     },
     extraction: {
       resultTtlSeconds: toInt(process.env.EXTRACTION_RESULT_TTL_SECONDS, 3600),
-      commandTimeoutMs: toInt(process.env.EXTRACTION_COMMAND_TIMEOUT_MS, 180000),
+      commandTimeoutMs: toInt(process.env.EXTRACTION_COMMAND_TIMEOUT_MS, 360000),
     },
   };
 };

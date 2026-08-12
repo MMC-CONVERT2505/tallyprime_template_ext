@@ -73,9 +73,26 @@ export class ConnectionsService {
     return { id, label, token: formatConnectionToken(id, secret), reused: false };
   }
 
-  list(orgId: string) {
+  /**
+   * `search` filters by company name or label (case-insensitive substring).
+   * Plain ILIKE over an org's own connections, no dedicated index: realistic
+   * scale here is dozens-to-low-hundreds of connections per org, not the
+   * millions where a trigram index would start to matter — adding one now
+   * would be optimizing a query that's already fast.
+   */
+  list(orgId: string, search?: string) {
     return this.prisma.tallyConnection.findMany({
-      where: { orgId },
+      where: {
+        orgId,
+        ...(search
+          ? {
+              OR: [
+                { defaultCompany: { contains: search, mode: 'insensitive' } },
+                { label: { contains: search, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      },
       select: {
         id: true,
         label: true,
@@ -84,7 +101,11 @@ export class ConnectionsService {
         lastSeenAt: true,
         createdAt: true,
       },
-      orderBy: { createdAt: 'desc' },
+      // Company-focused, not creation-order: groups an org's connections by
+      // the company they're pinned to (nulls — generic/unpinned agents —
+      // last), so the list reads as "here's each company and its
+      // connection" rather than an arbitrary pairing timeline.
+      orderBy: [{ defaultCompany: { sort: 'asc', nulls: 'last' } }, { createdAt: 'desc' }],
     });
   }
 
@@ -124,6 +145,23 @@ export class ConnectionsService {
       where: { id, orgId },
       data: { isActive: false },
     });
+    if (result.count === 0) {
+      throw new NotFoundException('Connection not found.');
+    }
+  }
+
+  /**
+   * Permanently removes the row — unlike revoke (reversible: re-pair the same
+   * company and it's usable again), this is not. Works on an active OR
+   * already-revoked connection; the caller isn't forced through revoke first.
+   * Safe by construction, not just convention: ExtractionJob.connectionId is
+   * ON DELETE SET NULL (ExtractionJob rows survive, audit trail intact, just
+   * no longer attributable to a specific connection), and
+   * DeviceAuthorization.connectionId is a plain informational column with no
+   * FK at all — neither can block or be broken by this delete.
+   */
+  async delete(orgId: string, id: string): Promise<void> {
+    const result = await this.prisma.tallyConnection.deleteMany({ where: { id, orgId } });
     if (result.count === 0) {
       throw new NotFoundException('Connection not found.');
     }
