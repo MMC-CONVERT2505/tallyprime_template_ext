@@ -86,6 +86,8 @@ export interface NewConnectionResult {
   id: string;
   label: string;
   token: string;
+  /** True when this reused (rotated the token on) an existing connection for the same company, rather than creating a new one. */
+  reused: boolean;
 }
 
 export interface DeviceStartResult {
@@ -97,7 +99,7 @@ export interface DeviceStartResult {
 
 export type DevicePollResult =
   | { status: 'pending' }
-  | { status: 'approved'; id: string; label: string; token: string };
+  | { status: 'approved'; id: string; label: string; token: string; reused: boolean };
 
 export type ExtractableType = 'COMPANIES' | 'LEDGERS' | 'STOCK_ITEMS' | 'GROUPS' | 'VOUCHERS' | 'RAW';
 export type MasterType = 'COMPANIES' | 'LEDGERS' | 'STOCK_ITEMS' | 'GROUPS';
@@ -134,11 +136,13 @@ export const authApi = {
 // ── Connections (manual) ─────────────────────────────────────────────────
 
 export const connectionsApi = {
-  list: () => request<ConnectionSummary[]>('GET', '/connections'),
+  list: (search?: string) =>
+    request<ConnectionSummary[]>('GET', `/connections${search ? `?search=${encodeURIComponent(search)}` : ''}`),
   create: (body: { label: string; defaultCompany?: string }) =>
     request<NewConnectionResult>('POST', '/connections', { body }),
   revoke: (id: string) => request<{ revoked: true }>('POST', `/connections/${id}/revoke`),
   rotateToken: (id: string) => request<NewConnectionResult>('POST', `/connections/${id}/rotate-token`),
+  delete: (id: string) => request<{ deleted: true }>('DELETE', `/connections/${id}`),
 };
 
 // ── Device pairing ────────────────────────────────────────────────────────
@@ -177,6 +181,20 @@ function qs(params: Record<string, string | undefined>): string {
   }
   return usp.toString();
 }
+
+/**
+ * Async counterpart of tallyApi's GET/POST routes above: queue → poll →
+ * fetch, instead of the request blocking until Tally answers. Same shape as
+ * extractionsApi, but no connectionId — dispatches straight to the backend's
+ * own configured Tally. Probe isn't here: it's already a fast, no-retry
+ * health check (see backend TALLY_PROBE_TIMEOUT_MS), not a long-running pull.
+ */
+export const tallyJobsApi = {
+  create: (body: { type: ExtractableType; payload?: Record<string, unknown> }) =>
+    request<{ id: string; status: string }>('POST', '/tally/jobs', { body }),
+  status: (id: string) => request<ExtractionJob>('GET', `/tally/jobs/${id}`),
+  result: (id: string) => request<unknown>('GET', `/tally/jobs/${id}/result`),
+};
 
 // ── Extractions (job API) ────────────────────────────────────────────────
 

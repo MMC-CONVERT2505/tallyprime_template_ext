@@ -24,7 +24,7 @@ const shot = async (name) => {
 };
 
 await page.goto('http://localhost:5173');
-await page.waitForSelector('text=API Console');
+await page.waitForSelector('.auth-card');
 await shot('01-auth-form');
 
 // Switch the auth panel's own tab from Login to Register.

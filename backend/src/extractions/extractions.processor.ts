@@ -8,6 +8,10 @@ import { PrismaService } from '../database/prisma.service';
 import { TallyTunnelGateway } from '../gateway/tally-tunnel.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
 import { REDIS_CLIENT } from '../redis/redis.module';
+import { MasterExtractionService } from '../tally/extraction/master-extraction.service';
+import { TransactionExtractionService } from '../tally/extraction/transaction-extraction.service';
+import { TallyDiagnosticsService } from '../tally/tally-diagnostics.service';
+import { dispatchExtraction } from '../tally/extraction-dispatch';
 import { toTunnelAction } from './extraction-action.map';
 import { ExtractionJobData } from './extraction-job-data.interface';
 import { EXTRACTION_QUEUE, extractionResultKey } from './extractions.constants';
@@ -18,6 +22,13 @@ import { EXTRACTION_QUEUE, extractionResultKey } from './extractions.constants';
  * separate tier yet). The ExtractionJob Postgres row is the durable source of
  * truth the API reads from; re-throwing on failure also marks the underlying
  * BullMQ job failed, for whenever a queue dashboard is worth having.
+ *
+ * Handles both ExtractionJobData modes (see that interface's doc comment):
+ * 'agent' dispatches over the WebSocket tunnel to a paired connector; 'local'
+ * dispatches directly against the backend's own configured Tally, no agent
+ * involved — the async counterpart of the old synchronous /tally/* routes,
+ * sharing this same queue/worker/result-caching machinery rather than a
+ * second parallel implementation of it.
  */
 @Processor(EXTRACTION_QUEUE)
 export class ExtractionsProcessor extends WorkerHost {
@@ -29,17 +40,19 @@ export class ExtractionsProcessor extends WorkerHost {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly notifications: NotificationsService,
     private readonly config: ConfigService,
+    private readonly masters: MasterExtractionService,
+    private readonly transactions: TransactionExtractionService,
+    private readonly diagnostics: TallyDiagnosticsService,
   ) {
     super();
   }
 
   async process(job: Job<ExtractionJobData>): Promise<void> {
-    const { extractionJobId, connectionId, type, payload, notifyEmail } = job.data;
+    const { extractionJobId, type } = job.data;
     const startedAt = Date.now();
 
     try {
-      const action = toTunnelAction(type);
-      const data = await this.tunnel.sendCommand(connectionId, action, payload);
+      const data = await this.dispatch(job.data);
       const recordCount = Array.isArray(data) ? data.length : 1;
       const durationMs = Date.now() - startedAt;
 
@@ -56,15 +69,17 @@ export class ExtractionsProcessor extends WorkerHost {
         data: { status: 'SUCCESS', recordCount, durationMs },
       });
 
-      await this.notifications.sendExtractionComplete(notifyEmail, {
-        jobId: extractionJobId,
-        type,
-        status: 'SUCCESS',
-        recordCount,
-      });
+      if (job.data.mode === 'agent') {
+        await this.notifications.sendExtractionComplete(job.data.notifyEmail, {
+          jobId: extractionJobId,
+          type,
+          status: 'SUCCESS',
+          recordCount,
+        });
+      }
 
       this.logger.log(
-        `Extraction job ${extractionJobId} (${type}, connection=${connectionId}) succeeded: ` +
+        `Extraction job ${extractionJobId} (${type}, ${this.describeDispatch(job.data)}) succeeded: ` +
           `${recordCount} record(s) in ${durationMs}ms`,
       );
     } catch (err) {
@@ -77,11 +92,26 @@ export class ExtractionsProcessor extends WorkerHost {
       // has actually given up; otherwise a transient blip would prematurely
       // flip status to FAILED and send a "failed" email moments before the
       // retry quietly succeeds.
-      const attemptsMade = job.attemptsMade ?? 1;
+      //
+      // job.attemptsMade is the count of attempts made BEFORE this one (0 on
+      // the very first call — BullMQ only increments it AFTER this handler
+      // returns/throws, per Job.moveToFailed in bullmq's own source). BullMQ
+      // itself decides whether to retry using `attemptsMade + 1 < attempts`
+      // (Job.shouldRetryJob) — mirror that exact formula here, not
+      // `attemptsMade < attempts`: that off-by-one meant this branch always
+      // believed one more retry was coming, even on the true final attempt,
+      // so the FAILED update below never ran and the job stayed PENDING in
+      // Postgres forever despite BullMQ having already given up internally.
+      // Caught live: three jobs got permanently stuck exactly this way
+      // (visible in Redis as `failed` with a real failedReason, but the
+      // ExtractionJob Postgres row never left PENDING) the first time
+      // anything actually exhausted every retry attempt for real.
+      const attemptsMade = job.attemptsMade ?? 0;
       const maxAttempts = job.opts?.attempts ?? 1;
-      if (attemptsMade < maxAttempts) {
+      const isFinalAttempt = attemptsMade + 1 >= maxAttempts;
+      if (!isFinalAttempt) {
         this.logger.warn(
-          `Extraction job ${extractionJobId} failed on attempt ${attemptsMade}/${maxAttempts} ` +
+          `Extraction job ${extractionJobId} failed on attempt ${attemptsMade + 1}/${maxAttempts} ` +
             `(${message}) — BullMQ will retry.`,
         );
         throw err;
@@ -98,14 +128,32 @@ export class ExtractionsProcessor extends WorkerHost {
           ),
         );
 
-      await this.notifications.sendExtractionComplete(notifyEmail, {
-        jobId: extractionJobId,
-        type,
-        status: 'FAILED',
-        error: message,
-      });
+      if (job.data.mode === 'agent') {
+        await this.notifications.sendExtractionComplete(job.data.notifyEmail, {
+          jobId: extractionJobId,
+          type,
+          status: 'FAILED',
+          error: message,
+        });
+      }
 
       throw err;
     }
+  }
+
+  private dispatch(data: ExtractionJobData): Promise<unknown> {
+    const action = toTunnelAction(data.type);
+    if (data.mode === 'agent') {
+      return this.tunnel.sendCommand(data.connectionId, action, data.payload);
+    }
+    return dispatchExtraction(action, data.payload, {
+      masters: this.masters,
+      transactions: this.transactions,
+      diagnostics: this.diagnostics,
+    });
+  }
+
+  private describeDispatch(data: ExtractionJobData): string {
+    return data.mode === 'agent' ? `connection=${data.connectionId}` : 'local (direct Tally)';
   }
 }

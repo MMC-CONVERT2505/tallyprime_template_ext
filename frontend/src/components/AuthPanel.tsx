@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { useAuth } from '../AuthContext';
 import { ApiError } from '../api';
 import { ErrorBanner } from './JsonView';
+import { IconLock } from './Icons';
+import { PasswordInput, Spinner } from './ui';
 
 export function AuthPanel() {
   const { login, register } = useAuth();
@@ -31,52 +33,57 @@ export function AuthPanel() {
   };
 
   return (
-    <div className="card auth-card">
-      <h1>Tally Connector — API Console</h1>
-      <p className="muted">
-        A simple UI over every endpoint in the backend, for end-to-end testing. Mirrors the Postman collection in
-        <code> postman/</code>.
-      </p>
-      <div className="tabs tabs-small">
-        <button className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')} type="button">
-          Login
-        </button>
-        <button className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')} type="button">
-          Register
-        </button>
+    <div className="auth-wrap">
+      <div className="card auth-card">
+        <div className="brand-mark">
+          <IconLock />
+        </div>
+        <h1>Tally Connector</h1>
+        <span className="muted">
+          A simple UI over every endpoint in the backend, for end-to-end testing. Mirrors the Postman collection in
+          <code> postman/</code>.
+        </span>
+        <div className="tabs tabs-small">
+          <button className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')} type="button">
+            Login
+          </button>
+          <button className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')} type="button">
+            Register
+          </button>
+        </div>
+        <form onSubmit={submit} className="form">
+          <label>
+            Email
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </label>
+          <label>
+            Password
+            <PasswordInput
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={8}
+            />
+          </label>
+          {mode === 'register' && (
+            <>
+              <label>
+                Name
+                <input type="text" value={name} onChange={(e) => setName(e.target.value)} required />
+              </label>
+              <label>
+                Org name
+                <input type="text" value={orgName} onChange={(e) => setOrgName(e.target.value)} required />
+              </label>
+            </>
+          )}
+          <button type="submit" disabled={busy}>
+            {busy && <Spinner />}
+            {busy ? 'Working…' : mode === 'login' ? 'Log in' : 'Register'}
+          </button>
+        </form>
+        <ErrorBanner message={error} />
       </div>
-      <form onSubmit={submit} className="form">
-        <label>
-          Email
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={8}
-          />
-        </label>
-        {mode === 'register' && (
-          <>
-            <label>
-              Name
-              <input type="text" value={name} onChange={(e) => setName(e.target.value)} required />
-            </label>
-            <label>
-              Org name
-              <input type="text" value={orgName} onChange={(e) => setOrgName(e.target.value)} required />
-            </label>
-          </>
-        )}
-        <button type="submit" disabled={busy}>
-          {busy ? 'Working…' : mode === 'login' ? 'Log in' : 'Register'}
-        </button>
-      </form>
-      <ErrorBanner message={error} />
     </div>
   );
 }

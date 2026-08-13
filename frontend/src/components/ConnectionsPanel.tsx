@@ -1,20 +1,30 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ApiError, connectionsApi, type ConnectionSummary } from '../api';
+import { useSelectedCompany } from '../SelectedCompanyContext';
 import { ErrorBanner } from './JsonView';
+import { IconConnections, IconRefresh, IconCheck } from './Icons';
+import { CopyButton, EmptyState, Spinner } from './ui';
 
 export function ConnectionsPanel() {
+  const { selectedCompany, selectCompany } = useSelectedCompany();
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
+  const [search, setSearch] = useState('');
   const [label, setLabel] = useState('Manual Connection');
   const [defaultCompany, setDefaultCompany] = useState('');
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [newToken, setNewToken] = useState<{ id: string; token: string } | null>(null);
+  const [newToken, setNewToken] = useState<{ id: string; token: string; reused: boolean } | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const refresh = async () => {
+    setRefreshing(true);
     try {
       setConnections(await connectionsApi.list());
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -22,12 +32,25 @@ export function ConnectionsPanel() {
     void refresh();
   }, []);
 
+  // Client-side: the full list is already loaded (realistic org scale is
+  // dozens of connections, not thousands), so filtering here is instant and
+  // avoids a network round-trip per keystroke. The backend also accepts
+  // GET /connections?search= for other consumers (Postman, scripts).
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return connections;
+    return connections.filter(
+      (c) => c.defaultCompany?.toLowerCase().includes(q) || c.label.toLowerCase().includes(q),
+    );
+  }, [connections, search]);
+
   const create = async () => {
     setBusy(true);
     setError(null);
     try {
       const result = await connectionsApi.create({ label, defaultCompany: defaultCompany || undefined });
-      setNewToken({ id: result.id, token: result.token });
+      setNewToken({ id: result.id, token: result.token, reused: result.reused });
+      if (defaultCompany) selectCompany(defaultCompany);
       await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -50,18 +73,44 @@ export function ConnectionsPanel() {
     setError(null);
     try {
       const result = await connectionsApi.rotateToken(id);
-      setNewToken({ id: result.id, token: result.token });
+      setNewToken({ id: result.id, token: result.token, reused: result.reused });
+      await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
+    }
+  };
+
+  const remove = async (c: ConnectionSummary) => {
+    const confirmed = window.confirm(
+      `Permanently delete "${c.label}"${c.defaultCompany ? ` (${c.defaultCompany})` : ''}? ` +
+        'This cannot be undone — unlike Revoke, there is no re-pairing your way back to this exact row.',
+    );
+    if (!confirmed) return;
+
+    setError(null);
+    setDeletingId(c.id);
+    try {
+      await connectionsApi.delete(c.id);
+      if (c.defaultCompany && c.defaultCompany === selectedCompany) selectCompany(null);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setDeletingId(null);
     }
   };
 
   return (
     <div className="panel">
       <div className="card">
-        <h2>Create a connection (manual — mints a token directly)</h2>
+        <div className="card-title">
+          <IconConnections />
+          <h2>Create a connection (manual — mints a token directly)</h2>
+        </div>
         <p className="muted">
-          Always creates a NEW row — don't re-run this for a device you already paired, use Rotate instead.
+          For scripted/enterprise rollout. For pairing a physical machine, use the Device Pairing tab instead —
+          it needs no manual token. Safe to re-run either way: a company that already has an active connection
+          gets its token rotated on that same row instead of creating a duplicate.
         </p>
         <div className="form form-row">
           <label>
@@ -69,22 +118,30 @@ export function ConnectionsPanel() {
             <input value={label} onChange={(e) => setLabel(e.target.value)} />
           </label>
           <label>
-            Default company (optional)
+            Company (optional)
             <input
               value={defaultCompany}
               onChange={(e) => setDefaultCompany(e.target.value)}
               placeholder="exact Tally company name"
             />
           </label>
-          <button onClick={create} disabled={busy} type="button">
+          <button onClick={() => void create()} disabled={busy} type="button">
+            {busy && <Spinner />}
             {busy ? 'Creating…' : 'Create'}
           </button>
         </div>
         {newToken && (
-          <div className="callout">
-            <strong>Token — shown once, save it now:</strong>
-            <code className="token-box">{newToken.token}</code>
-            <span className="muted">connectionId: {newToken.id}</span>
+          <div className="callout callout-success">
+            <strong>
+              <IconCheck className="ok-color" />{' '}
+              {newToken.reused ? 'Reused existing connection — token rotated' : 'New connection created'} — token
+              shown once, save it now
+            </strong>
+            <div className="token-row">
+              <code className="token-box">{newToken.token}</code>
+              <CopyButton value={newToken.token} />
+            </div>
+            <span className="muted small">connectionId: {newToken.id}</span>
           </div>
         )}
         <ErrorBanner message={error} />
@@ -92,16 +149,29 @@ export function ConnectionsPanel() {
 
       <div className="card">
         <div className="card-header">
-          <h2>Connections</h2>
-          <button onClick={() => void refresh()} type="button">
+          <div className="card-title">
+            <IconConnections />
+            <h2>Connections</h2>
+          </div>
+          <button onClick={() => void refresh()} type="button" className="ghost" disabled={refreshing}>
+            {refreshing ? <Spinner /> : <IconRefresh />}
             Refresh
           </button>
         </div>
+        <p className="muted">
+          Click a company name to make it the working company for Device Pairing, Tally Direct, and Extractions.
+        </p>
+        <input
+          className="search-input"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by company or label…"
+        />
         <table>
           <thead>
             <tr>
-              <th>Label</th>
               <th>Company</th>
+              <th>Label</th>
               <th>Active</th>
               <th>Connected</th>
               <th>Last seen</th>
@@ -109,14 +179,31 @@ export function ConnectionsPanel() {
             </tr>
           </thead>
           <tbody>
-            {connections.map((c) => (
-              <tr key={c.id}>
+            {filtered.map((c) => (
+              <tr key={c.id} className={c.defaultCompany === selectedCompany ? 'row-selected' : ''}>
+                <td>
+                  {c.defaultCompany ? (
+                    <button
+                      type="button"
+                      className="link-cell"
+                      onClick={() => selectCompany(c.defaultCompany)}
+                      title="Work with this company"
+                    >
+                      {c.defaultCompany}
+                    </button>
+                  ) : (
+                    <span className="muted">(unpinned — serves any company)</span>
+                  )}
+                </td>
                 <td>
                   {c.label}
                   <div className="muted small">{c.id}</div>
                 </td>
-                <td>{c.defaultCompany ?? <span className="muted">(unpinned)</span>}</td>
-                <td>{c.isActive ? '✅' : '❌'}</td>
+                <td>
+                  <span className={c.isActive ? 'pill pill-ok' : 'pill pill-off'}>
+                    {c.isActive ? 'active' : 'revoked'}
+                  </span>
+                </td>
                 <td>
                   <span className={c.connected ? 'pill pill-ok' : 'pill pill-off'}>
                     {c.connected ? 'online' : 'offline'}
@@ -124,19 +211,35 @@ export function ConnectionsPanel() {
                 </td>
                 <td className="small">{c.lastSeenAt ? new Date(c.lastSeenAt).toLocaleString() : '—'}</td>
                 <td className="actions">
-                  <button onClick={() => void rotate(c.id)} type="button" disabled={!c.isActive}>
+                  <button onClick={() => void rotate(c.id)} type="button" className="ghost" disabled={!c.isActive}>
                     Rotate
                   </button>
                   <button onClick={() => void revoke(c.id)} type="button" disabled={!c.isActive} className="danger">
                     Revoke
                   </button>
+                  <button
+                    onClick={() => void remove(c)}
+                    type="button"
+                    className="danger"
+                    disabled={deletingId === c.id}
+                  >
+                    {deletingId === c.id && <Spinner />}
+                    Delete
+                  </button>
                 </td>
               </tr>
             ))}
+            {filtered.length === 0 && connections.length > 0 && (
+              <tr>
+                <td colSpan={6}>
+                  <EmptyState message={`No connections match "${search}".`} />
+                </td>
+              </tr>
+            )}
             {connections.length === 0 && (
               <tr>
-                <td colSpan={6} className="muted">
-                  No connections yet.
+                <td colSpan={6}>
+                  <EmptyState message="No connections yet." />
                 </td>
               </tr>
             )}

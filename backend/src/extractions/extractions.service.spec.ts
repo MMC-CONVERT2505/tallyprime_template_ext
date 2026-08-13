@@ -56,6 +56,7 @@ describe('ExtractionsService', () => {
       expect(created).toMatchObject({ orgId: 'org-1', connectionId: 'conn-1', type: 'LEDGERS' });
 
       expect(queue.add).toHaveBeenCalledWith('extract', {
+        mode: 'agent',
         extractionJobId: 'job-1',
         connectionId: 'conn-1',
         type: 'LEDGERS',
@@ -201,6 +202,7 @@ describe('ExtractionsService', () => {
         where: { orgId: 'org-1', defaultCompany: 'ABC Ltd', isActive: true },
       });
       expect(queue.add).toHaveBeenCalledWith('extract', {
+        mode: 'agent',
         extractionJobId: 'job-1',
         connectionId: 'conn-1',
         type: 'LEDGERS',

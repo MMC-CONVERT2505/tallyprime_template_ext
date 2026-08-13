@@ -1,20 +1,33 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
+import { CreateTallyJobDto } from './dto/create-tally-job.dto';
 import { ExtractLedgersDto, ExtractVouchersDto, RawReportDto } from './dto/extract.dto';
 import { MasterExtractionService } from './extraction/master-extraction.service';
 import { TransactionExtractionService } from './extraction/transaction-extraction.service';
 import { TallyDiagnosticsService } from './tally-diagnostics.service';
+import { TallyJobsService } from './tally-jobs.service';
 
-/** Direct, synchronous Tally endpoints — kept for dev/testing against a Tally
- *  on the same machine/network (see docs/architecture.md). The tunnel/job
- *  path (POST /extractions, POST /extractions/fetch-master) is what the web
- *  app actually uses in production, driving the same underlying services
- *  through the connector agent instead. */
+/**
+ * Direct Tally endpoints — kept for dev/testing against a Tally on the same
+ * machine/network (see docs/architecture.md). The tunnel/job path
+ * (POST /extractions, POST /extractions/fetch-master) is what the web app
+ * actually uses in production, driving the same underlying services through
+ * the connector agent instead.
+ *
+ * Two ways to call these: the synchronous GET/POST routes below block until
+ * Tally answers (fine for a quick Probe, risky for a big LEDGERS/VOUCHERS
+ * pull — see the timeout/retry pain this caused live). POST /tally/jobs is
+ * the async alternative — queue, poll GET /tally/jobs/:id, fetch
+ * GET /tally/jobs/:id/result — same queue/worker/result-caching machinery as
+ * the agent-mediated job API, just dispatched locally. Both stay available;
+ * neither is deprecated.
+ */
 @Controller('tally')
 export class TallyController {
   constructor(
     private readonly masters: MasterExtractionService,
     private readonly transactions: TransactionExtractionService,
     private readonly diagnostics: TallyDiagnosticsService,
+    private readonly jobs: TallyJobsService,
   ) {}
 
   /**
@@ -65,5 +78,30 @@ export class TallyController {
   @HttpCode(HttpStatus.OK)
   raw(@Body() body: RawReportDto) {
     return this.diagnostics.getRaw(body);
+  }
+
+  /**
+   * Queues the same fetch the synchronous routes above run inline, and
+   * returns immediately instead of blocking on Tally — poll GET
+   * /tally/jobs/:id for status, then GET /tally/jobs/:id/result once
+   * SUCCESS. Prevents a slow/stuck Tally from tying up the HTTP request for
+   * however long that takes (see the 180s+ timeouts this project hit before
+   * this endpoint existed).
+   */
+  @Post('jobs')
+  @HttpCode(HttpStatus.ACCEPTED)
+  createJob(@Body() dto: CreateTallyJobDto) {
+    return this.jobs.create(dto);
+  }
+
+  @Get('jobs/:id')
+  jobStatus(@Param('id') id: string) {
+    return this.jobs.getStatus(id);
+  }
+
+  /** Raw JSON result. Only available while status=SUCCESS and within the result TTL. */
+  @Get('jobs/:id/result')
+  jobResult(@Param('id') id: string) {
+    return this.jobs.getResult(id);
   }
 }

@@ -5,7 +5,8 @@ import { RedisConfig } from '../config/configuration';
 import { ExcelModule } from '../excel/excel.module';
 import { GatewayModule } from '../gateway/gateway.module';
 import { NotificationsModule } from '../notifications/notifications.module';
-import { EXTRACTION_QUEUE } from './extractions.constants';
+import { TallyModule } from '../tally/tally.module';
+import { EXTRACTION_QUEUE, EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS } from './extractions.constants';
 import { ExtractionsController } from './extractions.controller';
 import { ExtractionsProcessor } from './extractions.processor';
 import { ExtractionsService } from './extractions.service';
@@ -36,14 +37,16 @@ import { ExtractionsService } from './extractions.service';
     // only marks a job FAILED/notifies once these attempts are exhausted.
     BullModule.registerQueue({
       name: EXTRACTION_QUEUE,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
-      },
+      defaultJobOptions: EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS,
     }),
     GatewayModule,
     NotificationsModule,
     ExcelModule,
+    // For ExtractionsProcessor's local-mode dispatch (POST /tally/jobs) —
+    // the same Master/Transaction/Diagnostics service instances the
+    // synchronous /tally/* routes use, talking to the backend's own
+    // configured Tally directly, no agent involved.
+    TallyModule,
   ],
   controllers: [ExtractionsController],
   providers: [ExtractionsService, ExtractionsProcessor],

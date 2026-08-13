@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebSocket } from 'ws';
-import { ExtractVouchersDto, RawReportDto } from '../tally/dto/extract.dto';
+import { dispatchExtraction } from '../tally/extraction-dispatch';
 import { MasterExtractionService } from '../tally/extraction/master-extraction.service';
 import { TransactionExtractionService } from '../tally/extraction/transaction-extraction.service';
 import { TallyDiagnosticsService } from '../tally/tally-diagnostics.service';
@@ -153,7 +153,11 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
     payload: Record<string, unknown>,
   ): Promise<void> {
     try {
-      const data = await this.dispatch(action, payload);
+      const data = await dispatchExtraction(action, payload, {
+        masters: this.masters,
+        transactions: this.transactions,
+        diagnostics: this.diagnostics,
+      });
       this.sendResult({ type: 'result', requestId, ok: true, data });
     } catch (err) {
       this.sendResult({
@@ -162,39 +166,6 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
         ok: false,
         error: { message: err instanceof Error ? err.message : String(err) },
       });
-    }
-  }
-
-  /**
-   * No manual DTO validation here (unlike the HTTP controller, which gets it
-   * for free from the global ValidationPipe) — this proof-of-concept dispatch
-   * path is superseded by Phase 4's real job API, which is where payload
-   * validation belongs long-term.
-   */
-  private dispatch(action: TunnelAction, payload: Record<string, unknown>): Promise<unknown> {
-    switch (action) {
-      case 'probe':
-        return this.diagnostics.probe();
-      case 'companies':
-        return this.masters.getCompanies(payload.fresh !== true);
-      case 'ledgers':
-        return this.masters.getLedgers(
-          payload.company as string | undefined,
-          payload.fromDate as string | undefined,
-          payload.toDate as string | undefined,
-        );
-      case 'stockItems':
-        return this.masters.getStockItems(
-          payload.company as string | undefined,
-          payload.fromDate as string | undefined,
-          payload.toDate as string | undefined,
-        );
-      case 'groups':
-        return this.masters.getGroups(payload.company as string | undefined);
-      case 'vouchers':
-        return this.transactions.getVouchers(payload as unknown as ExtractVouchersDto);
-      case 'raw':
-        return this.diagnostics.getRaw(payload as unknown as RawReportDto);
     }
   }
 

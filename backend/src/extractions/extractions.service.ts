@@ -118,6 +118,7 @@ export class ExtractionsService {
     });
 
     await this.queue.add('extract', {
+      mode: 'agent',
       extractionJobId: job.id,
       connectionId: connection.id,
       type,

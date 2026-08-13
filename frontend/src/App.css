@@ -1,63 +1,186 @@
 .app-shell {
-  max-width: 1100px;
+  max-width: 1080px;
   margin: 0 auto;
-  padding: 0 20px 60px;
+  padding: 0 24px 80px;
 }
+
+/* ── Header ─────────────────────────────────────────────────────────── */
 
 .top-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+  padding: 22px 0 18px;
+  margin-bottom: 20px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(150deg, var(--accent), var(--accent-active));
+  color: #fff;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
+}
+
+.brand-text h1 {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.brand-text .api-url {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: var(--mono);
 }
 
 .user-info {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 13px;
+  gap: 14px;
 }
+
+.user-info-text {
+  text-align: right;
+  line-height: 1.35;
+}
+
+.user-info-text .org {
+  display: block;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-h);
+}
+
+.user-info-text .email {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* ── "Working on <company>" — the persistent cross-tab context ────────── */
+
+.working-on {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+  font-size: 12.5px;
+  max-width: 320px;
+}
+
+.working-on-label {
+  color: var(--text-muted);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.working-on-company {
+  color: var(--accent);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Tabs ───────────────────────────────────────────────────────────── */
 
 .tabs {
   display: flex;
-  gap: 4px;
-  margin-bottom: 20px;
+  gap: 2px;
+  margin-bottom: 22px;
   border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
 }
 
 .tabs button {
   background: transparent;
-  color: var(--text);
-  border-radius: 6px 6px 0 0;
-  border: 1px solid transparent;
-  padding: 8px 14px;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 0;
+  padding: 10px 16px 12px;
+  font-weight: 600;
+  position: relative;
+}
+
+.tabs button:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text-h);
+}
+
+.tabs button::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: -1px;
+  height: 2px;
+  background: transparent;
+  border-radius: 2px 2px 0 0;
+  transition: background-color 0.15s ease;
 }
 
 .tabs button.active {
-  background: var(--bg-subtle);
-  color: var(--text-h);
-  border-color: var(--border);
-  border-bottom-color: var(--bg-subtle);
-  margin-bottom: -1px;
+  color: var(--accent);
+}
+
+.tabs button.active::after {
+  background: var(--accent);
 }
 
 .tabs-small {
-  margin-bottom: 16px;
+  display: inline-flex;
+  padding: 3px;
+  background: var(--surface-sunken);
+  border-radius: 10px;
+  margin-bottom: 18px;
+  border-bottom: none;
+  gap: 0;
 }
+
+.tabs-small button {
+  color: var(--text-muted);
+  padding: 7px 18px;
+  border-radius: 7px;
+}
+
+.tabs-small button::after {
+  display: none;
+}
+
+.tabs-small button.active {
+  background: var(--surface);
+  color: var(--text-h);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
 
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 
 .card {
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px 18px;
-  background: var(--bg);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .card-header {
@@ -65,14 +188,27 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.card-title svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ── Forms ──────────────────────────────────────────────────────────── */
 
 .form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 12px 0;
+  gap: 12px;
+  margin: 14px 0 4px;
 }
 
 .form-row {
@@ -84,97 +220,398 @@
 .form label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-h);
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-muted);
+}
+
+/* Only the horizontal layout should let labels grow/shrink along the main
+   axis — in plain .form (column axis), the same flex-basis would mean
+   *height*, not width, and stretch each label to fill the column. */
+.form-row label {
   flex: 1 1 160px;
 }
 
 .form-row button {
   align-self: flex-end;
+  height: 37px;
+}
+
+.password-field {
+  position: relative;
+  display: flex;
+}
+
+.password-field input {
+  width: 100%;
+  padding-right: 38px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0;
+}
+
+.password-toggle:hover:not(:disabled) {
+  background: var(--surface-sunken);
+  color: var(--text-h);
 }
 
 .muted {
-  color: var(--text);
-  opacity: 0.75;
+  color: var(--text-muted);
 }
 
 .small {
   font-size: 12px;
 }
 
+/* ── Feedback ───────────────────────────────────────────────────────── */
+
 .error-banner {
-  margin-top: 10px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: var(--off-bg);
-  color: var(--off);
+  margin-top: 12px;
+  padding: 10px 13px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger);
   font-size: 13px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
+
+.error-banner svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.empty-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+/* ── JSON viewer ────────────────────────────────────────────────────── */
 
 .json-view {
-  background: var(--code-bg);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
   color: var(--text-h);
-  border-radius: 8px;
-  padding: 12px;
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
   font-family: var(--mono);
   font-size: 12px;
+  line-height: 1.6;
   overflow-x: auto;
-  max-height: 400px;
+  max-height: 420px;
   overflow-y: auto;
-  margin: 8px 0 0;
+  margin: 10px 0 0;
 }
 
+/* ── Callouts / secret reveal boxes ─────────────────────────────────── */
+
 .callout {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-subtle);
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent-soft-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .callout-success {
-  border-color: var(--ok);
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+}
+
+.callout strong {
+  color: var(--text-h);
+  font-size: 13px;
+}
+
+.token-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
 }
 
 .token-box {
   word-break: break-all;
   white-space: pre-wrap;
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.copy-btn {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  padding: 6px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.copy-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-h);
+}
+
+.ok-color {
+  color: var(--ok);
+}
+
+/* ── Company → Connection → Device → Tally → Extraction flow stepper ──── */
+
+.flow-stepper {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 16px;
+  padding: 14px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-md);
+}
+
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text-h);
+}
+
+.flow-step-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.flow-arrow {
+  color: var(--text-muted);
+  font-weight: 400;
+  margin: 0 2px;
+}
+
+.reuse-glance {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* ── Device pairing code ───────────────────────────────────────────── */
+
+.user-code-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 6px 0 4px;
 }
 
 .user-code {
   font-family: var(--mono);
-  font-size: 28px;
+  font-size: 30px;
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 4px;
   color: var(--accent);
   text-align: center;
-  padding: 8px 0;
+  padding: 14px 26px;
+  background: var(--surface);
+  border: 1.5px dashed var(--accent-soft-border);
+  border-radius: var(--radius-md);
 }
 
-.pill {
-  display: inline-block;
-  font-size: 11px;
+/* ── Search + company-focused table rows ──────────────────────────────── */
+
+.search-input {
+  width: 100%;
+  margin: 4px 0 14px;
+}
+
+.link-cell {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 650;
+  font-size: inherit;
+  text-align: left;
+}
+
+.link-cell:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+
+tbody tr.row-selected {
+  background: var(--accent-soft);
+}
+
+tbody tr.row-selected:hover {
+  background: var(--accent-soft);
+}
+
+/* ── Extraction result table ───────────────────────────────────────── */
+
+.result-view-toggle {
+  display: inline-flex;
+  padding: 3px;
+  background: var(--surface-sunken);
+  border-radius: 10px;
+  margin: 10px 0 12px;
+  gap: 0;
+}
+
+.result-view-toggle button {
+  padding: 5px 14px;
+  font-size: 12.5px;
+  border-radius: 7px;
+}
+
+.result-view-toggle button:not(.ghost) {
+  background: var(--surface);
+  color: var(--text-h);
+  box-shadow: var(--shadow-sm);
+}
+
+.data-table-wrap .search-input {
+  margin: 0;
+  flex: 1;
+}
+
+.data-table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.table-scroll table {
+  font-size: 12.5px;
+}
+
+.table-scroll th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+
+.data-table-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.data-table-pager button {
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+.cell-detail summary {
+  cursor: pointer;
+  color: var(--accent);
   font-weight: 600;
-  padding: 2px 8px;
+  font-size: 12px;
+  list-style: none;
+}
+
+.cell-detail summary::-webkit-details-marker {
+  display: none;
+}
+
+.cell-detail pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  max-width: 320px;
+  overflow-x: auto;
+}
+
+/* ── Pills ──────────────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 3px 9px;
   border-radius: 999px;
-  background: var(--code-bg);
-  color: var(--text);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
 }
 
 .pill-ok {
   background: var(--ok-bg);
   color: var(--ok);
+  border-color: var(--ok-border);
 }
 
 .pill-off {
-  background: var(--off-bg);
-  color: var(--off);
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
+
+/* ── Extractions job chips ─────────────────────────────────────────── */
 
 .actions {
   display: flex;
@@ -188,21 +625,130 @@
 }
 
 .job-chip {
-  background: var(--bg-subtle);
-  color: var(--text-h);
+  background: var(--surface-sunken);
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 12px;
-  font-weight: 500;
-  padding: 6px 12px;
+  font-weight: 600;
+  padding: 7px 14px;
+}
+
+.job-chip:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
 }
 
 .job-chip.active {
   border-color: var(--accent);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
+/* ── Advanced/power-user disclosure ────────────────────────────────── */
+
+.advanced {
+  margin-top: -6px;
+}
+
+.advanced summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 2px;
+  list-style: none;
+  user-select: none;
+}
+
+.advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+
+.advanced[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.advanced summary:hover {
+  color: var(--text-h);
+}
+
+.advanced .card {
+  margin-top: 10px;
+}
+
+/* ── Loading spinner ────────────────────────────────────────────────── */
+
+.spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: currentColor;
+  animation: spin 0.65s linear infinite;
+  flex-shrink: 0;
+}
+
+button.ghost .spinner,
+button.danger .spinner {
+  border: 2px solid var(--border-strong);
+  border-top-color: currentColor;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Auth screen ────────────────────────────────────────────────────── */
+
+.auth-wrap {
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 15% 10%, var(--accent-soft), transparent 45%),
+    var(--bg);
+}
+
 .auth-card {
+  width: 100%;
   max-width: 420px;
-  margin: 80px auto;
+  text-align: left;
+  padding: 32px 32px 28px;
+}
+
+.auth-card .brand-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  margin-bottom: 16px;
+}
+
+.auth-card h1 {
+  font-size: 21px;
+  margin-bottom: 6px;
+}
+
+.auth-card .muted {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+  display: block;
+}
+
+.auth-card .form button[type='submit'] {
+  margin-top: 4px;
+  height: 40px;
+  font-size: 14px;
 }

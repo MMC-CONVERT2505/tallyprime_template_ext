@@ -1,14 +1,17 @@
 import { HttpModule } from '@nestjs/axios';
+import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TallyConfig } from '../config/configuration';
 import { PrismaService } from '../database/prisma.service';
+import { EXTRACTION_QUEUE, EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS } from '../extractions/extractions.constants';
 import { MasterExtractionService } from './extraction/master-extraction.service';
 import { TransactionExtractionService } from './extraction/transaction-extraction.service';
 import { TALLY_CONNECTOR } from './tally-connector.interface';
 import { TallyController } from './tally.controller';
 import { TallyDiagnosticsService } from './tally-diagnostics.service';
 import { TallyHttpClient } from './tally-http.client';
+import { TallyJobsService } from './tally-jobs.service';
 import { EnvelopeBuilder } from './xml/envelope.builder';
 import { TallyResponseParser } from './xml/response.parser';
 
@@ -55,6 +58,15 @@ const tallyConnectorProvider = {
         };
       },
     }),
+    // Same named queue ExtractionsModule registers, reusing the SAME
+    // defaultJobOptions constant — BullMQ's Nest integration shares the one
+    // underlying Redis-backed queue/connection (configured via
+    // BullModule.forRootAsync there) across every module that registers it,
+    // but each registerQueue call builds its own client-side Queue instance,
+    // so defaultJobOptions must be repeated explicitly here or local-mode
+    // jobs (POST /tally/jobs, via TallyJobsService) would silently get none
+    // of the retry/backoff policy agent-mode jobs get.
+    BullModule.registerQueue({ name: EXTRACTION_QUEUE, defaultJobOptions: EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS }),
   ],
   controllers: [TallyController],
   providers: [
@@ -66,6 +78,7 @@ const tallyConnectorProvider = {
     EnvelopeBuilder,
     TallyResponseParser,
     extractionJobRepositoryProvider,
+    TallyJobsService,
   ],
   exports: [
     MasterExtractionService,
