@@ -15,7 +15,7 @@
     { "key": "orgId", "value": "", "type": "string", "description": "Set automatically after Register/Login." },
     { "key": "userEmail", "value": "", "type": "string", "description": "Set automatically after Register; reused by Login on later runs." },
     { "key": "userPassword", "value": "TallyDemo#2026", "type": "string", "description": "Fixed so Login can reuse it after Register on the first run." },
-    { "key": "tallyCompanyName", "value": "COREDGE.IO INDIA PRIVATE LIMITED", "type": "string", "description": "EXACT Tally company name — replace with your own (see Tally Direct → Probe)." },
+    { "key": "tallyCompanyName", "value": "   ", "type": "string", "description": "EXACT Tally company name — replace with your own (see Tally Direct → Probe)." },
     { "key": "deviceCode", "value": "", "type": "string", "description": "Set automatically by Device Pairing → Start." },
     { "key": "userCode", "value": "", "type": "string", "description": "Set automatically by Device Pairing → Start; also printed in the bridge's own console logs." },
     { "key": "connectionId", "value": "", "type": "string", "description": "Set automatically by Connections (Manual) → Create, or paste one from GET /connections." },
