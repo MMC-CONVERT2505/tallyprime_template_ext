@@ -29,10 +29,14 @@
   --danger: #c0293a;
   --danger-bg: #fdecee;
   --danger-border: #f6c6cc;
+  --warn: #9a6300;
+  --warn-bg: #fdf3dc;
+  --warn-border: #f3dda0;
 
   /* Elevation */
   --shadow-sm: 0 1px 2px rgba(30, 20, 60, 0.05), 0 1px 1px rgba(30, 20, 60, 0.04);
   --shadow-md: 0 8px 24px rgba(30, 20, 60, 0.08), 0 2px 6px rgba(30, 20, 60, 0.05);
+  --shadow-lg: 0 24px 64px rgba(30, 20, 60, 0.18), 0 4px 16px rgba(30, 20, 60, 0.1);
   --shadow-focus: 0 0 0 3px var(--accent-soft);
 
   /* Shape */
@@ -78,9 +82,13 @@
     --danger: #f66a7c;
     --danger-bg: #2f1519;
     --danger-border: #4c1f26;
+    --warn: #f0b94f;
+    --warn-bg: #332405;
+    --warn-border: #533c0e;
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35);
     --shadow-focus: 0 0 0 3px var(--accent-soft);
   }
 }

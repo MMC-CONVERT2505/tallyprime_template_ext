@@ -1,7 +1,7 @@
 {
   "name": "tallyprime-template-ext",
   "version": "0.1.0",
-  "description": "Tally <-> accounting-tool migration platform: Phase 1 connectivity backbone (NestJS backend that talks to TallyPrime's XML/HTTP server on port 9000).",
+  "description": "Tally <-> accounting-tool migration platform: Phase 1 connectivity backbone (NestJS backend that talks to TallyPrime's XML/HTTP server on port 9001).",
   "author": "MMC Convert",
   "private": true,
   "main": "dist/main.js",

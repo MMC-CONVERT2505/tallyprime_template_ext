@@ -67,7 +67,7 @@ export class TallyResponseParser {
     }
 
     // 2. Sanity guard: it must actually be a Tally ENVELOPE. Anything else on
-    //    port 9000 (an HTML error page from a proxy, a plain-text "Connection
+    //    port 9001 (an HTML error page from a proxy, a plain-text "Connection
     //    refused", another web server) would otherwise be parsed leniently into
     //    junk and silently return zero records — masking a misconfiguration.
     if (!/<ENVELOPE[\s>]/i.test(xml)) {

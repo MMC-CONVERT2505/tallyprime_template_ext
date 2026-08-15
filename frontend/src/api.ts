@@ -101,6 +101,26 @@ export type DevicePollResult =
   | { status: 'pending' }
   | { status: 'approved'; id: string; label: string; token: string; reused: boolean };
 
+export interface DeviceApproveResult {
+  approved: true;
+  /** True when this call found the code already approved earlier (e.g. a retried request) rather than approving it fresh. */
+  alreadyApproved: boolean;
+}
+
+/** Read-only pairing state, safe to poll after approving — see deviceAuthApi.status. */
+export type DeviceStatusResult =
+  | { status: 'pending'; userCode: string; expiresInSeconds: number }
+  | { status: 'expired'; userCode: string }
+  | { status: 'approved'; userCode: string; label?: string | null; defaultCompany?: string | null }
+  | {
+      status: 'consumed';
+      userCode: string;
+      connectionId?: string;
+      label?: string | null;
+      defaultCompany?: string | null;
+      connected?: boolean;
+    };
+
 export type ExtractableType = 'COMPANIES' | 'LEDGERS' | 'STOCK_ITEMS' | 'GROUPS' | 'VOUCHERS' | 'RAW';
 export type MasterType = 'COMPANIES' | 'LEDGERS' | 'STOCK_ITEMS' | 'GROUPS';
 
@@ -150,9 +170,12 @@ export const connectionsApi = {
 export const deviceAuthApi = {
   start: () => request<DeviceStartResult>('POST', '/connections/device/start', { body: {}, auth: false }),
   approve: (body: { userCode: string; label?: string; defaultCompany?: string }) =>
-    request<{ approved: true }>('POST', '/connections/device/approve', { body }),
+    request<DeviceApproveResult>('POST', '/connections/device/approve', { body }),
   poll: (deviceCode: string) =>
     request<DevicePollResult>('POST', '/connections/device/token', { body: { deviceCode }, auth: false }),
+  /** Safe to poll repeatedly after approve() — never touches the bridge's own bearer token (that's poll()'s job). */
+  status: (userCode: string) =>
+    request<DeviceStatusResult>('GET', `/connections/device/status?userCode=${encodeURIComponent(userCode)}`),
 };
 
 // ── Tally direct (dev sanity checks — no bridge needed) ─────────────────────

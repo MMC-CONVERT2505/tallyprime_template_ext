@@ -1,7 +1,7 @@
 # tallyprime_template_ext
 
 **Phase 1 — Tally connectivity backbone.** A NestJS + TypeScript backend whose one
-job right now is to talk to **TallyPrime's XML/HTTP server on port 9000**, pull
+job right now is to talk to **TallyPrime's XML/HTTP server on port 9001**, pull
 core data (companies, ledgers, vouchers), and return clean, typed JSON — with all
 the real-world Tally quirks handled in one place.
 
@@ -37,11 +37,11 @@ request.
 
 ```
  ┌────────────────────┐        XML / HTTP           ┌──────────────────────────────┐
- │  TallyPrime        │  ◀── POST :9000 (ENVELOPE) ─│  THIS BACKEND (NestJS)        │
+ │  TallyPrime        │  ◀── POST :9001 (ENVELOPE) ─│  THIS BACKEND (NestJS)        │
  │  (client desktop)  │  ──▶ XML response ─────────▶│                              │
  └────────────────────┘                             │  TallyModule                 │
                                                      │   ├─ EnvelopeBuilder (req)   │
-                                                     │   ├─ TallyHttpClient (:9000) │
+                                                     │   ├─ TallyHttpClient (:9001) │
                                                      │   ├─ ResponseParser (quirks) │
                                                      │   └─ Master/Transaction/     │
                                                      │      Diagnostics extraction  │
@@ -114,10 +114,10 @@ On the machine running TallyPrime, with the target **company loaded**:
 
 1. Gateway of Tally → **F1 (Help) → Settings → Connectivity**.
 2. Enable **"Act as Server"** (a.k.a. Tally.NET / ODBC-HTTP server).
-3. Confirm the port is **9000** (default).
+3. Confirm the port is **9001** (default).
 
 Then set `TALLY_HOST` to that machine's IP (or `127.0.0.1` if it's the same box)
-and `TALLY_PORT` to `9000`. `connection refused` from `/api/tally/probe` almost
+and `TALLY_PORT` to `9001`. `connection refused` from `/api/tally/probe` almost
 always means Tally is closed or "Act as Server" is off — the single most common
 gotcha.
 
@@ -176,7 +176,7 @@ Every error comes back in one shape, and Tally failures carry a `hint`:
 {
   "statusCode": 502,
   "error": "TallyError",
-  "message": "Could not reach Tally at http://127.0.0.1:9000.",
+  "message": "Could not reach Tally at http://127.0.0.1:9001.",
   "hint": "Confirm TallyPrime is open ... enable \"Act as Server\" ...",
   "path": "/api/tally/probe",
   "timestamp": "2026-07-25T08:38:30.524Z"
@@ -217,7 +217,7 @@ src/
 ├── redis/redis.module.ts       # global ioredis provider + graceful shutdown
 ├── health/                     # /health (infra) + /health/tally, custom indicators
 └── tally/                      # ★ the connectivity core (read-only: extracts, never writes)
-    ├── tally-http.client.ts    # POST to :9000, charset decode, retry w/ backoff, error mapping
+    ├── tally-http.client.ts    # POST to :9001, charset decode, retry w/ backoff, error mapping
     ├── tally-connector.interface.ts # TallyConnector — the transport boundary extraction services depend on
     ├── tally-diagnostics.service.ts # probe() + getRaw() escape hatch (not master/transaction extraction)
     ├── xml/
@@ -240,7 +240,7 @@ See [`.env.example`](.env.example) for the full annotated list. Key variables:
 
 | Variable                  | Default          | Notes                                                        |
 | ------------------------- | ---------------- | ------------------------------------------------------------ |
-| `TALLY_HOST` / `TALLY_PORT` | `127.0.0.1:9000` | Where Tally's HTTP server listens.                         |
+| `TALLY_HOST` / `TALLY_PORT` | `127.0.0.1:9001` | Where Tally's HTTP server listens.                         |
 | `TALLY_TIMEOUT_MS`        | `60000`          | Prefer chunking by month over raising this too high.         |
 | `TALLY_RESPONSE_ENCODING` | `auto`           | Force `win1252`/`latin1` if you see mangled `£`/`é`.         |
 | `TALLY_DEFAULT_COMPANY`   | *(empty)*        | Used when a request omits `company`.                         |

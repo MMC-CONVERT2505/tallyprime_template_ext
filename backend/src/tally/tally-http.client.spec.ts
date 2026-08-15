@@ -1,4 +1,4 @@
-import { of, throwError } from 'rxjs';
+import { from, of, throwError } from 'rxjs';
 import { TallyHttpClient } from './tally-http.client';
 import { TallyHttpException, TallyUnreachableException } from './exceptions/tally.exceptions';
 
@@ -8,7 +8,7 @@ describe('TallyHttpClient — retry with backoff', () => {
     const http = { post: httpPost } as any;
     const config = {
       getOrThrow: () => ({
-        baseUrl: 'http://127.0.0.1:9000',
+        baseUrl: 'http://127.0.0.1:9001',
         timeoutMs: 60000,
         responseEncoding: 'auto',
         maxRetries: 2,
@@ -103,6 +103,61 @@ describe('TallyHttpClient — retry with backoff', () => {
       await client.post('<ENVELOPE/>');
 
       expect(httpPost.mock.calls[0][2]).toMatchObject({ timeout: 60000 });
+    });
+  });
+
+  describe('request serialization (Tally handles one request at a time)', () => {
+    it('does not start the second request until the first has resolved', async () => {
+      const { client, httpPost } = makeClient();
+      const callOrder: string[] = [];
+      let resolveFirst!: () => void;
+      const firstGate = new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      });
+
+      httpPost.mockImplementationOnce(() => {
+        callOrder.push('first-start');
+        return from(
+          firstGate.then(() => ({
+            status: 200,
+            headers: {},
+            data: Buffer.from('<ENVELOPE>1</ENVELOPE>'),
+          })),
+        );
+      });
+      httpPost.mockImplementationOnce(() => {
+        callOrder.push('second-start');
+        return of({ status: 200, headers: {}, data: Buffer.from('<ENVELOPE>2</ENVELOPE>') });
+      });
+
+      const p1 = client.post('<ENVELOPE/>1');
+      const p2 = client.post('<ENVELOPE/>2');
+
+      // Let pending microtasks flush — the second request must NOT have started yet.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(callOrder).toEqual(['first-start']);
+
+      resolveFirst();
+      await expect(p1).resolves.toBe('<ENVELOPE>1</ENVELOPE>');
+      await expect(p2).resolves.toBe('<ENVELOPE>2</ENVELOPE>');
+      expect(callOrder).toEqual(['first-start', 'second-start']);
+    });
+
+    it('still runs the second request even when the first one fails (one bad request does not jam the queue)', async () => {
+      const { client, httpPost } = makeClient({ maxRetries: 0 });
+      httpPost
+        .mockReturnValueOnce(throwError(connectionRefused))
+        .mockReturnValueOnce(
+          of({ status: 200, headers: {}, data: Buffer.from('<ENVELOPE>ok</ENVELOPE>') }),
+        );
+
+      const p1 = client.post('<ENVELOPE/>1');
+      const p2 = client.post('<ENVELOPE/>2');
+
+      await expect(p1).rejects.toThrow(TallyUnreachableException);
+      await expect(p2).resolves.toBe('<ENVELOPE>ok</ENVELOPE>');
     });
   });
 });

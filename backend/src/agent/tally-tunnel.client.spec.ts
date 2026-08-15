@@ -1,6 +1,14 @@
 import { WebSocket } from 'ws';
 import { AgentTunnelClient } from './tally-tunnel.client';
 
+jest.mock('./bridge-state.util', () => ({
+  readBridgeState: jest.fn(),
+  clearBridgeState: jest.fn(),
+  DEFAULT_BRIDGE_STATE_PATH: '/mock/.tally-bridge-state.json',
+}));
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { readBridgeState, clearBridgeState } = require('./bridge-state.util');
+
 interface MockWebSocketInstance {
   url: string;
   send: jest.Mock;
@@ -71,17 +79,36 @@ describe('AgentTunnelClient — credential handling', () => {
     return { client, pairing };
   }
 
+  beforeEach(() => {
+    readBridgeState.mockReset().mockReturnValue(null);
+    clearBridgeState.mockReset();
+  });
+
   afterEach(() => {
     jest.useRealTimers();
   });
 
-  it('connects directly, without pairing, when a token is already configured', () => {
+  it('connects directly, without pairing, when a token is already configured (no state file, env var fallback)', () => {
     const { client, pairing } = makeClient('existing-token');
 
     client.onModuleInit();
 
     expect(pairing.pair).not.toHaveBeenCalled();
     expect(instances).toHaveLength(1);
+    client.onModuleDestroy();
+  });
+
+  it('prefers the local state file token over the AGENT_TOKEN env var when both are present', () => {
+    readBridgeState.mockReturnValue({ agentToken: 'state-file-token' });
+    const { client, pairing } = makeClient('env-var-token');
+
+    client.onModuleInit();
+
+    expect(pairing.pair).not.toHaveBeenCalled();
+    expect(instances).toHaveLength(1);
+    instances[0].emit('open');
+    const hello = JSON.parse(instances[0].send.mock.calls[0][0]);
+    expect(hello).toMatchObject({ token: 'state-file-token' });
     client.onModuleDestroy();
   });
 
@@ -140,6 +167,7 @@ describe('AgentTunnelClient — credential handling', () => {
     await Promise.resolve();
 
     expect(pairing.pair).toHaveBeenCalledTimes(1); // did NOT just retry the same dead token
+    expect(clearBridgeState).toHaveBeenCalledWith('/mock/.tally-bridge-state.json'); // and not left on disk to be reloaded on restart
     client.onModuleDestroy();
   });
 });

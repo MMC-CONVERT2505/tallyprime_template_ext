@@ -7,6 +7,7 @@ import { TransactionExtractionService } from '../tally/extraction/transaction-ex
 import { TallyDiagnosticsService } from '../tally/tally-diagnostics.service';
 import { AgentResultMessage, GatewayToAgentMessage, TunnelAction } from '../tunnel/tunnel-protocol';
 import { AgentPairingService } from './agent-pairing.service';
+import { clearBridgeState, DEFAULT_BRIDGE_STATE_PATH, readBridgeState } from './bridge-state.util';
 
 const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -26,10 +27,13 @@ const MAX_BACKOFF_MS = 30_000;
  *
  * Credential handling: `agentToken` is tracked as instance state, not
  * re-read from ConfigService on every (re)connect — it can change mid-process
- * (see below), and ConfigService's snapshot from boot wouldn't reflect that.
- * If no token is configured at all (fresh install), or the gateway rejects
- * the one we have (revoked), AgentPairingService.pair() is run automatically
- * instead of failing — see docs/connector-bridge-setup-guide.md.
+ * (see below). On boot, the local pairing state file (bridge-state.util.ts)
+ * wins if present — it's this bridge's own most-recently-learned identity
+ * from a live pairing; otherwise the AGENT_TOKEN env var is used as a
+ * first-boot seed (the scripted/enterprise pre-provisioning path — see
+ * docs/connector-bridge-setup-guide.md §2.4). If neither is set (fresh
+ * install), or the gateway rejects the token we have (revoked),
+ * AgentPairingService.pair() is run automatically instead of failing.
  */
 @Injectable()
 export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
@@ -49,7 +53,18 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
-    this.agentToken = this.config.get<string>('agentToken') ?? '';
+    const state = readBridgeState(DEFAULT_BRIDGE_STATE_PATH);
+    if (state?.agentToken) {
+      this.agentToken = state.agentToken;
+      this.logger.log(
+        state.label
+          ? `Reconnecting as previously-paired connection ${state.connectionId} ("${state.label}"` +
+              `${state.defaultCompany ? ` — ${state.defaultCompany}` : ''}).`
+          : 'Reconnecting with a previously-persisted token.',
+      );
+    } else {
+      this.agentToken = this.config.get<string>('agentToken') ?? '';
+    }
     this.connect();
   }
 
@@ -133,13 +148,15 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
     if (message.type === 'auth-error') {
       this.logger.error(
         `Gateway rejected this agent's token (${message.message}) — it may have been revoked or rotated. ` +
-          'Clearing it and re-pairing automatically on the next reconnect.',
+          'Clearing it (in memory and on disk) and re-pairing automatically on the next reconnect.',
       );
-      // The token we have is dead — don't keep retrying with it forever.
-      // The socket 'close' event fires right after this (the gateway closes
-      // the connection on auth-error), which triggers scheduleReconnect();
-      // connect() will see no token and run pairing again.
+      // The token we have is dead — don't keep retrying with it forever, and
+      // don't let a restart reload the same dead token from the state file
+      // before re-pairing. The socket 'close' event fires right after this
+      // (the gateway closes the connection on auth-error), which triggers
+      // scheduleReconnect(); connect() will see no token and run pairing again.
       this.agentToken = '';
+      clearBridgeState(DEFAULT_BRIDGE_STATE_PATH);
       return;
     }
     if (message.type === 'command') {

@@ -5,10 +5,13 @@ import {
   deviceAuthApi,
   type ConnectionSummary,
   type DeviceStartResult,
+  type DeviceStatusResult,
 } from '../api';
 import { useSelectedCompany } from '../SelectedCompanyContext';
 import { ErrorBanner } from './JsonView';
+import { Modal } from './Modal';
 import {
+  IconAlert,
   IconCheck,
   IconCompany,
   IconConnections,
@@ -67,6 +70,57 @@ function ReuseGlance({ company, connections }: { company: string; connections: C
   );
 }
 
+// ── Post-approve guided modal ────────────────────────────────────────────
+
+const STATUS_POLL_MS = 2500;
+const STATUS_POLL_TIMEOUT_MS = 120_000; // 2 minutes — generous headroom over the bridge's own ~5s poll cadence.
+
+type ErrorKind = 'expired' | 'not-found' | 'conflict-other-org' | 'network' | 'unknown';
+
+type PairingPhase =
+  | { phase: 'submitting' }
+  | { phase: 'error'; kind: ErrorKind; message: string }
+  | { phase: 'waiting'; alreadyApproved: boolean }
+  | { phase: 'connected'; label: string; defaultCompany: string | null }
+  | { phase: 'timed-out' };
+
+/** Submitting an approve() failure into a specific, actionable error kind instead of one generic message. */
+function classifyApproveError(err: unknown): { kind: ErrorKind; message: string } {
+  if (err instanceof ApiError) {
+    if (err.status === 400) return { kind: 'expired', message: err.message };
+    if (err.status === 404) return { kind: 'not-found', message: err.message };
+    if (err.status === 409) {
+      // "already been completed" (fully paired already) resolves through the
+      // same success/waiting path as a fresh approval — see the caller.
+      if (/different organization/i.test(err.message)) {
+        return { kind: 'conflict-other-org', message: err.message };
+      }
+      return { kind: 'unknown', message: err.message };
+    }
+    return { kind: 'unknown', message: err.message };
+  }
+  return { kind: 'network', message: err instanceof Error ? err.message : String(err) };
+}
+
+function PairingSummary({ userCode, label, defaultCompany }: { userCode: string; label: string; defaultCompany: string }) {
+  return (
+    <div className="pairing-summary">
+      <div className="pairing-summary-row">
+        <span>Code</span>
+        <span>{userCode}</span>
+      </div>
+      <div className="pairing-summary-row">
+        <span>Label</span>
+        <span>{label}</span>
+      </div>
+      <div className="pairing-summary-row">
+        <span>Company</span>
+        <span>{defaultCompany || '(none — multi-company agent)'}</span>
+      </div>
+    </div>
+  );
+}
+
 /** Approves a userCode that a REAL bridge process printed to its own console — the actual production path. */
 function ApproveRealBridgePanel({
   connections,
@@ -84,25 +138,99 @@ function ApproveRealBridgePanel({
   const [label, setLabel] = useState('Accounts PC');
   const [defaultCompany, setDefaultCompany] = useState(selectedCompany ?? '');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [approved, setApproved] = useState(false);
 
-  const approve = async () => {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalState, setModalState] = useState<PairingPhase>({ phase: 'submitting' });
+  const [submitted, setSubmitted] = useState({ userCode: '', label: '', defaultCompany: '' });
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  const pollTimer = useRef<number | null>(null);
+  const elapsedTimer = useRef<number | null>(null);
+  const pollStartedAt = useRef<number>(0);
+
+  const stopPolling = () => {
+    if (pollTimer.current) window.clearInterval(pollTimer.current);
+    if (elapsedTimer.current) window.clearInterval(elapsedTimer.current);
+    pollTimer.current = null;
+    elapsedTimer.current = null;
+  };
+
+  useEffect(() => stopPolling, []);
+
+  const beginStatusPolling = (code: string) => {
+    stopPolling();
+    pollStartedAt.current = Date.now();
+    setElapsedSeconds(0);
+
+    elapsedTimer.current = window.setInterval(() => {
+      setElapsedSeconds(Math.round((Date.now() - pollStartedAt.current) / 1000));
+    }, 1000);
+
+    const tick = async () => {
+      if (Date.now() - pollStartedAt.current >= STATUS_POLL_TIMEOUT_MS) {
+        stopPolling();
+        setModalState({ phase: 'timed-out' });
+        return;
+      }
+      try {
+        const result: DeviceStatusResult = await deviceAuthApi.status(code);
+        if (result.status === 'consumed' && result.connected) {
+          stopPolling();
+          setModalState({
+            phase: 'connected',
+            label: result.label ?? submitted.label,
+            defaultCompany: result.defaultCompany ?? null,
+          });
+        }
+        // pending/approved/not-yet-connected — keep polling, nothing to do.
+      } catch {
+        // A single failed tick (transient network blip) shouldn't abort the
+        // whole wait — just try again next interval, bounded by the timeout above.
+      }
+    };
+
+    void tick();
+    pollTimer.current = window.setInterval(() => void tick(), STATUS_POLL_MS);
+  };
+
+  const submitApprove = async (code: string, lbl: string, company: string) => {
+    setModalState({ phase: 'submitting' });
     setBusy(true);
-    setError(null);
-    setApproved(false);
     try {
-      await deviceAuthApi.approve({ userCode, label, defaultCompany: defaultCompany || undefined });
-      setApproved(true);
-      onApproved(defaultCompany || null);
-      // The bridge mints its own connection on its next poll (a few seconds,
-      // per its own --interval) — this tab has nothing more to wait on.
+      const result = await deviceAuthApi.approve({ userCode: code, label: lbl, defaultCompany: company || undefined });
+      onApproved(company || null);
+      setModalState({ phase: 'waiting', alreadyApproved: result.alreadyApproved });
+      beginStatusPolling(code);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
+      const classified = classifyApproveError(err);
+      if (err instanceof ApiError && err.status === 409 && /already been completed/i.test(err.message)) {
+        // Already fully paired (likely a duplicate click) — this is the
+        // success path, not a dead end: confirm it by polling live status.
+        setModalState({ phase: 'waiting', alreadyApproved: true });
+        beginStatusPolling(code);
+      } else {
+        setModalState({ phase: 'error', ...classified });
+      }
     } finally {
       setBusy(false);
     }
   };
+
+  const approve = () => {
+    const snapshot = { userCode, label, defaultCompany };
+    setSubmitted(snapshot);
+    setModalOpen(true);
+    void submitApprove(snapshot.userCode, snapshot.label, snapshot.defaultCompany);
+  };
+
+  const retry = () => void submitApprove(submitted.userCode, submitted.label, submitted.defaultCompany);
+
+  const closeModal = () => {
+    stopPolling();
+    setModalOpen(false);
+  };
+
+  const dismissible = modalState.phase !== 'submitting';
 
   return (
     <div className="card">
@@ -138,7 +266,7 @@ function ApproveRealBridgePanel({
             list="known-companies"
           />
         </label>
-        <button onClick={() => void approve()} disabled={busy || !userCode} type="button">
+        <button onClick={approve} disabled={busy || !userCode} type="button">
           {busy && <Spinner />}
           Approve
         </button>
@@ -151,22 +279,115 @@ function ApproveRealBridgePanel({
           ))}
         </datalist>
       )}
-      {approved && (
-        <div className="callout callout-success">
-          <strong>
-            <IconCheck className="ok-color" /> Approved
-          </strong>
-          <p className="muted small">
-            Check the bridge's own terminal for "Authenticated" — then the Connections tab should show it online.
-          </p>
-          {onPaired && (
-            <button type="button" onClick={onPaired} style={{ alignSelf: 'flex-start', marginTop: 4 }}>
-              Go to Extractions →
-            </button>
-          )}
-        </div>
-      )}
-      <ErrorBanner message={error} />
+
+      <Modal open={modalOpen} onClose={closeModal} title="Connecting your bridge" dismissible={dismissible}>
+        <PairingSummary userCode={submitted.userCode} label={submitted.label} defaultCompany={submitted.defaultCompany} />
+
+        {modalState.phase === 'submitting' && (
+          <div className="pairing-state">
+            <Spinner />
+            <p>Approving code {submitted.userCode}…</p>
+          </div>
+        )}
+
+        {modalState.phase === 'error' && (
+          <>
+            <div className="pairing-state">
+              <IconAlert className="danger-color" />
+              <p>{modalState.message}</p>
+              {modalState.kind === 'expired' && (
+                <p className="muted small">Restart pairing on the connector to get a fresh code.</p>
+              )}
+              {modalState.kind === 'not-found' && (
+                <p className="muted small">Double-check the code for typos, or it may have expired.</p>
+              )}
+              {modalState.kind === 'conflict-other-org' && (
+                <p className="muted small">
+                  If this is your own code, someone else may have mistyped into the same organization — restart
+                  pairing on the connector for a fresh code.
+                </p>
+              )}
+            </div>
+            <div className="modal-actions">
+              {(modalState.kind === 'network' || modalState.kind === 'unknown') && (
+                <button type="button" onClick={retry} disabled={busy}>
+                  {busy && <Spinner />}
+                  Retry
+                </button>
+              )}
+              <button type="button" className="ghost" onClick={closeModal}>
+                Close
+              </button>
+            </div>
+          </>
+        )}
+
+        {modalState.phase === 'waiting' && (
+          <div className="pairing-state">
+            <Spinner />
+            <p>
+              {modalState.alreadyApproved ? 'Already approved — confirming' : 'Approved — waiting for'} the connector
+              to come online…
+            </p>
+            <p className="muted small">
+              {elapsedSeconds}s elapsed. Check the bridge's own terminal for "Authenticated" if this takes a while.
+            </p>
+          </div>
+        )}
+
+        {modalState.phase === 'connected' && (
+          <>
+            <div className="pairing-state">
+              <IconCheck className="ok-color" />
+              <p>
+                <strong>Pairing successful!</strong>
+              </p>
+              <p className="muted small">
+                {modalState.label}
+                {modalState.defaultCompany ? ` — ${modalState.defaultCompany}` : ''} is now connected.
+              </p>
+            </div>
+            <div className="modal-actions">
+              {onPaired && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeModal();
+                    onPaired();
+                  }}
+                >
+                  Go to Extractions →
+                </button>
+              )}
+              <button type="button" className="ghost" onClick={closeModal}>
+                Close
+              </button>
+            </div>
+          </>
+        )}
+
+        {modalState.phase === 'timed-out' && (
+          <>
+            <div className="pairing-state">
+              <IconAlert className="warn-color" />
+              <p>Approved, but the connector hasn't come online yet.</p>
+              <p className="muted small">
+                Check the bridge's own terminal for errors, confirm it's actually running (
+                <code>npm run start:agent</code>), and confirm it wrote <code>AGENT_TOKEN</code> to its own{' '}
+                <code>.env</code>. A firewall blocking outbound WebSocket traffic can also cause this.
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button type="button" onClick={() => beginStatusPolling(submitted.userCode)}>
+                Keep waiting
+              </button>
+              <button type="button" className="ghost" onClick={closeModal}>
+                Close
+              </button>
+            </div>
+          </>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -292,6 +513,16 @@ export function DevicePairingPanel({ onPaired }: { onPaired?: () => void }) {
           <div className="card-title">
             <IconPairing />
             <h2>Device pairing — simulated</h2>
+          </div>
+          <div className="callout callout-warning">
+            <strong>
+              <IconAlert /> This code is NOT from your real bridge
+            </strong>
+            <p className="muted small">
+              Clicking "Start pairing" below generates a brand-new, separate code from this browser tab — it has
+              nothing to do with whatever code your real connector bridge (<code>npm run start:agent</code>) printed
+              to its own console. Do not mix the two up.
+            </p>
           </div>
           <p className="muted">
             This page plays the role of BOTH the bridge (Start + auto-poll) AND the approving human (Approve), so

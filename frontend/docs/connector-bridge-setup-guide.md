@@ -28,7 +28,7 @@ Prefer clicking over `curl`? [postman/](../postman/) has the whole flow below as
 | **Node.js ≥ 20** | `node -v`. Developed on Node 24. |
 | **Docker + Docker Compose** | For local Postgres + Redis (`docker-compose.yml`, repo root). Not required if you point `DB_*`/`REDIS_*` at instances you already run elsewhere. |
 | **TallyPrime**, installed and licensed | The connector talks to Tally's own HTTP/XML server — no separate Tally SDK. |
-| **A machine that can reach Tally on its configured port (default 9000)** | In local dev this is usually the same machine. In a real deployment this is whichever machine runs the Connector Bridge — it must be on the same LAN as Tally, or the same machine. |
+| **A machine that can reach Tally on its configured port (default 9500)** | In local dev this is usually the same machine. In a real deployment this is whichever machine runs the Connector Bridge — it must be on the same LAN as Tally, or the same machine. |
 | `git`, a shell (bash/PowerShell) | For cloning and running npm scripts. |
 
 Two deployment shapes exist, both covered below:
@@ -64,8 +64,10 @@ Everything else has a sane local-dev default (see [`src/config/configuration.ts`
 |---|---|---|
 | `PORT` | `3000` | Where the backend listens. |
 | `APP_GLOBAL_PREFIX` | `api` | Every route is under `/api/...`. |
-| `TALLY_HOST` / `TALLY_PORT` | `127.0.0.1:9000` | Only used by the backend's **direct** `/tally/*` endpoints (§ Direct mode) and by the Connector Bridge (which has its own, separate env — see §2). |
+| `TALLY_HOST` / `TALLY_PORT` | `127.0.0.1:9500` | Only used by the backend's **direct** `/tally/*` endpoints (§ Direct mode) and by the Connector Bridge (which has its own, separate env — see §2). |
 | `TALLY_MAX_RETRIES` / `TALLY_RETRY_BASE_MS` | `2` / `500` | Retries transient Tally failures (timeout/unreachable) with exponential backoff before giving up. |
+| `TALLY_VOUCHER_CHUNK_DAYS` / `TALLY_CHUNK_DELAY_MS` | `7` / `2000` | Wide VOUCHERS date ranges are auto-split into chunks of at most this many days, with this pause between requests, so a wide pull doesn't time out or hammer Tally. |
+| `TALLY_MASTER_BATCH_SIZE` | `300` | LEDGERS/STOCK_ITEMS collections larger than this are auto-split into name-range batches of at most this size (using the same `TALLY_CHUNK_DELAY_MS` pause between batches) instead of one unbounded request — the count-based counterpart to voucher date-chunking, and what stops a large chart of accounts from making Tally hang. Companies at or under this size are unaffected. |
 | `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` or `DATABASE_URL` | `127.0.0.1:5432`, `tally`/`tally`/`tally_migration` | Postgres — orgs/users, paired connectors, extraction-job audit trail. |
 | `REDIS_HOST`/`REDIS_PORT` | `127.0.0.1:6379` | Cache, BullMQ job queue, extraction-result short-TTL storage. |
 | `EXTRACTION_RESULT_TTL_SECONDS` | `3600` | How long a completed job's data stays fetchable. |
@@ -113,7 +115,7 @@ Expect an `{"status":"ok", ...}`-shaped Terminus response. This only checks Post
 
 ```
 API listening on http://localhost:3000/api
-Configured Tally endpoint: http://127.0.0.1:9000
+Configured Tally endpoint: http://127.0.0.1:9500
 Probe connectivity: GET http://localhost:3000/api/tally/probe
 ```
 
@@ -135,7 +137,7 @@ npm run start:agent
 
 (This runs `dist/agent-main.js`, so `npm run build` first if you haven't. For a real client-machine install, `npm run package:win` produces a standalone `dist-exe/tally-backend.exe` — same behavior.)
 
-With no `AGENT_TOKEN` in its `.env`, `AgentTunnelClient` runs `AgentPairingService.pair()` automatically instead of connecting directly ([`src/agent/agent-pairing.service.ts`](../src/agent/agent-pairing.service.ts)) — a Device Authorization Grant (RFC 8628-style; see [architecture.md](architecture.md) for the full design rationale). Its logs print something like:
+With no saved pairing state and no `AGENT_TOKEN` in its `.env`, `AgentTunnelClient` runs `AgentPairingService.pair()` automatically instead of connecting directly ([`src/agent/agent-pairing.service.ts`](../src/agent/agent-pairing.service.ts)) — a Device Authorization Grant (RFC 8628-style; see [architecture.md](architecture.md) for the full design rationale). Its logs print something like:
 
 ```
 This connector is not yet paired to an organization.
@@ -172,24 +174,24 @@ curl -X POST http://localhost:3000/api/connections/device/approve \
 
 The bridge is already polling (every few seconds, per the `interval` it was told at start). Within one poll after you approve, it:
 1. receives the real device token,
-2. **writes `AGENT_TOKEN` into its own `.env` itself** — no human edits a config file —
+2. **saves it to its own local state file** (`.tally-bridge-state.json`, next to wherever the bridge runs from — see [`src/agent/bridge-state.util.ts`](../src/agent/bridge-state.util.ts)) — **never to `.env`**, and no human edits a config file —
 3. connects to the gateway with it.
 
 ```
 Paired successfully — connection id 0bd3e911-... ("Accounts PC").
-Saved AGENT_TOKEN to /path/to/.env for future restarts.
+Saved pairing state to /path/to/.tally-bridge-state.json for future restarts.
 Connecting to gateway at ws://127.0.0.1:3000/agent-tunnel...
 Authenticated. Agent id: 0bd3e911-...
 ```
 
-From here on, restarts skip pairing entirely — `AGENT_TOKEN` is now in `.env`, same as the manual flow below, just nobody typed it. Confirm from the backend side, scoped to your org:
+From here on, restarts skip pairing entirely — the token lives in `.tally-bridge-state.json` next to the bridge, read automatically on boot before any `AGENT_TOKEN` in `.env` is even considered (see §2.4 for when that fallback matters). `.env` itself is never touched by this flow. Confirm from the backend side, scoped to your org:
 
 ```bash
 curl http://localhost:3000/api/connections -H "Authorization: Bearer $TOKEN"
 # -> [{ "id": "...", "label": "Accounts PC", "connected": true, ... }]
 ```
 
-**Re-authentication after revocation:** if this connection is later revoked (`POST /connections/:id/revoke`), the gateway sends `auth-error` on the bridge's next connect attempt. The bridge clears its now-dead token in memory and automatically re-runs pairing (§2.1) on its next reconnect — no manual intervention, no restart needed. See `AgentTunnelClient.handleMessage`'s `auth-error` branch.
+**Re-authentication after revocation:** if this connection is later revoked (`POST /connections/:id/revoke`), the gateway sends `auth-error` on the bridge's next connect attempt. The bridge clears its now-dead token — both in memory and from `.tally-bridge-state.json` on disk — and automatically re-runs pairing (§2.1) on its next reconnect — no manual intervention, no restart needed. See `AgentTunnelClient.handleMessage`'s `auth-error` branch.
 
 > **A gap worth knowing about:** there is currently no standalone "ping the bridge" endpoint (an earlier proof-of-concept one, `GatewayController`, was removed for being unscoped by org — any authenticated user could drive *any* org's agent through it; see [architecture.md](architecture.md)'s Security non-negotiables). `connected: true` proves the tunnel is up, but not that the bridge can reach Tally — for that, run the cheap extraction test in §4.3.
 
@@ -206,7 +208,9 @@ curl -X POST http://localhost:3000/api/connections \
 ```
 
 Copy the `token` value — you cannot fetch it again (only its hash is stored, per [`src/connections/connections.service.ts`](../src/connections/connections.service.ts)). Set it as `AGENT_TOKEN` in that machine's `.env` before first boot; §2.1's pairing flow only runs when `AGENT_TOKEN` is absent, so a pre-set value skips it entirely.
-
+>
+> This is purely a first-boot seed, read only when no local `.tally-bridge-state.json` exists yet. Once the bridge has ever paired live (§2.1/§2.3) or been seeded this way, its own state file is checked first on every subsequent boot and takes precedence over whatever is still sitting in `.env`.
+>
 > `POST /connections` is safe to re-run for a device you've already paired: if `defaultCompany` matches an existing **active** connection in your org, it rotates that row's token and returns `reused: true` instead of inserting a duplicate (`ConnectionsService.upsertForCompany`) — a DB-level unique index backs this up too, so two active connections can never share a company. A generic connector paired with no `defaultCompany` has no dedup key and always gets a new row, same as before.
 >
 > To explicitly rotate a specific connection by id instead (e.g. a suspected-leaked token) rather than by company name:
@@ -231,7 +235,7 @@ On the machine the **bridge** runs on (not necessarily the backend's machine), w
 
 1. In TallyPrime: **F1 (Help) → Settings → Connectivity**.
 2. Enable **"Act as Server"** (TallyPrime's built-in HTTP/XML server — this is what the bridge/backend actually talks to; no separate plugin or API key).
-3. Confirm/set the port — **9000** is the default this project assumes (`TALLY_PORT`).
+3. Confirm/set the port — **9500** is the default this project assumes (`TALLY_PORT`).
 4. Leave the target company **loaded** in Tally — extraction requests reference it by exact name (`TALLY_DEFAULT_COMPANY`, or an explicit `company`/`companyName` per request); Tally must have it open to answer for it.
 
 No XML/API config on Tally's side beyond this — everything about *what* gets requested (which fields, which report) is built entirely on this project's side (`src/tally/xml/envelope.builder.ts`), not configured in Tally.
@@ -259,7 +263,7 @@ To verify specifically *through the bridge* (not the backend's own direct connec
 ### The data flow
 
 ```
-Tally (HTTP/XML :9000)
+Tally (HTTP/XML :9500)
    ↕  EnvelopeBuilder → TallyConnector → TallyResponseParser
    (this triad runs identically whether driven directly by the backend,
     or by the bridge over the tunnel — see architecture.md)
@@ -381,8 +385,9 @@ Steps 1–6 are a fast direct-mode sanity check and can be skipped once you trus
 | `GET /api/health` fails / times out | Postgres or Redis unreachable | Check `docker compose ps`; confirm `DB_PORT`/`REDIS_PORT` in `.env` match what's actually published (a port conflict with another local project is the most common cause). |
 | `GET /api/tally/probe` → `Could not reach Tally at http://...` (502) | Tally closed, "Act as Server" off, wrong `TALLY_HOST`/`TALLY_PORT`, or a firewall | Re-check §3. If Tally is on a different machine than whichever process is probing, confirm that machine's firewall allows inbound on `TALLY_PORT`. |
 | `GET /api/tally/probe` → Gateway Timeout (504) | Tally is reachable but slow (large company / the request timed out) | Raise `TALLY_TIMEOUT_MS`, or narrow the request (date range for vouchers). Retries (`TALLY_MAX_RETRIES`) only help with transient blips, not a consistently-too-slow Tally. |
+| Fetching LEDGERS/STOCK_ITEMS makes Tally hang or the request times out | Asking Tally for a large company's entire ledger/stock-item collection in one unbounded response | `MasterExtractionService` auto-batches collections larger than `TALLY_MASTER_BATCH_SIZE` (default 300) into smaller name-range requests, paced by `TALLY_CHUNK_DELAY_MS` between each — same idea as `TALLY_VOUCHER_CHUNK_DAYS` for vouchers, just count-based instead of date-based. If it still hangs, lower `TALLY_MASTER_BATCH_SIZE` further (e.g. 100 or 50). All Tally requests are also now serialized app-wide (`TallyHttpClient`'s internal queue) — Tally only ever sees one request at a time, whether from an extraction, a probe, or another job running concurrently. |
 | `probe`/raw XML error mentioning `LINEERROR` | Tally answered but rejected the request (bad report name, `SVCURRENTCOMPANY` mismatch) | Check the company name is **exact** — get it from `GET /api/tally/probe`'s `companies` list, not typed from memory. |
-| Bridge logs `Reconnecting in ...ms` in a loop, never `Authenticated` | Wrong `GATEWAY_URL`, or a stale/revoked `AGENT_TOKEN` from before this session's pairing changes | Wrong `GATEWAY_URL`: check §2.4. A dead token: as of this flow, an `auth-error` now clears it and auto-re-pairs (§2.3) — if you're still stuck, delete `AGENT_TOKEN` from `.env` and restart to force fresh pairing (§2.1). |
+| Bridge logs `Reconnecting in ...ms` in a loop, never `Authenticated` | Wrong `GATEWAY_URL`, or a stale/revoked token | Wrong `GATEWAY_URL`: check §2.4. A dead token: an `auth-error` now clears it both in memory and from `.tally-bridge-state.json` and auto-re-pairs (§2.3) — if you're still stuck, delete `.tally-bridge-state.json` (next to wherever the bridge runs from) and restart to force fresh pairing (§2.1). Also make sure `AGENT_TOKEN` isn't still set in that machine's `.env` — if it is, it'll be used as a seed the moment the state file is gone (§2.4). |
 | Bridge prints a pairing code but `POST /connections/device/approve` 404s `"No pending pairing request with that code"` | Typo'd the code, or it expired (10 min window) | Re-copy the code exactly from the bridge's current logs — restarting the bridge issues a new one, the old one no longer matches. |
 | `POST /connections/device/token` (what the bridge itself polls) → 400 `"already been used"` | This device code was already consumed by an earlier successful pairing | Expected once pairing succeeds — a device code is single-use. If the bridge is still trying to use an old one, restart it to get a fresh code. |
 | `GET /connections` shows `connected: false` after the bridge logs `Authenticated` | The socket dropped after connecting (network blip) | The bridge auto-reconnects with backoff (`AgentTunnelClient.computeBackoffMs`, 1s → 30s ceiling) — wait, or check the bridge's own logs for a `close`/`error` event. |
@@ -392,7 +397,8 @@ Steps 1–6 are a fast direct-mode sanity check and can be skipped once you trus
 | `POST /extractions` → 400 `"does not match this connector's paired company"` | You passed an explicit `payload.company` that differs from the target connection's `defaultCompany` | An agent can only extract from the company it's paired to (§2.1) — either drop the override, or re-pair without a `defaultCompany` if this bridge is meant to serve multiple companies. |
 | Job status stays `PENDING` a long time, then `FAILED` | Tally itself failed the request (bad company, closed) after 3 retry attempts (`ExtractionsModule`'s `defaultJobOptions`) | Check the job's `error` field (`GET /extractions/:id`) — it's the underlying Tally exception's message. |
 | `GET /extractions/:id/result` → 404 `"Result has expired..."` | Past `EXTRACTION_RESULT_TTL_SECONDS` since the job succeeded | Re-run the extraction; raise the TTL in `.env` if you need a longer window. |
-| Port already in use (`3000`, `5432`, `6379`, `9000`) | Another local process/project | Change `PORT`/`DB_PORT`/`REDIS_PORT` in `.env` (docker-compose reads the same vars); `TALLY_PORT` must match whatever you set in Tally's own Connectivity settings. |
+| Port already in use (`3000`, `5432`, `6379`, `9500`) | Another local process/project | Change `PORT`/`DB_PORT`/`REDIS_PORT` in `.env` (docker-compose reads the same vars); `TALLY_PORT` must match whatever you set in Tally's own Connectivity settings. |
+| `GET /api/tally/probe` fails with a parse-level error (e.g. Node's `Parse Error: Expected HTTP/`, or curl's `Received HTTP/0.9 when not allowed`) rather than a plain connection-refused | Something *other than Tally* is bound to `127.0.0.1:TALLY_PORT` and is answering non-HTTP traffic — a silent port collision, not Tally being closed | Check `netstat -ano \| findstr :<port>` (or `netstat -ano \| grep :<port>` in a POSIX shell) for every PID bound to that port, not just the first — multiple processes can each bind the same port number on different address scopes (`0.0.0.0` vs `127.0.0.1` vs `::`), and Windows routes a connection to the most specific match. Jupyter kernels are a common, easy-to-miss culprit: `python -m ipykernel_launcher` opens **five sequential ports** (shell/iopub/stdin/control/heartbeat) starting wherever its connection file says — if that happens to start at `9000`, it silently owns `9000`–`9004`, intercepting anything configured in that whole range. Pick a `TALLY_PORT` well outside any range you find already in use. |
 
 ---
 
@@ -403,7 +409,7 @@ Steps 1–6 are a fast direct-mode sanity check and can be skipped once you trus
 - [ ] `docker compose up -d`
 - [ ] `npm run prisma:migrate:deploy`
 - [ ] `npm run start:dev` → `curl .../api/health` succeeds
-- [ ] Tally: "Act as Server" on, target company open, port `9000`
+- [ ] Tally: "Act as Server" on, target company open, port `9500`
 - [ ] `curl .../api/tally/probe` → `reachable: true` (direct-mode sanity check)
 - [ ] `npm run start:agent` with **no `AGENT_TOKEN` set** → note the pairing code it prints
 - [ ] `POST /api/auth/register` (or `/login`) → save the `accessToken`

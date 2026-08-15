@@ -12,7 +12,7 @@ export const envValidationSchema = Joi.object({
 
   // Tally
   TALLY_HOST: Joi.string().hostname().default('127.0.0.1'),
-  TALLY_PORT: Joi.number().port().default(9000),
+  TALLY_PORT: Joi.number().port().default(9001),
   TALLY_TIMEOUT_MS: Joi.number().integer().min(1000).max(600000).default(60000),
   // Deliberately much shorter than TALLY_TIMEOUT_MS and never retried — see
   // TallyConfig.probeTimeoutMs. A health check that takes as long as a real
@@ -33,6 +33,11 @@ export const envValidationSchema = Joi.object({
   // Pause between chunk requests so a chunked VOUCHERS pull doesn't hammer
   // Tally back-to-back. 0 disables it.
   TALLY_CHUNK_DELAY_MS: Joi.number().integer().min(0).max(30000).default(2000),
+  // LEDGERS/STOCK_ITEMS collections larger than this are auto-split into
+  // name-range sub-requests of at most this many records — see
+  // TallyConfig.masterBatchSize. The count-based counterpart to
+  // TALLY_VOUCHER_CHUNK_DAYS's date-based chunking.
+  TALLY_MASTER_BATCH_SIZE: Joi.number().integer().min(10).max(5000).default(300),
 
   // Postgres (Prisma)
   DB_HOST: Joi.string().default('127.0.0.1'),

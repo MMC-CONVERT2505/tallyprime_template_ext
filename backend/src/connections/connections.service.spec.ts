@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { ConnectionsService } from './connections.service';
 import { parseConnectionToken } from './token.util';
 
@@ -101,6 +102,62 @@ describe('ConnectionsService', () => {
         defaultCompany: 'New Co',
       });
       expect(result.reused).toBe(false);
+    });
+
+    it('loses a concurrent first-time-pairing race gracefully: reuses the winner\'s row instead of crashing on the unique-index violation', async () => {
+      const winner = {
+        id: 'conn-winner',
+        label: 'Other request got there first',
+        orgId: 'org-1',
+        defaultCompany: 'New Co',
+        isActive: true,
+      };
+      const create = jest
+        .fn()
+        .mockRejectedValueOnce(
+          new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+            code: 'P2002',
+            clientVersion: '7.9.1',
+          }),
+        );
+      const update = jest.fn().mockResolvedValue({});
+      const findFirst = jest
+        .fn()
+        .mockResolvedValueOnce(null) // pre-create check: nobody's paired this yet
+        .mockResolvedValueOnce(winner); // post-conflict recheck: the winner's row now exists
+      const prisma = makePrisma({ create, update, findFirst });
+      const service = new ConnectionsService(prisma as any);
+
+      const result = await service.create('org-1', {
+        label: 'My label',
+        defaultCompany: 'New Co',
+      });
+
+      expect(findFirst).toHaveBeenCalledTimes(2);
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'conn-winner' },
+        data: { tokenHash: expect.stringMatching(/^\$argon2/), label: 'My label' },
+      });
+      expect(result.id).toBe('conn-winner');
+      expect(result.reused).toBe(true);
+    });
+
+    it('rethrows the original error if the post-conflict recheck still finds nothing (a genuinely different failure)', async () => {
+      const conflictError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: '7.9.1',
+      });
+      const create = jest.fn().mockRejectedValueOnce(conflictError);
+      const findFirst = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null);
+      const prisma = makePrisma({ create, findFirst });
+      const service = new ConnectionsService(prisma as any);
+
+      await expect(
+        service.create('org-1', { label: 'My label', defaultCompany: 'New Co' }),
+      ).rejects.toBe(conflictError);
     });
   });
 

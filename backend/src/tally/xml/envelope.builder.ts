@@ -126,8 +126,30 @@ export class EnvelopeBuilder {
    * variables a report export uses — Tally computes OpeningBalance/
    * ClosingBalance relative to that period, not just "whatever's current."
    * Omit both to get Tally's current-period balances (previous behavior).
+   *
+   * `alterIdRange`, when supplied, scopes the collection to
+   * `from <= AlterID <= to` (inclusive both ends) via a named TDL filter
+   * formula — see MasterExtractionService's batched fetch, which splits a
+   * large company's ledger list into several of these instead of one
+   * unbounded request. Batched by AlterID (a plain integer Tally bumps on
+   * every change to a record — already one of the fields fetched here), not
+   * by name: two name-based approaches were tried and both broke on real
+   * data — an alphabetical range mismatched Tally's own string collation
+   * against JavaScript's sort order (a batch returned zero records, another
+   * more than its slice), and exact-name matching silently missed ~4% of
+   * records whose names contained a literal `&#13;&#10;` marker (Tally's
+   * own encoding of an embedded CR/LF someone pasted into a name field,
+   * which doesn't round-trip through a TDL string literal the same way it's
+   * compared internally). A plain numeric ID has none of that ambiguity.
+   * Omitted entirely for a small collection: byte-identical to the
+   * unfiltered request that ran before batching existed.
    */
-  buildLedgersRequest(company: string, fromDate?: string, toDate?: string): string {
+  buildLedgersRequest(
+    company: string,
+    fromDate?: string,
+    toDate?: string,
+    alterIdRange?: { from: number; to: number },
+  ): string {
     const collection = `
       <COLLECTION NAME="Lean Ledgers" ISINITIALIZE="Yes">
         <TYPE>Ledger</TYPE>
@@ -137,13 +159,30 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>OpeningBalance</NATIVEMETHOD>
         <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>
         <NATIVEMETHOD>AlterID</NATIVEMETHOD>
-      </COLLECTION>`;
+        ${this.alterIdRangeFilterRef(alterIdRange)}
+      </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(
       'Lean Ledgers',
       collection,
       company,
       this.periodVariables(fromDate, toDate),
     );
+  }
+
+  /**
+   * Cheap Name+AlterID ledger collection — no balances, no period
+   * variables, so Tally doesn't compute anything per row. Used to get a
+   * total count and the AlterID list before deciding how (or whether) to
+   * batch the full fetch.
+   */
+  buildLedgerNamesRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Ledger Names" ISINITIALIZE="Yes">
+        <TYPE>Ledger</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Ledger Names', collection, company);
   }
 
   /**
@@ -171,8 +210,14 @@ export class EnvelopeBuilder {
    *
    * fromDate/toDate: see buildLedgersRequest's doc comment — same
    * SVFROMDATE/SVTODATE period-scoping applies to stock quantities/values.
+   * `alterIdRange`: see buildLedgersRequest's doc comment — same numeric batching mechanism.
    */
-  buildStockItemsRequest(company: string, fromDate?: string, toDate?: string): string {
+  buildStockItemsRequest(
+    company: string,
+    fromDate?: string,
+    toDate?: string,
+    alterIdRange?: { from: number; to: number },
+  ): string {
     const collection = `
       <COLLECTION NAME="Lean Stock Items" ISINITIALIZE="Yes">
         <TYPE>StockItem</TYPE>
@@ -185,13 +230,25 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>
         <NATIVEMETHOD>ClosingValue</NATIVEMETHOD>
         <NATIVEMETHOD>AlterID</NATIVEMETHOD>
-      </COLLECTION>`;
+        ${this.alterIdRangeFilterRef(alterIdRange)}
+      </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(
       'Lean Stock Items',
       collection,
       company,
       this.periodVariables(fromDate, toDate),
     );
+  }
+
+  /** Cheap Name+AlterID stock item collection — see buildLedgerNamesRequest's doc comment. */
+  buildStockItemNamesRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Stock Item Names" ISINITIALIZE="Yes">
+        <TYPE>StockItem</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Stock Item Names', collection, company);
   }
 
   /** Day Book vouchers for a date range, optionally filtered by voucher type. */
@@ -216,6 +273,31 @@ export class EnvelopeBuilder {
     if (fromDate) vars.SVFROMDATE = fromDate;
     if (toDate) vars.SVTODATE = toDate;
     return vars;
+  }
+
+  /** <FILTER> reference for an AlterID-range batch, or empty string when unbatched. */
+  private alterIdRangeFilterRef(alterIdRange?: { from: number; to: number }): string {
+    return alterIdRange ? '<FILTER>AlterIdRangeFilter</FILTER>' : '';
+  }
+
+  /**
+   * The named TDL formula an AlterID-range <FILTER> reference resolves
+   * against — inclusive both ends ($AlterID >= from AND $AlterID <= to),
+   * sibling to (not nested inside) the <COLLECTION> it filters, both
+   * wrapped in the same <TDLMESSAGE> by buildCollectionRequest. Empty
+   * string when unbatched, so the unfiltered request stays byte-identical
+   * to before batching existed.
+   *
+   * A plain integer comparison — no quoting, no collation, no escaping
+   * concerns beyond the operators themselves (`<=` contains a literal `<`,
+   * invalid raw inside XML text content, same lesson as the name-based
+   * approaches this replaced — escaped as part of the whole formula string).
+   */
+  private alterIdRangeFormula(alterIdRange?: { from: number; to: number }): string {
+    if (!alterIdRange) return '';
+    const formula = `$AlterID >= ${alterIdRange.from} AND $AlterID <= ${alterIdRange.to}`;
+    return `
+      <SYSTEM TYPE="Formulae" NAME="AlterIdRangeFilter">${escapeXml(formula)}</SYSTEM>`;
   }
 
   private wrap(inner: string): string {

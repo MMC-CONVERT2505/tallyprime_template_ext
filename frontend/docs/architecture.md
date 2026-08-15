@@ -15,7 +15,7 @@ Companion to [zoho-migration-tool-review.md](zoho-migration-tool-review.md), whi
 ```mermaid
 flowchart LR
     subgraph "Client machine"
-        T["TallyPrime :9000"]
+        T["TallyPrime :9001"]
         Agt["Connector\n(headless Windows service,\nno local UI)"]
         T <-->|"XML/HTTP"| Agt
     end
@@ -46,7 +46,7 @@ The connector reuses the existing `TallyModule` almost unchanged (`EnvelopeBuild
 **Connectivity & resilience**
 - `wss://` on port 443 with configurable outbound proxy support — client networks routinely block non-standard ports and force traffic through an authenticated forward proxy.
 - Reconnect with backoff; "agent offline" is a normal, frequent state (sleep, reboot, WiFi drop), not an error condition.
-- Three independent status signals surfaced to the web app, not conflated: **agent online** (tunnel up) / **Tally reachable** (agent can hit :9000) / **company loaded** (target company open in Tally). Each fails differently and needs a different fix.
+- Three independent status signals surfaced to the web app, not conflated: **agent online** (tunnel up) / **Tally reachable** (agent can hit :9001) / **company loaded** (target company open in Tally). Each fails differently and needs a different fix.
 - Jobs, not request/response — an extraction crossing a network hop needs to survive a tunnel drop mid-job (clean failure + resumability), and the browser needs push/poll status rather than holding an HTTP connection open across a whole extraction.
 
 **Multi-tenancy & routing**

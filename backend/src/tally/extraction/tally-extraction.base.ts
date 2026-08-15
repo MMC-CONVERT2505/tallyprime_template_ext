@@ -82,6 +82,11 @@ export abstract class TallyExtractionServiceBase {
     }
   }
 
+  /** Shared by every chunked/batched fetch (VOUCHERS date-chunking, LEDGERS/STOCK_ITEMS batching) to pace successive Tally requests. */
+  protected sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   /**
    * Wraps an extraction in timing + audit persistence. The Tally call is the
    * source of truth for success/failure; audit writes are best-effort and

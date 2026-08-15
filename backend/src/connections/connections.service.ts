@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../database/prisma.service';
 import { CreateConnectionDto } from './dto/create-connection.dto';
@@ -39,6 +40,12 @@ export class ConnectionsService {
    *
    * `defaultCompany` unset (multi-company/generic agent) always inserts —
    * there's no key to dedupe against, same as before this method existed.
+   *
+   * The find-then-create below isn't atomic, so two concurrent first-time
+   * pairings for the same never-before-seen (org, company) can both see no
+   * existing row and both attempt `create`. The DB's partial unique index
+   * accepts the first and rejects the second (P2002) — caught here and
+   * turned into a reuse of the winner's row instead of an unhandled 500.
    */
   async upsertForCompany(
     orgId: string,
@@ -53,24 +60,45 @@ export class ConnectionsService {
         where: { orgId, defaultCompany, isActive: true },
       });
       if (existing) {
-        await this.prisma.tallyConnection.update({
-          where: { id: existing.id },
-          data: { tokenHash, label },
-        });
-        return {
-          id: existing.id,
-          label,
-          token: formatConnectionToken(existing.id, secret),
-          reused: true,
-        };
+        return this.reuseExisting(existing.id, label, tokenHash, secret);
       }
     }
 
     const id = randomUUID();
-    await this.prisma.tallyConnection.create({
-      data: { id, label, defaultCompany, tokenHash, orgId },
+    try {
+      await this.prisma.tallyConnection.create({
+        data: { id, label, defaultCompany, tokenHash, orgId },
+      });
+      return { id, label, token: formatConnectionToken(id, secret), reused: false };
+    } catch (err) {
+      if (defaultCompany && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const winner = await this.prisma.tallyConnection.findFirst({
+          where: { orgId, defaultCompany, isActive: true },
+        });
+        if (winner) {
+          return this.reuseExisting(winner.id, label, tokenHash, secret);
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async reuseExisting(
+    existingId: string,
+    label: string,
+    tokenHash: string,
+    secret: string,
+  ): Promise<NewConnectionResult> {
+    await this.prisma.tallyConnection.update({
+      where: { id: existingId },
+      data: { tokenHash, label },
     });
-    return { id, label, token: formatConnectionToken(id, secret), reused: false };
+    return {
+      id: existingId,
+      label,
+      token: formatConnectionToken(existingId, secret),
+      reused: true,
+    };
   }
 
   /**

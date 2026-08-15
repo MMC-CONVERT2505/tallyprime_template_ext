@@ -77,4 +77,65 @@ describe('EnvelopeBuilder', () => {
     expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
     expect(xml).toContain('<NATIVEMETHOD>Parent</NATIVEMETHOD>');
   });
+
+  it('builds a cheap Name+AlterID ledger request with no balance fields', () => {
+    const xml = builder.buildLedgerNamesRequest('ABC Ltd');
+    expect(xml).toContain('<TYPE>Ledger</TYPE>');
+    expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>AlterID</NATIVEMETHOD>');
+    expect(xml).not.toContain('<NATIVEMETHOD>OpeningBalance</NATIVEMETHOD>');
+    expect(xml).not.toContain('<NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>');
+  });
+
+  it('builds a cheap Name+AlterID stock item request with no balance/value fields', () => {
+    const xml = builder.buildStockItemNamesRequest('ABC Ltd');
+    expect(xml).toContain('<TYPE>StockItem</TYPE>');
+    expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>AlterID</NATIVEMETHOD>');
+    expect(xml).not.toContain('<NATIVEMETHOD>OpeningBalance</NATIVEMETHOD>');
+    expect(xml).not.toContain('<NATIVEMETHOD>OpeningValue</NATIVEMETHOD>');
+  });
+
+  it('adds an AlterID-range FILTER and matching formula when batching ledgers, operators XML-escaped', () => {
+    const xml = builder.buildLedgersRequest('ABC Ltd', undefined, undefined, {
+      from: 100,
+      to: 400,
+    });
+    expect(xml).toContain('<FILTER>AlterIdRangeFilter</FILTER>');
+    // `<=`/`>=` contain literal angle brackets — invalid raw inside XML text
+    // content, so the whole formula (operators included) must come out
+    // entity-escaped, same lesson learned from the name-range approach this replaced.
+    expect(xml).toContain(
+      '<SYSTEM TYPE="Formulae" NAME="AlterIdRangeFilter">$AlterID &gt;= 100 AND $AlterID &lt;= 400</SYSTEM>',
+    );
+  });
+
+  it('uses a plain numeric AlterID comparison, not a name — no quoting, no string-collation exposure', () => {
+    const xml = builder.buildLedgersRequest('ABC Ltd', undefined, undefined, { from: 1, to: 9999 });
+    expect(xml).not.toContain('$Name');
+    expect(xml).not.toContain('&quot;'); // no quoted string literal at all — pure integer comparison
+  });
+
+  it('omits the FILTER/formula entirely for ledgers when no alterIdRange is given (unbatched, unchanged)', () => {
+    const xml = builder.buildLedgersRequest('ABC Ltd');
+    expect(xml).not.toContain('<FILTER>');
+    expect(xml).not.toContain('SYSTEM TYPE="Formulae"');
+  });
+
+  it('adds an AlterID-range FILTER and matching formula when batching stock items', () => {
+    const xml = builder.buildStockItemsRequest('ABC Ltd', undefined, undefined, {
+      from: 5,
+      to: 12,
+    });
+    expect(xml).toContain('<FILTER>AlterIdRangeFilter</FILTER>');
+    expect(xml).toContain(
+      '<SYSTEM TYPE="Formulae" NAME="AlterIdRangeFilter">$AlterID &gt;= 5 AND $AlterID &lt;= 12</SYSTEM>',
+    );
+  });
+
+  it('omits the FILTER/formula entirely for stock items when no alterIdRange is given (unbatched, unchanged)', () => {
+    const xml = builder.buildStockItemsRequest('ABC Ltd');
+    expect(xml).not.toContain('<FILTER>');
+    expect(xml).not.toContain('SYSTEM TYPE="Formulae"');
+  });
 });

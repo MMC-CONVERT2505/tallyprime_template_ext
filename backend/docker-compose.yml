@@ -6,7 +6,7 @@
 # Useful for testing the containerized build locally before it goes to staging.
 #
 # NOTE: TallyPrime is intentionally NOT here. Tally is a Windows desktop app that
-# must run natively on the client machine to expose localhost:9000 — it is never
+# must run natively on the client machine to expose localhost:9001 — it is never
 # containerized. Point TALLY_HOST/TALLY_PORT at wherever Tally is running (from
 # inside the `app` container on Windows/Mac, that's usually host.docker.internal).
 services:

@@ -1,9 +1,12 @@
 import { of, throwError } from 'rxjs';
 import { AgentPairingService } from './agent-pairing.service';
 
-jest.mock('./env-file.util', () => ({ upsertEnvValue: jest.fn() }));
+jest.mock('./bridge-state.util', () => ({
+  writeBridgeState: jest.fn(),
+  DEFAULT_BRIDGE_STATE_PATH: '/mock/.tally-bridge-state.json',
+}));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { upsertEnvValue } = require('./env-file.util');
+const { writeBridgeState } = require('./bridge-state.util');
 
 describe('AgentPairingService', () => {
   function makeService(httpPost: jest.Mock) {
@@ -29,7 +32,13 @@ describe('AgentPairingService', () => {
       .mockReturnValueOnce(
         of({
           status: 200,
-          data: { status: 'approved', id: 'conn-1', label: 'Accounts PC', token: 'conn-1.secret' },
+          data: {
+            status: 'approved',
+            id: 'conn-1',
+            label: 'Accounts PC',
+            token: 'conn-1.secret',
+            defaultCompany: 'ABC Ltd',
+          },
         }),
       );
     const service = makeService(httpPost);
@@ -49,10 +58,14 @@ describe('AgentPairingService', () => {
       { deviceCode: 'dc-1' },
       expect.anything(),
     );
-    expect(upsertEnvValue).toHaveBeenCalledWith(
-      expect.stringContaining('.env'),
-      'AGENT_TOKEN',
-      'conn-1.secret',
+    expect(writeBridgeState).toHaveBeenCalledWith(
+      '/mock/.tally-bridge-state.json',
+      expect.objectContaining({
+        agentToken: 'conn-1.secret',
+        connectionId: 'conn-1',
+        label: 'Accounts PC',
+        defaultCompany: 'ABC Ltd',
+      }),
     );
   });
 
@@ -66,7 +79,7 @@ describe('AgentPairingService', () => {
     const service = makeService(httpPost);
 
     await expect(service.pair()).rejects.toThrow(/expired/);
-    expect(upsertEnvValue).not.toHaveBeenCalled();
+    expect(writeBridgeState).not.toHaveBeenCalled();
   });
 
   it('times out if never approved within expiresIn', async () => {

@@ -42,6 +42,6 @@ http://localhost:3000/api/health
 
 ## Important
 
-- Tally must have "Act as Server" enabled on port 9000.
+- Tally must have "Act as Server" enabled on port 9001.
 - Set TALLY_HOST to the Tally machine IP or 127.0.0.1 if local.
 - The app expects a .env file next to the exe.

@@ -1,9 +1,11 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { DeviceAuthService } from './device-auth.service';
 
 describe('DeviceAuthService', () => {
   function makePrisma(
-    overrides: Partial<Record<'create' | 'findFirst' | 'findUnique' | 'update', jest.Mock>> = {},
+    overrides: Partial<
+      Record<'create' | 'findFirst' | 'findUnique' | 'update' | 'updateMany', jest.Mock>
+    > = {},
   ) {
     return {
       deviceAuthorization: {
@@ -11,6 +13,7 @@ describe('DeviceAuthService', () => {
         findFirst: overrides.findFirst ?? jest.fn().mockResolvedValue(null),
         findUnique: overrides.findUnique ?? jest.fn().mockResolvedValue(null),
         update: overrides.update ?? jest.fn().mockResolvedValue({}),
+        updateMany: overrides.updateMany ?? jest.fn().mockResolvedValue({ count: 0 }),
       },
     };
   }
@@ -63,26 +66,19 @@ describe('DeviceAuthService', () => {
   });
 
   describe('approve', () => {
-    const PENDING_ROW = {
-      id: 'da-1',
-      userCode: 'ABCD-1234',
-      expiresAt: new Date(Date.now() + 60_000),
-    };
-
-    it('marks a pending, unexpired row APPROVED, scoped to the approving org', async () => {
-      const findFirst = jest.fn().mockResolvedValue(PENDING_ROW);
-      const update = jest.fn().mockResolvedValue({});
-      const prisma = makePrisma({ findFirst, update });
+    it('claims a pending, unexpired row atomically via updateMany, scoped to the approving org', async () => {
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const prisma = makePrisma({ updateMany });
       const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
-      await service.approve('org-1', {
+      const result = await service.approve('org-1', {
         userCode: 'ABCD-1234',
         label: 'Accounts PC',
         defaultCompany: 'ABC Ltd',
       });
 
-      expect(update).toHaveBeenCalledWith({
-        where: { id: 'da-1' },
+      expect(updateMany).toHaveBeenCalledWith({
+        where: { userCode: 'ABCD-1234', status: 'PENDING', expiresAt: { gt: expect.any(Date) } },
         data: {
           status: 'APPROVED',
           orgId: 'org-1',
@@ -90,9 +86,10 @@ describe('DeviceAuthService', () => {
           defaultCompany: 'ABC Ltd',
         },
       });
+      expect(result).toEqual({ approved: true, alreadyApproved: false });
     });
 
-    it('404s when no pending request has that user code', async () => {
+    it('404s when no request at all has that user code', async () => {
       const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(null) });
       const service = new DeviceAuthService(prisma as any, makeConnections() as any);
 
@@ -102,7 +99,12 @@ describe('DeviceAuthService', () => {
     });
 
     it('rejects and marks EXPIRED an approval attempt past expiresAt', async () => {
-      const expired = { ...PENDING_ROW, expiresAt: new Date(Date.now() - 1000) };
+      const expired = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'PENDING',
+        expiresAt: new Date(Date.now() - 1000),
+      };
       const update = jest.fn().mockResolvedValue({});
       const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(expired), update });
       const service = new DeviceAuthService(prisma as any, makeConnections() as any);
@@ -111,6 +113,196 @@ describe('DeviceAuthService', () => {
         BadRequestException,
       );
       expect(update).toHaveBeenCalledWith({ where: { id: 'da-1' }, data: { status: 'EXPIRED' } });
+    });
+
+    it('rejects an approval attempt for a row already marked EXPIRED, without touching it again', async () => {
+      const row = { id: 'da-1', userCode: 'ABCD-1234', status: 'EXPIRED', expiresAt: new Date(Date.now() - 1000) };
+      const update = jest.fn().mockResolvedValue({});
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row), update });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      await expect(service.approve('org-1', { userCode: 'ABCD-1234' })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('returns alreadyApproved: true, without throwing, when the same org re-approves an already-approved code', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'APPROVED',
+        orgId: 'org-1',
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      const result = await service.approve('org-1', { userCode: 'ABCD-1234' });
+
+      expect(result).toEqual({ approved: true, alreadyApproved: true });
+    });
+
+    it('409s when a different org tries to approve a code already approved by another org', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'APPROVED',
+        orgId: 'org-OTHER',
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      await expect(service.approve('org-1', { userCode: 'ABCD-1234' })).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('409s when the code has already been consumed', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'CONSUMED',
+        orgId: 'org-1',
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      await expect(service.approve('org-1', { userCode: 'ABCD-1234' })).rejects.toThrow(
+        ConflictException,
+      );
+    });
+  });
+
+  describe('status', () => {
+    it('404s on an unknown user code', async () => {
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(null) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      await expect(service.status('org-1', 'NOPE-0000')).rejects.toThrow(NotFoundException);
+    });
+
+    it('reports pending with time remaining', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'PENDING',
+        orgId: null,
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      const result = await service.status('org-1', 'ABCD-1234');
+
+      expect(result.status).toBe('pending');
+      if (result.status !== 'pending') throw new Error('unreachable');
+      expect(result.expiresInSeconds).toBeGreaterThan(0);
+    });
+
+    it('lazily marks a stale PENDING row EXPIRED and reports expired', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'PENDING',
+        orgId: null,
+        expiresAt: new Date(Date.now() - 1000),
+      };
+      const update = jest.fn().mockResolvedValue({});
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row), update });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      const result = await service.status('org-1', 'ABCD-1234');
+
+      expect(result).toEqual({ status: 'expired', userCode: 'ABCD-1234' });
+      expect(update).toHaveBeenCalledWith({ where: { id: 'da-1' }, data: { status: 'EXPIRED' } });
+    });
+
+    it('includes label/company for an APPROVED row when the requester is the owning org', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'APPROVED',
+        orgId: 'org-1',
+        label: 'Accounts PC',
+        defaultCompany: 'ABC Ltd',
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      const result = await service.status('org-1', 'ABCD-1234');
+
+      expect(result).toEqual({
+        status: 'approved',
+        userCode: 'ABCD-1234',
+        label: 'Accounts PC',
+        defaultCompany: 'ABC Ltd',
+      });
+    });
+
+    it('omits label/company for an APPROVED row owned by a different org', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'APPROVED',
+        orgId: 'org-OTHER',
+        label: 'Accounts PC',
+        defaultCompany: 'ABC Ltd',
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      const result = await service.status('org-1', 'ABCD-1234');
+
+      expect(result).toEqual({ status: 'approved', userCode: 'ABCD-1234' });
+    });
+
+    it('includes connectionId for a CONSUMED row when the requester is the owning org', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'CONSUMED',
+        orgId: 'org-1',
+        label: 'Accounts PC',
+        defaultCompany: 'ABC Ltd',
+        connectionId: 'conn-1',
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      const result = await service.status('org-1', 'ABCD-1234');
+
+      expect(result).toEqual({
+        status: 'consumed',
+        userCode: 'ABCD-1234',
+        connectionId: 'conn-1',
+        label: 'Accounts PC',
+        defaultCompany: 'ABC Ltd',
+      });
+    });
+
+    it('omits connection details for a CONSUMED row owned by a different org', async () => {
+      const row = {
+        id: 'da-1',
+        userCode: 'ABCD-1234',
+        status: 'CONSUMED',
+        orgId: 'org-OTHER',
+        label: 'Accounts PC',
+        defaultCompany: 'ABC Ltd',
+        connectionId: 'conn-1',
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const prisma = makePrisma({ findFirst: jest.fn().mockResolvedValue(row) });
+      const service = new DeviceAuthService(prisma as any, makeConnections() as any);
+
+      const result = await service.status('org-1', 'ABCD-1234');
+
+      expect(result).toEqual({ status: 'consumed', userCode: 'ABCD-1234' });
     });
   });
 

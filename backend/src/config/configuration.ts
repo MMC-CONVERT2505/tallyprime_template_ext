@@ -6,7 +6,7 @@
 export interface TallyConfig {
   host: string;
   port: number;
-  /** Full base URL Tally listens on, e.g. http://127.0.0.1:9000 */
+  /** Full base URL Tally listens on, e.g. http://127.0.0.1:9001 */
   baseUrl: string;
   timeoutMs: number;
   /**
@@ -44,6 +44,16 @@ export interface TallyConfig {
    * hammering it back-to-back. 0 disables the pause entirely.
    */
   chunkDelayMs: number;
+  /**
+   * LEDGERS/STOCK_ITEMS collections larger than this many records are split
+   * into contiguous name-range sub-requests of at most this size instead of
+   * one unbounded request — see MasterExtractionService's batched fetch
+   * methods. Unlike voucherChunkDays (a date axis that doesn't shrink a
+   * balance computation), this genuinely shrinks what Tally has to build and
+   * send back per call. A company at or under this size sees zero behavior
+   * change (still the original single-shot request).
+   */
+  masterBatchSize: number;
 }
 
 export interface DatabaseConfig {
@@ -134,7 +144,7 @@ export const toInt = (v: string | undefined, fallback: number): number => {
 /** Shared by both the server config (below) and agent-configuration.ts. */
 export const buildTallyConfig = (): TallyConfig => {
   const tallyHost = process.env.TALLY_HOST ?? '127.0.0.1';
-  const tallyPort = toInt(process.env.TALLY_PORT, 9000);
+  const tallyPort = toInt(process.env.TALLY_PORT, 9001);
   return {
     host: tallyHost,
     port: tallyPort,
@@ -147,6 +157,7 @@ export const buildTallyConfig = (): TallyConfig => {
     retryBaseMs: toInt(process.env.TALLY_RETRY_BASE_MS, 500),
     voucherChunkDays: toInt(process.env.TALLY_VOUCHER_CHUNK_DAYS, 7),
     chunkDelayMs: toInt(process.env.TALLY_CHUNK_DELAY_MS, 2000),
+    masterBatchSize: toInt(process.env.TALLY_MASTER_BATCH_SIZE, 300),
   };
 };
 

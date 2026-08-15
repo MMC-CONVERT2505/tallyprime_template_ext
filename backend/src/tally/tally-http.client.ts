@@ -14,7 +14,7 @@ import {
 
 /**
  * The ONLY place that speaks HTTP to Tally. Responsibilities:
- *   - POST the XML envelope to Tally's port-9000 server.
+ *   - POST the XML envelope to Tally's port-9001 server.
  *   - Decode the response with the correct charset (Tally is not reliably UTF-8).
  *   - Translate low-level socket/HTTP failures into typed, actionable exceptions.
  *   - Retry transient failures (timeout/unreachable) with exponential backoff —
@@ -30,6 +30,21 @@ import {
 export class TallyHttpClient implements TallyConnector {
   private readonly logger = new Logger(TallyHttpClient.name);
 
+  /**
+   * Serializes every request through this client — Tally's HTTP export
+   * handling is effectively single-threaded, so two overlapping requests
+   * (an extraction mid-flight plus a probe, or two jobs at once) is an
+   * independent contributor to Tally hanging, on top of any single request
+   * being too large (see MasterExtractionService's batching). This queue
+   * ensures request N+1 only ever starts after request N's response (or
+   * final failure) lands, app-wide — no config knob, unconditionally correct
+   * given Tally's own nature. `.catch(() => undefined)` on the queue link
+   * only prevents one request's failure from poisoning the chain for
+   * whatever queues behind it; the real error still propagates to *this*
+   * call's own caller via `run` below.
+   */
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly http: HttpService,
     private readonly config: ConfigService,
@@ -40,14 +55,21 @@ export class TallyHttpClient implements TallyConnector {
   }
 
   /**
-   * Send an XML envelope to Tally and return the decoded XML string. Retries
-   * transient failures (timeout/unreachable) with exponential backoff — NOT
-   * a non-2xx response from Tally itself (TallyHttpException), since that's a
+   * Send an XML envelope to Tally and return the decoded XML string. Queued
+   * behind any in-flight request (see `queue` above), then retries transient
+   * failures (timeout/unreachable) with exponential backoff — NOT a non-2xx
+   * response from Tally itself (TallyHttpException), since that's a
    * definitive answer, not a dropped connection, and retrying it wouldn't
    * change the outcome.
    * @throws TallyUnreachableException | TallyTimeoutException | TallyHttpException
    */
-  async post(xml: string, opts?: TallyPostOptions): Promise<string> {
+  post(xml: string, opts?: TallyPostOptions): Promise<string> {
+    const run = this.queue.then(() => this.postWithRetry(xml, opts));
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async postWithRetry(xml: string, opts?: TallyPostOptions): Promise<string> {
     const { retryBaseMs } = this.tally;
     const maxRetries = opts?.retries ?? this.tally.maxRetries;
     const timeoutMs = opts?.timeoutMs ?? this.tally.timeoutMs;
