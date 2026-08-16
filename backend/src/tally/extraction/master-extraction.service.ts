@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ExtractionJob } from '@prisma/client';
 import {
   TallyCompany,
   TallyGroup,
@@ -36,14 +37,19 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     return result;
   }
 
-  async getLedgers(company?: string, fromDate?: string, toDate?: string): Promise<TallyLedger[]> {
+  async getLedgers(
+    company?: string,
+    fromDate?: string,
+    toDate?: string,
+    signal?: AbortSignal,
+  ): Promise<TallyLedger[]> {
     const resolved = this.resolveCompany(company);
     if (fromDate && toDate) this.assertDateRange(fromDate, toDate);
     return this.runExtraction(
       ExtractionType.LEDGERS,
       resolved,
       { company: resolved, fromDate: fromDate ?? null, toDate: toDate ?? null },
-      () => this.fetchLedgersBatched(resolved, fromDate, toDate),
+      (job) => this.fetchLedgersBatched(resolved, fromDate, toDate, signal, job),
     );
   }
 
@@ -60,6 +66,7 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     company?: string,
     fromDate?: string,
     toDate?: string,
+    signal?: AbortSignal,
   ): Promise<TallyStockItem[]> {
     const resolved = this.resolveCompany(company);
     if (fromDate && toDate) this.assertDateRange(fromDate, toDate);
@@ -67,7 +74,7 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       ExtractionType.STOCK_ITEMS,
       resolved,
       { company: resolved, fromDate: fromDate ?? null, toDate: toDate ?? null },
-      () => this.fetchStockItemsBatched(resolved, fromDate, toDate),
+      (job) => this.fetchStockItemsBatched(resolved, fromDate, toDate, signal, job),
     );
   }
 
@@ -109,8 +116,12 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     company: string,
     fromDate?: string,
     toDate?: string,
+    signal?: AbortSignal,
+    job?: ExtractionJob | null,
   ): Promise<TallyLedger[]> {
-    const namesXml = await this.connector.post(this.builder.buildLedgerNamesRequest(company));
+    const namesXml = await this.connector.post(this.builder.buildLedgerNamesRequest(company), {
+      signal,
+    });
     const allEntries = this.parser.mapLedgers(namesXml);
     const totalCount = allEntries.length;
     const batchable = allEntries
@@ -125,7 +136,7 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
 
     if (totalCount <= this.tally.masterBatchSize) {
       const xml = this.builder.buildLedgersRequest(company, fromDate, toDate);
-      const raw = await this.connector.post(xml);
+      const raw = await this.connector.post(xml, { signal });
       return this.parser.mapLedgers(raw);
     }
 
@@ -137,22 +148,24 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
 
     const results: TallyLedger[] = [];
     for (let i = 0; i < batchable.length; i += this.tally.masterBatchSize) {
+      if (signal?.aborted) throw new Error('Extraction cancelled.');
       const batch = batchable.slice(i, i + this.tally.masterBatchSize);
       const startedAt = Date.now();
       const alterIdRange = { from: batch[0].alterId, to: batch[batch.length - 1].alterId };
       const xml = this.builder.buildLedgersRequest(company, fromDate, toDate, alterIdRange);
-      const raw = await this.connector.post(xml, { retries: 0 });
+      const raw = await this.connector.post(xml, { retries: 0, signal });
       const parsed = this.parser.mapLedgers(raw);
       results.push(...parsed);
-      this.logger.log(
-        `  batch ${i / this.tally.masterBatchSize + 1}/${batchCount} ` +
-          `(AlterID ${alterIdRange.from}-${alterIdRange.to}, ${batch.length} expected): ` +
-          `${parsed.length} record(s) in ${Date.now() - startedAt}ms`,
-      );
+      const progressMsg =
+        `batch ${i / this.tally.masterBatchSize + 1}/${batchCount} ` +
+        `(AlterID ${alterIdRange.from}-${alterIdRange.to}, ${batch.length} expected): ` +
+        `${parsed.length} record(s) in ${Date.now() - startedAt}ms`;
+      this.logger.log(`  ${progressMsg}`);
+      await this.reportProgress(job ?? null, progressMsg);
 
       const isLastBatch = i + this.tally.masterBatchSize >= batchable.length;
       if (!isLastBatch && this.tally.chunkDelayMs > 0) {
-        await this.sleep(this.tally.chunkDelayMs);
+        await this.sleep(this.tally.chunkDelayMs, signal);
       }
     }
 
@@ -171,8 +184,12 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     company: string,
     fromDate?: string,
     toDate?: string,
+    signal?: AbortSignal,
+    job?: ExtractionJob | null,
   ): Promise<TallyStockItem[]> {
-    const namesXml = await this.connector.post(this.builder.buildStockItemNamesRequest(company));
+    const namesXml = await this.connector.post(this.builder.buildStockItemNamesRequest(company), {
+      signal,
+    });
     const allEntries = this.parser.mapStockItems(namesXml);
     const totalCount = allEntries.length;
     const batchable = allEntries
@@ -187,7 +204,7 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
 
     if (totalCount <= this.tally.masterBatchSize) {
       const xml = this.builder.buildStockItemsRequest(company, fromDate, toDate);
-      const raw = await this.connector.post(xml);
+      const raw = await this.connector.post(xml, { signal });
       return this.parser.mapStockItems(raw);
     }
 
@@ -199,22 +216,24 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
 
     const results: TallyStockItem[] = [];
     for (let i = 0; i < batchable.length; i += this.tally.masterBatchSize) {
+      if (signal?.aborted) throw new Error('Extraction cancelled.');
       const batch = batchable.slice(i, i + this.tally.masterBatchSize);
       const startedAt = Date.now();
       const alterIdRange = { from: batch[0].alterId, to: batch[batch.length - 1].alterId };
       const xml = this.builder.buildStockItemsRequest(company, fromDate, toDate, alterIdRange);
-      const raw = await this.connector.post(xml, { retries: 0 });
+      const raw = await this.connector.post(xml, { retries: 0, signal });
       const parsed = this.parser.mapStockItems(raw);
       results.push(...parsed);
-      this.logger.log(
-        `  batch ${i / this.tally.masterBatchSize + 1}/${batchCount} ` +
-          `(AlterID ${alterIdRange.from}-${alterIdRange.to}, ${batch.length} expected): ` +
-          `${parsed.length} record(s) in ${Date.now() - startedAt}ms`,
-      );
+      const progressMsg =
+        `batch ${i / this.tally.masterBatchSize + 1}/${batchCount} ` +
+        `(AlterID ${alterIdRange.from}-${alterIdRange.to}, ${batch.length} expected): ` +
+        `${parsed.length} record(s) in ${Date.now() - startedAt}ms`;
+      this.logger.log(`  ${progressMsg}`);
+      await this.reportProgress(job ?? null, progressMsg);
 
       const isLastBatch = i + this.tally.masterBatchSize >= batchable.length;
       if (!isLastBatch && this.tally.chunkDelayMs > 0) {
-        await this.sleep(this.tally.chunkDelayMs);
+        await this.sleep(this.tally.chunkDelayMs, signal);
       }
     }
 

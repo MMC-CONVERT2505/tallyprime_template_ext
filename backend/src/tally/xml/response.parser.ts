@@ -169,10 +169,19 @@ export class TallyResponseParser {
     const { envelope, meta } = this.parse(rawXml);
     if (meta.isEmpty) return [];
 
-    // Day Book / Voucher Register exports wrap each record in a <TALLYMESSAGE>
-    // under BODY.DATA. A message may also carry a master (not a voucher), so we
-    // only keep the ones that actually contain a <VOUCHER>.
-    const data = this.get(envelope, ['BODY', 'DATA']);
+    // Day Book / Voucher Register exports (REQUESTDESC-style report requests)
+    // come back wrapped as if they were an importable payload — Tally reuses
+    // its "Import Data" XML schema for this export, so records land under
+    // BODY.IMPORTDATA.REQUESTDATA.TALLYMESSAGE, not BODY.DATA.TALLYMESSAGE
+    // (that shape is what Collection-style requests return — see
+    // collectionItems below). Checked first since it's what a live TallyPrime
+    // instance actually sends; BODY.DATA kept as a fallback in case an older
+    // Tally.ERP9 build or a differently-configured report answers the other
+    // way. A message may also carry a master (not a voucher), so we only keep
+    // the ones that actually contain a <VOUCHER>.
+    const data =
+      this.get(envelope, ['BODY', 'IMPORTDATA', 'REQUESTDATA']) ??
+      this.get(envelope, ['BODY', 'DATA']);
     const messages = toArray<any>(data?.TALLYMESSAGE);
 
     const vouchers: TallyVoucher[] = [];

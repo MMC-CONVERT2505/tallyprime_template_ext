@@ -76,6 +76,10 @@ export const envValidationSchema = Joi.object({
   EXTRACTION_RESULT_TTL_SECONDS: Joi.number().integer().min(60).max(86400).default(3600),
   // See ExtractionConfig.commandTimeoutMs — must comfortably exceed a
   // connected agent's own worst-case Tally round trip, not just a single
-  // request's timeout.
-  EXTRACTION_COMMAND_TIMEOUT_MS: Joi.number().integer().min(5000).max(600000).default(360000),
+  // request's timeout, AND a batched LEDGERS/STOCK_ITEMS fetch's worst case
+  // for a large company. Max raised well above the default to leave room
+  // for an operator to push this higher for an unusually large company
+  // before ExtractionsProcessor.estimateBatchedTimeoutMs has any history to
+  // learn a tighter per-job value from.
+  EXTRACTION_COMMAND_TIMEOUT_MS: Joi.number().integer().min(5000).max(3600000).default(900000),
 });

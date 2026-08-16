@@ -73,11 +73,18 @@ export class TallyHttpClient implements TallyConnector {
     const { retryBaseMs } = this.tally;
     const maxRetries = opts?.retries ?? this.tally.maxRetries;
     const timeoutMs = opts?.timeoutMs ?? this.tally.timeoutMs;
+    const signal = opts?.signal;
 
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.postOnce(xml, timeoutMs);
+        return await this.postOnce(xml, timeoutMs, signal);
       } catch (err) {
+        // An intentional cancellation must never be retried, regardless of
+        // how the underlying axios error got classified below (an aborted
+        // request surfaces as ERR_CANCELED, which translateError would
+        // otherwise fall through to treating as a transient "unreachable").
+        if (signal?.aborted) throw err;
+
         const transient =
           err instanceof TallyTimeoutException || err instanceof TallyUnreachableException;
         if (!transient || attempt >= maxRetries) throw err;
@@ -92,7 +99,7 @@ export class TallyHttpClient implements TallyConnector {
     }
   }
 
-  private async postOnce(xml: string, timeoutMs: number): Promise<string> {
+  private async postOnce(xml: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
     const { baseUrl } = this.tally;
     const startedAt = Date.now();
 
@@ -101,6 +108,7 @@ export class TallyHttpClient implements TallyConnector {
         this.http.post<ArrayBuffer>(baseUrl, xml, {
           responseType: 'arraybuffer',
           timeout: timeoutMs,
+          signal,
           // Tally does not use HTTP status codes to signal TDL errors, and can be
           // fussy about headers. text/xml is the broadly-accepted content type.
           headers: {

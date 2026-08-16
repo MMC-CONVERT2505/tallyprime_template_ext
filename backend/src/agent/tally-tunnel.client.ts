@@ -5,7 +5,11 @@ import { dispatchExtraction } from '../tally/extraction-dispatch';
 import { MasterExtractionService } from '../tally/extraction/master-extraction.service';
 import { TransactionExtractionService } from '../tally/extraction/transaction-extraction.service';
 import { TallyDiagnosticsService } from '../tally/tally-diagnostics.service';
-import { AgentResultMessage, GatewayToAgentMessage, TunnelAction } from '../tunnel/tunnel-protocol';
+import {
+  AgentToGatewayMessage,
+  GatewayToAgentMessage,
+  TunnelAction,
+} from '../tunnel/tunnel-protocol';
 import { AgentPairingService } from './agent-pairing.service';
 import { clearBridgeState, DEFAULT_BRIDGE_STATE_PATH, readBridgeState } from './bridge-state.util';
 
@@ -41,8 +45,14 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
   private ws: WebSocket | null = null;
   private reconnectAttempt = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
   private closing = false;
   private agentToken = '';
+  /** AbortController per in-flight command, keyed by requestId — lets a
+   *  'cancel' from the gateway (see handleMessage) actually stop the Tally
+   *  call chain instead of letting an abandoned command run to completion
+   *  unobserved, occupying TallyHttpClient's single serialized queue. */
+  private readonly inFlight = new Map<string, AbortController>();
 
   constructor(
     private readonly config: ConfigService,
@@ -66,11 +76,13 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
       this.agentToken = this.config.get<string>('agentToken') ?? '';
     }
     this.connect();
+    this.startHeartbeat();
   }
 
   onModuleDestroy(): void {
     this.closing = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.ws?.close();
   }
 
@@ -160,7 +172,20 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
       return;
     }
     if (message.type === 'command') {
-      void this.handleCommand(message.requestId, message.action, message.payload);
+      const controller = new AbortController();
+      this.inFlight.set(message.requestId, controller);
+      void this.handleCommand(
+        message.requestId,
+        message.action,
+        message.payload,
+        controller.signal,
+      );
+    }
+    if (message.type === 'cancel') {
+      // No entry means it already finished (a race between the result and
+      // the cancel crossing in flight) or this is an older agent build's
+      // gateway talking to a newer one — both safe no-ops either way.
+      this.inFlight.get(message.requestId)?.abort();
     }
   }
 
@@ -168,25 +193,57 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
     requestId: string,
     action: TunnelAction,
     payload: Record<string, unknown>,
+    signal: AbortSignal,
   ): Promise<void> {
     try {
-      const data = await dispatchExtraction(action, payload, {
-        masters: this.masters,
-        transactions: this.transactions,
-        diagnostics: this.diagnostics,
-      });
-      this.sendResult({ type: 'result', requestId, ok: true, data });
+      const data = await dispatchExtraction(
+        action,
+        payload,
+        { masters: this.masters, transactions: this.transactions, diagnostics: this.diagnostics },
+        signal,
+      );
+      this.sendMessage({ type: 'result', requestId, ok: true, data });
     } catch (err) {
-      this.sendResult({
-        type: 'result',
-        requestId,
-        ok: false,
-        error: { message: err instanceof Error ? err.message : String(err) },
-      });
+      const message = signal.aborted
+        ? 'Cancelled by gateway (it gave up waiting before this command finished).'
+        : err instanceof Error
+          ? err.message
+          : String(err);
+      this.sendMessage({ type: 'result', requestId, ok: false, error: { message } });
+    } finally {
+      this.inFlight.delete(requestId);
     }
   }
 
-  private sendResult(message: AgentResultMessage): void {
+  /** Independent of any queued command — self-probes this connector's own
+   *  Tally on a timer and reports reachability, so the cloud can tell
+   *  "tunnel connected" apart from "Tally actually reachable right now"
+   *  (see connector-bridge-setup-guide.md's previously-documented gap: no
+   *  standalone ping-the-bridge check existed before this). Deliberately
+   *  still goes through TallyDiagnosticsService.probe()'s normal path —
+   *  same serialized TallyHttpClient queue as everything else — so a
+   *  heartbeat delayed behind a long batched fetch is itself a meaningful
+   *  "hasn't updated in a while" signal, not something to work around. */
+  private startHeartbeat(): void {
+    const intervalMs = this.config.get<number>('heartbeatIntervalMs') ?? 60_000;
+    this.heartbeatTimer = setInterval(() => void this.sendHeartbeat(), intervalMs).unref();
+  }
+
+  private async sendHeartbeat(): Promise<void> {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      const probe = await this.diagnostics.probe();
+      this.sendMessage({
+        type: 'heartbeat',
+        tallyReachable: true,
+        probeDurationMs: probe.durationMs,
+      });
+    } catch {
+      this.sendMessage({ type: 'heartbeat', tallyReachable: false });
+    }
+  }
+
+  private sendMessage(message: AgentToGatewayMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     }

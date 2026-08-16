@@ -15,6 +15,7 @@ describe('MasterExtractionService', () => {
       defaultCompany?: string;
       masterBatchSize?: number;
       chunkDelayMs?: number;
+      jobs?: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
     } = {},
   ) {
     const builder = new EnvelopeBuilder();
@@ -42,7 +43,7 @@ describe('MasterExtractionService', () => {
       connector as any,
       parser,
       config as any,
-      undefined,
+      overrides.jobs as any,
       undefined,
     );
     return {
@@ -52,6 +53,17 @@ describe('MasterExtractionService', () => {
       buildLedgerNamesRequest,
       buildStockItemNamesRequest,
       connector,
+    };
+  }
+
+  /** Bare-minimum ExtractionJobRepository double — `create` just echoes the
+   *  data through, `save` stamps an id so runExtraction's `job` is non-null
+   *  and reportProgress/finishJob actually call `update`. */
+  function makeJobsRepo() {
+    return {
+      create: jest.fn((data: unknown) => data),
+      save: jest.fn(async (data: unknown) => ({ id: 'job-1', ...(data as object) })),
+      update: jest.fn().mockResolvedValue({}),
     };
   }
 
@@ -217,7 +229,13 @@ describe('MasterExtractionService', () => {
       const connectorPost = jest
         .fn()
         .mockResolvedValueOnce(
-          collectionXml('LEDGER', [entry('E', 50), entry('C', 30), entry('A', 10), entry('D', 40), entry('B', 20)]),
+          collectionXml('LEDGER', [
+            entry('E', 50),
+            entry('C', 30),
+            entry('A', 10),
+            entry('D', 40),
+            entry('B', 20),
+          ]),
         ) // unsorted names+AlterID pass
         .mockResolvedValueOnce(collectionXml('LEDGER', [entry('A', 10), entry('B', 20)]))
         .mockResolvedValueOnce(collectionXml('LEDGER', [entry('C', 30), entry('D', 40)]))
@@ -253,7 +271,13 @@ describe('MasterExtractionService', () => {
       const connectorPost = jest
         .fn()
         .mockResolvedValueOnce(
-          collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3), entry('D', 4), entry('E', 5)]),
+          collectionXml('LEDGER', [
+            entry('A', 1),
+            entry('B', 2),
+            entry('C', 3),
+            entry('D', 4),
+            entry('E', 5),
+          ]),
         )
         .mockResolvedValueOnce(collectionXml('LEDGER', [entry('A', 1)])) // should have been A,B — one dropped
         .mockResolvedValueOnce(collectionXml('LEDGER', [entry('C', 3), entry('D', 4)]))
@@ -266,7 +290,9 @@ describe('MasterExtractionService', () => {
     it('propagates a single batch failure rather than returning partial data', async () => {
       const connectorPost = jest
         .fn()
-        .mockResolvedValueOnce(collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3)]))
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3)]),
+        )
         .mockResolvedValueOnce(collectionXml('LEDGER', [entry('A', 1)]))
         .mockRejectedValueOnce(new Error('Tally unreachable'));
       const { service } = makeService({ connectorPost, masterBatchSize: 1 });
@@ -277,7 +303,9 @@ describe('MasterExtractionService', () => {
     it('pauses chunkDelayMs between batches, but not after the final one', async () => {
       const connectorPost = jest
         .fn()
-        .mockResolvedValueOnce(collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3)]))
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3)]),
+        )
         .mockResolvedValue(collectionXml('LEDGER', [entry('A', 1)]));
       const { service } = makeService({ connectorPost, masterBatchSize: 1, chunkDelayMs: 2000 });
       const sleepSpy = jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
@@ -285,7 +313,7 @@ describe('MasterExtractionService', () => {
       await service.getLedgers('ABC Ltd');
 
       expect(sleepSpy).toHaveBeenCalledTimes(2); // between batch 1->2 and 2->3 only
-      expect(sleepSpy).toHaveBeenCalledWith(2000);
+      expect(sleepSpy).toHaveBeenCalledWith(2000, undefined); // no signal passed by this call
     });
 
     it('does not sleep at all on the single-request (unbatched) path', async () => {
@@ -296,6 +324,68 @@ describe('MasterExtractionService', () => {
       await service.getLedgers('ABC Ltd');
 
       expect(sleepSpy).not.toHaveBeenCalled();
+    });
+
+    it('stops the batch loop early when the signal is aborted between batches, instead of completing every batch', async () => {
+      const controller = new AbortController();
+      const connectorPost = jest
+        .fn()
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3)]),
+        ) // names+AlterID pass
+        .mockImplementationOnce(async () => {
+          controller.abort(); // abort right after batch 1 lands, before batch 2 starts
+          return collectionXml('LEDGER', [entry('A', 1)]);
+        });
+      const { service, connector } = makeService({ connectorPost, masterBatchSize: 1 });
+
+      await expect(
+        service.getLedgers('ABC Ltd', undefined, undefined, controller.signal),
+      ).rejects.toThrow('cancelled');
+
+      // Names pass + batch 1 only — batches 2 and 3 never started.
+      expect(connector.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('passes the signal through to each batch request', async () => {
+      const controller = new AbortController();
+      const connectorPost = jest
+        .fn()
+        .mockResolvedValueOnce(collectionXml('LEDGER', [entry('A', 1), entry('B', 2)]))
+        .mockResolvedValue(collectionXml('LEDGER', [entry('A', 1)]));
+      const { service, connector } = makeService({ connectorPost, masterBatchSize: 1 });
+
+      await service.getLedgers('ABC Ltd', undefined, undefined, controller.signal);
+
+      expect(connector.post).toHaveBeenCalledWith(expect.any(String), {
+        retries: 0,
+        signal: controller.signal,
+      });
+    });
+
+    it('reports progress once per batch via the job repository, then clears it on completion', async () => {
+      const connectorPost = jest
+        .fn()
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3)]),
+        )
+        .mockResolvedValue(collectionXml('LEDGER', [entry('A', 1)]));
+      const jobs = makeJobsRepo();
+      const { service } = makeService({ connectorPost, masterBatchSize: 1, jobs });
+
+      await service.getLedgers('ABC Ltd');
+
+      // 3 in-progress updates (one per batch) + 1 final update from finishJob
+      // (which also clears progress back to null on completion).
+      expect(jobs.update).toHaveBeenCalledTimes(4);
+      expect(jobs.update.mock.calls[0]).toEqual([
+        'job-1',
+        { progress: expect.stringContaining('batch 1/3') },
+      ]);
+      expect(jobs.update.mock.calls[3]).toEqual([
+        'job-1',
+        expect.objectContaining({ progress: null, status: 'SUCCESS' }),
+      ]);
     });
 
     it('logs a warning and lets the count cross-check catch it when a record has no AlterID to batch by', async () => {
@@ -343,7 +433,10 @@ describe('MasterExtractionService', () => {
         )
         .mockResolvedValueOnce(collectionXml('STOCKITEM', [entry('A', 10), entry('B', 20)]))
         .mockResolvedValueOnce(collectionXml('STOCKITEM', [entry('C', 30)]));
-      const { service, buildStockItemsRequest } = makeService({ connectorPost, masterBatchSize: 2 });
+      const { service, buildStockItemsRequest } = makeService({
+        connectorPost,
+        masterBatchSize: 2,
+      });
 
       const result = await service.getStockItems('ABC Ltd');
 

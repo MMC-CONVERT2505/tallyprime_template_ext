@@ -49,6 +49,12 @@ model ExtractionJob {
   recordCount  Int?
   durationMs   Int?
   error        String?
+  /// Best-effort "batch N/M" status written after each batch/chunk of a
+  /// LEDGERS/STOCK_ITEMS/VOUCHERS extraction (see MasterExtractionService's
+  /// AlterID batching, TransactionExtractionService's date chunking) — never
+  /// a source of truth, just a nicety for a still-PENDING job. Cleared to
+  /// null once the job reaches a terminal status.
+  progress     String?
   org          Org?              @relation(fields: [orgId], references: [id])
   orgId        String?
   connection   TallyConnection?  @relation(fields: [connectionId], references: [id])
@@ -80,6 +86,14 @@ model TallyConnection {
   defaultCompany String?
   isActive       Boolean   @default(true)
   lastSeenAt     DateTime?
+  /// Result of the agent's own periodic self-probe of its configured Tally
+  /// (AgentTunnelClient's heartbeat timer, independent of any queued
+  /// extraction command — see tunnel-protocol.ts's `heartbeat` message).
+  /// Null means "no heartbeat ever received" (an older agent build, or never
+  /// connected) — distinct from `false`, which means Tally was actually
+  /// confirmed unreachable as of lastProbeAt.
+  tallyReachable Boolean?
+  lastProbeAt    DateTime?
   org            Org       @relation(fields: [orgId], references: [id])
   orgId          String
   extractionJobs ExtractionJob[]

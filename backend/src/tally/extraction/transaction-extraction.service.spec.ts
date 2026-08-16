@@ -14,6 +14,7 @@ describe('TransactionExtractionService', () => {
       connectorPost?: jest.Mock;
       voucherChunkDays?: number;
       chunkDelayMs?: number;
+      jobs?: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
     } = {},
   ) {
     const builder = new EnvelopeBuilder();
@@ -37,10 +38,20 @@ describe('TransactionExtractionService', () => {
       connector as any,
       parser,
       config as any,
-      undefined,
+      overrides.jobs as any,
       undefined,
     );
     return { service, buildVouchersRequest, connector };
+  }
+
+  /** Bare-minimum ExtractionJobRepository double — see the analogous helper
+   *  in master-extraction.service.spec.ts for why each method is shaped this way. */
+  function makeJobsRepo() {
+    return {
+      create: jest.fn((data: unknown) => data),
+      save: jest.fn(async (data: unknown) => ({ id: 'job-1', ...(data as object) })),
+      update: jest.fn().mockResolvedValue({}),
+    };
   }
 
   it('resolves the company, validates the date range, and builds a vouchers request', async () => {
@@ -101,8 +112,9 @@ describe('TransactionExtractionService', () => {
         '20260407',
         undefined,
       );
-      // No per-call opts override on the single-request path — same as before chunking existed.
-      expect(connector.post).toHaveBeenCalledWith(expect.any(String));
+      // No retries/signal override on the single-request path — same as before chunking existed
+      // (signal is passed through, but undefined when the caller doesn't supply one).
+      expect(connector.post).toHaveBeenCalledWith(expect.any(String), { signal: undefined });
     });
 
     it('splits a range wider than voucherChunkDays into multiple requests and concatenates the results', async () => {
@@ -152,6 +164,26 @@ describe('TransactionExtractionService', () => {
       expect(connector.post).toHaveBeenCalledWith(expect.any(String), { retries: 0 });
     });
 
+    it('dedupes a voucher that Tally leaks into every chunk response, by AlterID', async () => {
+      const leakedVoucherXml =
+        '<ENVELOPE><BODY><DATA><TALLYMESSAGE><VOUCHER VCHTYPE="Journal"><DATE>20260401</DATE>' +
+        '<VOUCHERNUMBER>TI2627-158</VOUCHERNUMBER><ALTERID>26137</ALTERID></VOUCHER></TALLYMESSAGE></DATA></BODY></ENVELOPE>';
+      // Same voucher (same AlterID) comes back from all 3 chunks — this is
+      // the real leak observed against a live TallyPrime instance.
+      const connectorPost = jest.fn().mockResolvedValue(leakedVoucherXml);
+      const { service } = makeService({ connectorPost, voucherChunkDays: 7 });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20260401',
+        to: '20260415', // 15 days -> 3 chunks
+      });
+
+      expect(connectorPost).toHaveBeenCalledTimes(3);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ voucherNumber: 'TI2627-158', alterId: 26137 });
+    });
+
     it('propagates a single chunk failure rather than returning partial data', async () => {
       const connectorPost = jest
         .fn()
@@ -173,7 +205,7 @@ describe('TransactionExtractionService', () => {
       await service.getVouchers({ company: 'ABC Ltd', from: '20260401', to: '20260415' });
 
       expect(sleepSpy).toHaveBeenCalledTimes(2); // between chunk 1->2 and 2->3 only
-      expect(sleepSpy).toHaveBeenCalledWith(2000);
+      expect(sleepSpy).toHaveBeenCalledWith(2000, undefined); // no signal passed by this call
     });
 
     it('does not sleep at all when chunkDelayMs is 0', async () => {
@@ -194,6 +226,59 @@ describe('TransactionExtractionService', () => {
       await service.getVouchers({ company: 'ABC Ltd', from: '20260401', to: '20260407' }); // fits in 1 chunk
 
       expect(sleepSpy).not.toHaveBeenCalled();
+    });
+
+    it('stops the chunk loop early when the signal is aborted between chunks', async () => {
+      const controller = new AbortController();
+      const connectorPost = jest.fn().mockImplementationOnce(async () => {
+        controller.abort(); // abort right after chunk 1 lands, before chunk 2 starts
+        return voucherXml('1');
+      });
+      const { service, connector } = makeService({ connectorPost, voucherChunkDays: 7 });
+
+      await expect(
+        service.getVouchers(
+          { company: 'ABC Ltd', from: '20260401', to: '20260415' }, // 3 chunks
+          controller.signal,
+        ),
+      ).rejects.toThrow('cancelled');
+
+      expect(connector.post).toHaveBeenCalledTimes(1); // chunk 2 and 3 never started
+    });
+
+    it('passes the signal through to each chunk request', async () => {
+      const controller = new AbortController();
+      const connectorPost = jest.fn().mockResolvedValue(voucherXml('1'));
+      const { service, connector } = makeService({ connectorPost, voucherChunkDays: 7 });
+
+      await service.getVouchers(
+        { company: 'ABC Ltd', from: '20260401', to: '20260415' },
+        controller.signal,
+      );
+
+      expect(connector.post).toHaveBeenCalledWith(expect.any(String), {
+        retries: 0,
+        signal: controller.signal,
+      });
+    });
+
+    it('reports progress once per chunk via the job repository, then clears it on completion', async () => {
+      const connectorPost = jest.fn().mockResolvedValue(voucherXml('1'));
+      const jobs = makeJobsRepo();
+      const { service } = makeService({ connectorPost, voucherChunkDays: 7, jobs });
+
+      await service.getVouchers({ company: 'ABC Ltd', from: '20260401', to: '20260415' }); // 3 chunks
+
+      // 3 in-progress updates (one per chunk) + 1 final update from finishJob.
+      expect(jobs.update).toHaveBeenCalledTimes(4);
+      expect(jobs.update.mock.calls[0]).toEqual([
+        'job-1',
+        { progress: expect.stringContaining('chunk 1/3') },
+      ]);
+      expect(jobs.update.mock.calls[3]).toEqual([
+        'job-1',
+        expect.objectContaining({ progress: null, status: 'SUCCESS' }),
+      ]);
     });
   });
 });

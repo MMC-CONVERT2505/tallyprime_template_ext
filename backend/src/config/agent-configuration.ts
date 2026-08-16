@@ -1,4 +1,4 @@
-import { TallyConfig, buildTallyConfig } from './configuration';
+import { TallyConfig, buildTallyConfig, toInt } from './configuration';
 
 /**
  * Config for the connector/agent process (agent-main.ts) — deliberately
@@ -24,6 +24,14 @@ export interface AgentConfig {
    * ever needs to copy one in manually. See docs/connector-bridge-setup-guide.md.
    */
   agentToken: string;
+  /**
+   * How often the agent self-probes its own Tally (independent of any
+   * queued extraction command) and reports reachability to the gateway —
+   * see AgentTunnelClient's heartbeat timer. This is what lets the cloud
+   * distinguish "tunnel connected" from "Tally actually reachable right
+   * now," not just how frequently to poll.
+   */
+  heartbeatIntervalMs: number;
 }
 
 export default (): AgentConfig => ({
@@ -31,4 +39,5 @@ export default (): AgentConfig => ({
   gatewayUrl: process.env.GATEWAY_URL ?? 'ws://127.0.0.1:3000/agent-tunnel',
   apiBaseUrl: process.env.API_BASE_URL ?? 'http://127.0.0.1:3000/api',
   agentToken: process.env.AGENT_TOKEN ?? '',
+  heartbeatIntervalMs: toInt(process.env.AGENT_HEARTBEAT_INTERVAL_MS, 60000),
 });

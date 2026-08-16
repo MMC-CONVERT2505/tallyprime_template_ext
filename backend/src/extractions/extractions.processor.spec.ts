@@ -1,15 +1,38 @@
 import { ExtractionsProcessor } from './extractions.processor';
 
 describe('ExtractionsProcessor', () => {
-  function makeDeps(overrides: { sendCommand?: jest.Mock; getLedgers?: jest.Mock } = {}) {
-    const prisma = { extractionJob: { update: jest.fn().mockResolvedValue({}) } };
+  function makeDeps(
+    overrides: {
+      sendCommand?: jest.Mock;
+      getLedgers?: jest.Mock;
+      findFirst?: jest.Mock;
+    } = {},
+  ) {
+    const prisma = {
+      extractionJob: {
+        update: jest.fn().mockResolvedValue({}),
+        // No prior successful fetch by default — estimateBatchedTimeoutMs
+        // falls back to the static commandTimeoutMs floor, same as before
+        // dynamic sizing existed. Dedicated tests below override this.
+        findFirst: overrides.findFirst ?? jest.fn().mockResolvedValue(null),
+      },
+    };
     const tunnel = {
       sendCommand:
         overrides.sendCommand ?? jest.fn().mockResolvedValue([{ name: 'Cash' }, { name: 'Sales' }]),
     };
     const redis = { set: jest.fn().mockResolvedValue('OK') };
     const notifications = { sendExtractionComplete: jest.fn().mockResolvedValue(undefined) };
-    const config = { getOrThrow: jest.fn().mockReturnValue({ resultTtlSeconds: 3600 }) };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue({
+        resultTtlSeconds: 3600,
+        commandTimeoutMs: 900000,
+        timeoutMs: 60000,
+        maxRetries: 2,
+        chunkDelayMs: 2000,
+        masterBatchSize: 300,
+      }),
+    };
     const masters = {
       getLedgers:
         overrides.getLedgers ?? jest.fn().mockResolvedValue([{ name: 'Cash' }, { name: 'Sales' }]),
@@ -129,6 +152,61 @@ describe('ExtractionsProcessor', () => {
     });
   });
 
+  describe('agent-mode dispatch: dedupeKey + dynamic timeout', () => {
+    it("passes extractionJobId as sendCommand's dedupeKey", async () => {
+      const sendCommand = jest.fn().mockResolvedValue([]);
+      const { processor } = makeDeps({ sendCommand });
+
+      await processor.process(job);
+
+      expect(sendCommand).toHaveBeenCalledWith(
+        'conn-1',
+        'ledgers',
+        { company: 'ABC Ltd' },
+        undefined,
+        'job-1',
+      );
+    });
+
+    it("computes a dynamic timeout from the connector's last successful fetch of the same type", async () => {
+      const sendCommand = jest.fn().mockResolvedValue([]);
+      const findFirst = jest.fn().mockResolvedValue({ recordCount: 6000 });
+      const { processor, prisma } = makeDeps({ sendCommand, findFirst });
+
+      await processor.process(job);
+
+      expect(prisma.extractionJob.findFirst).toHaveBeenCalledWith({
+        where: { connectionId: 'conn-1', type: 'LEDGERS', status: 'SUCCESS' },
+        orderBy: { createdAt: 'desc' },
+        select: { recordCount: true },
+      });
+      // 6000 records at the default 300 batch size, 1.5x safety factor, is
+      // well beyond the static commandTimeoutMs floor (900000ms) — the
+      // dynamic estimate must win, not just fall through to the default.
+      expect(sendCommand.mock.calls[0][3]).toBeGreaterThan(900000);
+    });
+
+    it("falls back to undefined (sendCommand's own static default) when there is no prior successful fetch", async () => {
+      const sendCommand = jest.fn().mockResolvedValue([]);
+      const { processor } = makeDeps({ sendCommand }); // default findFirst resolves null
+
+      await processor.process(job);
+
+      expect(sendCommand.mock.calls[0][3]).toBeUndefined();
+    });
+
+    it('never looks up history for COMPANIES/GROUPS/VOUCHERS — only LEDGERS/STOCK_ITEMS batch', async () => {
+      const sendCommand = jest.fn().mockResolvedValue([]);
+      const { processor, prisma } = makeDeps({ sendCommand });
+      const groupsJob = { data: { ...job.data, type: 'GROUPS' } } as any;
+
+      await processor.process(groupsJob);
+
+      expect(prisma.extractionJob.findFirst).not.toHaveBeenCalled();
+      expect(sendCommand.mock.calls[0][3]).toBeUndefined();
+    });
+  });
+
   describe('mode: local (the /tally/jobs dev/testing path — no agent involved)', () => {
     const localJob = {
       data: {
@@ -144,7 +222,7 @@ describe('ExtractionsProcessor', () => {
 
       await processor.process(localJob);
 
-      expect(masters.getLedgers).toHaveBeenCalledWith('ABC Ltd', undefined, undefined);
+      expect(masters.getLedgers).toHaveBeenCalledWith('ABC Ltd', undefined, undefined, undefined);
       expect(tunnel.sendCommand).not.toHaveBeenCalled();
       expect(redis.set).toHaveBeenCalledWith(
         'extraction-result:job-2',

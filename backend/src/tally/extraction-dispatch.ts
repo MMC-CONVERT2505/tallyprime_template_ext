@@ -28,11 +28,12 @@ export function dispatchExtraction(
   action: TunnelAction,
   payload: Record<string, unknown>,
   services: ExtractionDispatchServices,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const { masters, transactions, diagnostics } = services;
   switch (action) {
     case 'probe':
-      return diagnostics.probe();
+      return diagnostics.probe(signal);
     case 'companies':
       return masters.getCompanies(payload.fresh !== true);
     case 'ledgers':
@@ -40,18 +41,20 @@ export function dispatchExtraction(
         payload.company as string | undefined,
         payload.fromDate as string | undefined,
         payload.toDate as string | undefined,
+        signal,
       );
     case 'stockItems':
       return masters.getStockItems(
         payload.company as string | undefined,
         payload.fromDate as string | undefined,
         payload.toDate as string | undefined,
+        signal,
       );
     case 'groups':
       return masters.getGroups(payload.company as string | undefined);
     case 'vouchers':
-      return transactions.getVouchers(payload as unknown as ExtractVouchersDto);
+      return transactions.getVouchers(payload as unknown as ExtractVouchersDto, signal);
     case 'raw':
-      return diagnostics.getRaw(payload as unknown as RawReportDto);
+      return diagnostics.getRaw(payload as unknown as RawReportDto, signal);
   }
 }

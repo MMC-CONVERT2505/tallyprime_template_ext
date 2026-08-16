@@ -22,7 +22,7 @@ describe('dispatchExtraction', () => {
   it('routes "probe" to diagnostics.probe with no payload', async () => {
     const services = makeServices();
     await dispatchExtraction('probe', {}, services as any);
-    expect(services.diagnostics.probe).toHaveBeenCalledWith();
+    expect(services.diagnostics.probe).toHaveBeenCalledWith(undefined); // no signal passed by this call
   });
 
   it('routes "companies", translating fresh !== true to the useCache flag', async () => {
@@ -42,7 +42,12 @@ describe('dispatchExtraction', () => {
       { company: 'ABC Ltd', fromDate: '20260401', toDate: '20260430' },
       services as any,
     );
-    expect(services.masters.getLedgers).toHaveBeenCalledWith('ABC Ltd', '20260401', '20260430');
+    expect(services.masters.getLedgers).toHaveBeenCalledWith(
+      'ABC Ltd',
+      '20260401',
+      '20260430',
+      undefined,
+    );
   });
 
   it('routes "stockItems" with company/fromDate/toDate pulled off the payload', async () => {
@@ -52,7 +57,12 @@ describe('dispatchExtraction', () => {
       { company: 'ABC Ltd', fromDate: '20260401', toDate: '20260430' },
       services as any,
     );
-    expect(services.masters.getStockItems).toHaveBeenCalledWith('ABC Ltd', '20260401', '20260430');
+    expect(services.masters.getStockItems).toHaveBeenCalledWith(
+      'ABC Ltd',
+      '20260401',
+      '20260430',
+      undefined,
+    );
   });
 
   it('routes "groups" with company pulled off the payload', async () => {
@@ -65,24 +75,28 @@ describe('dispatchExtraction', () => {
     const services = makeServices();
     const payload = { company: 'ABC Ltd', from: '20260401', to: '20260430', voucherType: 'Sales' };
     await dispatchExtraction('vouchers', payload, services as any);
-    expect(services.transactions.getVouchers).toHaveBeenCalledWith(payload);
+    expect(services.transactions.getVouchers).toHaveBeenCalledWith(payload, undefined);
   });
 
   it('routes "raw" with the whole payload as the DTO', async () => {
     const services = makeServices();
     const payload = { reportName: 'Trial Balance', company: 'ABC Ltd' };
     await dispatchExtraction('raw', payload, services as any);
-    expect(services.diagnostics.getRaw).toHaveBeenCalledWith(payload);
+    expect(services.diagnostics.getRaw).toHaveBeenCalledWith(payload, undefined);
   });
 
   it('resolves with whatever the underlying service call resolves with', async () => {
     const services = makeServices();
-    await expect(dispatchExtraction('companies', {}, services as any)).resolves.toEqual(['companies']);
+    await expect(dispatchExtraction('companies', {}, services as any)).resolves.toEqual([
+      'companies',
+    ]);
   });
 
   it('propagates a rejection from the underlying service call', async () => {
     const services = makeServices();
     services.masters.getGroups.mockRejectedValue(new Error('Tally unreachable'));
-    await expect(dispatchExtraction('groups', {}, services as any)).rejects.toThrow('Tally unreachable');
+    await expect(dispatchExtraction('groups', {}, services as any)).rejects.toThrow(
+      'Tally unreachable',
+    );
   });
 });

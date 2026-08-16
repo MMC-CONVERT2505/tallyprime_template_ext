@@ -1,9 +1,10 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ExtractionType } from '@prisma/client';
 import { Job } from 'bullmq';
 import Redis from 'ioredis';
-import { ExtractionConfig } from '../config/configuration';
+import { ExtractionConfig, TallyConfig } from '../config/configuration';
 import { PrismaService } from '../database/prisma.service';
 import { TallyTunnelGateway } from '../gateway/tally-tunnel.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -12,9 +13,14 @@ import { MasterExtractionService } from '../tally/extraction/master-extraction.s
 import { TransactionExtractionService } from '../tally/extraction/transaction-extraction.service';
 import { TallyDiagnosticsService } from '../tally/tally-diagnostics.service';
 import { dispatchExtraction } from '../tally/extraction-dispatch';
-import { toTunnelAction } from './extraction-action.map';
+import { ExtractableType, toTunnelAction } from './extraction-action.map';
 import { ExtractionJobData } from './extraction-job-data.interface';
-import { EXTRACTION_QUEUE, extractionResultKey } from './extractions.constants';
+import {
+  BATCH_TIMEOUT_FIXED_MARGIN_MS,
+  BATCH_TIMEOUT_SAFETY_FACTOR,
+  EXTRACTION_QUEUE,
+  extractionResultKey,
+} from './extractions.constants';
 
 /**
  * Runs in the same process as the rest of the App for v1 (see
@@ -141,16 +147,73 @@ export class ExtractionsProcessor extends WorkerHost {
     }
   }
 
-  private dispatch(data: ExtractionJobData): Promise<unknown> {
+  private async dispatch(data: ExtractionJobData): Promise<unknown> {
     const action = toTunnelAction(data.type);
     if (data.mode === 'agent') {
-      return this.tunnel.sendCommand(data.connectionId, action, data.payload);
+      // extractionJobId is the same across every BullMQ retry of this job —
+      // used as sendCommand's dedupeKey so a retry can never dispatch a
+      // second command while this job's earlier, abandoned attempt is still
+      // outstanding on the agent (the fix for the "Tally hangs" bug: without
+      // this, a timed-out retry piled duplicate work onto the agent's single
+      // Tally-request queue behind an uncancelled first attempt, compounding
+      // with every retry).
+      const timeoutMs = await this.estimateBatchedTimeoutMs(data.connectionId, data.type);
+      return this.tunnel.sendCommand(
+        data.connectionId,
+        action,
+        data.payload,
+        timeoutMs,
+        data.extractionJobId,
+      );
     }
     return dispatchExtraction(action, data.payload, {
       masters: this.masters,
       transactions: this.transactions,
       diagnostics: this.diagnostics,
     });
+  }
+
+  /**
+   * A batched LEDGERS/STOCK_ITEMS fetch's real worst-case duration scales
+   * with the company's record count, which the cloud doesn't know ahead of
+   * dispatch — but this same connector's most recent *successful* fetch of
+   * the same type is a reasonable estimate. Returns `undefined` (falling
+   * back to sendCommand's static ExtractionConfig.commandTimeoutMs default)
+   * when there's no history yet, or for any other extraction type — VOUCHERS
+   * chunking's worst case is already what that static default is sized
+   * around (see its doc comment).
+   *
+   * Approximates the agent's own batching config (TALLY_MASTER_BATCH_SIZE
+   * etc.) from the cloud's own TallyConfig, since the agent's real,
+   * independently-configured values are never reported back — padded by
+   * BATCH_TIMEOUT_SAFETY_FACTOR precisely because this is an approximation,
+   * not a promise the agent is actually configured identically.
+   */
+  private async estimateBatchedTimeoutMs(
+    connectionId: string,
+    type: ExtractableType,
+  ): Promise<number | undefined> {
+    if (type !== ExtractionType.LEDGERS && type !== ExtractionType.STOCK_ITEMS) return undefined;
+
+    const last = await this.prisma.extractionJob.findFirst({
+      where: { connectionId, type, status: 'SUCCESS' },
+      orderBy: { createdAt: 'desc' },
+      select: { recordCount: true },
+    });
+    if (!last?.recordCount) return undefined;
+
+    const tally = this.config.getOrThrow<TallyConfig>('tally');
+    const estimatedBatches = Math.max(
+      1,
+      Math.ceil((last.recordCount * BATCH_TIMEOUT_SAFETY_FACTOR) / tally.masterBatchSize),
+    );
+    const dynamicTimeoutMs =
+      tally.timeoutMs * (tally.maxRetries + 1) +
+      estimatedBatches * (tally.timeoutMs + tally.chunkDelayMs) +
+      BATCH_TIMEOUT_FIXED_MARGIN_MS;
+
+    const staticFloor = this.config.getOrThrow<ExtractionConfig>('extraction').commandTimeoutMs;
+    return Math.max(dynamicTimeoutMs, staticFloor);
   }
 
   private describeDispatch(data: ExtractionJobData): string {

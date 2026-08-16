@@ -36,7 +36,23 @@ export interface AgentResultMessage {
   error?: { message: string };
 }
 
-export type AgentToGatewayMessage = AgentHelloMessage | AgentResultMessage;
+/**
+ * Sent on its own periodic timer (see AgentTunnelClient), independent of any
+ * queued extraction command — a self-check that the agent's own configured
+ * Tally is actually reachable right now, not just that the WebSocket tunnel
+ * is up. Reuses TallyDiagnosticsService.probe() and deliberately still goes
+ * through TallyHttpClient's single serialized queue rather than bypassing
+ * it, so a delayed heartbeat during a long batched fetch is itself a
+ * meaningful "hasn't updated in a while" signal, not a bug.
+ */
+export interface AgentHeartbeatMessage {
+  type: 'heartbeat';
+  tallyReachable: boolean;
+  /** Present only when tallyReachable is true. */
+  probeDurationMs?: number;
+}
+
+export type AgentToGatewayMessage = AgentHelloMessage | AgentResultMessage | AgentHeartbeatMessage;
 
 export interface GatewayHelloAckMessage {
   type: 'hello-ack';
@@ -55,5 +71,18 @@ export interface GatewayCommandMessage {
   payload: Record<string, unknown>;
 }
 
+/**
+ * Sent when TallyTunnelGateway.sendCommand gives up waiting on a command
+ * (its timeout fired) — tells the agent to actually stop working on it
+ * instead of running to completion unobserved. An agent build that doesn't
+ * recognize this type simply won't match it in its message switch and
+ * ignores it — safe no-op during a rolling upgrade, same fallthrough
+ * behavior every other message type here already relies on.
+ */
+export interface GatewayCancelMessage {
+  type: 'cancel';
+  requestId: string;
+}
+
 export type GatewayToAgentMessage =
-  GatewayHelloAckMessage | GatewayAuthErrorMessage | GatewayCommandMessage;
+  GatewayHelloAckMessage | GatewayAuthErrorMessage | GatewayCommandMessage | GatewayCancelMessage;

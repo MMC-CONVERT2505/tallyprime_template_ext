@@ -1,6 +1,10 @@
 import { from, of, throwError } from 'rxjs';
 import { TallyHttpClient } from './tally-http.client';
-import { TallyHttpException, TallyUnreachableException } from './exceptions/tally.exceptions';
+import {
+  TallyHttpException,
+  TallyTimeoutException,
+  TallyUnreachableException,
+} from './exceptions/tally.exceptions';
 
 describe('TallyHttpClient — retry with backoff', () => {
   function makeClient(tallyOverrides: Partial<{ maxRetries: number; retryBaseMs: number }> = {}) {
@@ -158,6 +162,63 @@ describe('TallyHttpClient — retry with backoff', () => {
 
       await expect(p1).rejects.toThrow(TallyUnreachableException);
       await expect(p2).resolves.toBe('<ENVELOPE>ok</ENVELOPE>');
+    });
+  });
+
+  describe('timeout handling', () => {
+    const timeoutError = () =>
+      Object.assign(new Error('timeout of 60000ms exceeded'), { code: 'ECONNABORTED' });
+
+    it('maps a real axios timeout (ECONNABORTED) to TallyTimeoutException, not just passing the value through', async () => {
+      const { client, httpPost } = makeClient({ maxRetries: 0 });
+      httpPost.mockReturnValue(throwError(timeoutError));
+
+      await expect(client.post('<ENVELOPE/>')).rejects.toThrow(TallyTimeoutException);
+    });
+
+    it('retries a timeout the same as any other transient failure, up to maxRetries', async () => {
+      const { client, httpPost } = makeClient({ maxRetries: 1 });
+      httpPost
+        .mockReturnValueOnce(throwError(timeoutError))
+        .mockReturnValueOnce(
+          of({ status: 200, headers: {}, data: Buffer.from('<ENVELOPE></ENVELOPE>') }),
+        );
+
+      const result = await client.post('<ENVELOPE/>');
+
+      expect(result).toBe('<ENVELOPE></ENVELOPE>');
+      expect(httpPost).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('cancellation via AbortSignal', () => {
+    it('passes the signal straight through to the underlying axios call', async () => {
+      const { client, httpPost } = makeClient();
+      httpPost.mockReturnValueOnce(
+        of({ status: 200, headers: {}, data: Buffer.from('<ENVELOPE></ENVELOPE>') }),
+      );
+      const controller = new AbortController();
+
+      await client.post('<ENVELOPE/>', { signal: controller.signal });
+
+      expect(httpPost.mock.calls[0][2]).toMatchObject({ signal: controller.signal });
+    });
+
+    it('never retries an aborted call, even with retries configured', async () => {
+      const { client, httpPost } = makeClient({ maxRetries: 2 });
+      const controller = new AbortController();
+      controller.abort();
+      // Axios raises a CanceledError (code ERR_CANCELED) for an aborted
+      // request — translateError falls through to treating that as
+      // "unreachable" (transient), which is exactly why postWithRetry must
+      // check signal.aborted BEFORE the transient-retry check, not rely on
+      // the error's shape.
+      httpPost.mockReturnValue(
+        throwError(() => Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' })),
+      );
+
+      await expect(client.post('<ENVELOPE/>', { signal: controller.signal })).rejects.toThrow();
+      expect(httpPost).toHaveBeenCalledTimes(1);
     });
   });
 });

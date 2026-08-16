@@ -30,4 +30,6 @@ export const agentEnvValidationSchema = Joi.object({
   // never back into this .env — so this only matters on a machine's very
   // first boot, or as a scripted-rollout seed value (see the setup guide §2.4).
   AGENT_TOKEN: Joi.string().min(32).allow('').default(''),
+
+  AGENT_HEARTBEAT_INTERVAL_MS: Joi.number().integer().min(5000).max(600000).default(60000),
 });

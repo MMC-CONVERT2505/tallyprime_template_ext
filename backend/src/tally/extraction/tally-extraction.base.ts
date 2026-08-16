@@ -21,7 +21,9 @@ interface ExtractionJobRepository {
   save(entity: NewExtractionJob): Promise<ExtractionJob>;
   update(
     id: string,
-    data: Partial<Pick<ExtractionJob, 'status' | 'recordCount' | 'durationMs' | 'error'>>,
+    data: Partial<
+      Pick<ExtractionJob, 'status' | 'recordCount' | 'durationMs' | 'error' | 'progress'>
+    >,
   ): Promise<ExtractionJob>;
 }
 
@@ -82,9 +84,25 @@ export abstract class TallyExtractionServiceBase {
     }
   }
 
-  /** Shared by every chunked/batched fetch (VOUCHERS date-chunking, LEDGERS/STOCK_ITEMS batching) to pace successive Tally requests. */
-  protected sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  /**
+   * Shared by every chunked/batched fetch (VOUCHERS date-chunking,
+   * LEDGERS/STOCK_ITEMS batching) to pace successive Tally requests.
+   * Abort-aware: a cancellation arriving during the pacing pause rejects
+   * immediately instead of waiting out the full delay first.
+   */
+  protected sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new Error('Extraction cancelled.'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(new Error('Extraction cancelled.'));
+        },
+        { once: true },
+      );
+    });
   }
 
   /**
@@ -96,14 +114,14 @@ export abstract class TallyExtractionServiceBase {
     type: ExtractionType,
     company: string | null,
     params: Record<string, unknown>,
-    work: () => Promise<T>,
+    work: (job: ExtractionJob | null) => Promise<T>,
   ): Promise<T> {
     const startedAt = Date.now();
     const job = await this.createJob(type, company, params);
     const context = `jobId=${job?.id ?? 'unaudited'} company="${company ?? 'n/a'}"`;
 
     try {
-      const result = await work();
+      const result = await work(job);
       const count = Array.isArray(result) ? result.length : 1;
       const durationMs = Date.now() - startedAt;
       await this.finishJob(job, ExtractionStatus.SUCCESS, { recordCount: count, durationMs });
@@ -167,9 +185,30 @@ export abstract class TallyExtractionServiceBase {
   ): Promise<void> {
     if (!job || !this.jobs) return;
     try {
-      await this.jobs.update(job.id, { status, ...patch });
+      // Clear any leftover "batch N/M" progress string now that the job has
+      // reached a terminal status — it would otherwise linger stale on the
+      // row forever once nothing is updating it anymore.
+      await this.jobs.update(job.id, { status, progress: null, ...patch });
     } catch (err) {
       this.logger.warn(`Could not update extraction job ${job.id}: ${String(err)}`);
+    }
+  }
+
+  /**
+   * Best-effort "batch N/M" status write for a still-running job, so a slow
+   * multi-batch/multi-chunk extraction (see MasterExtractionService's
+   * AlterID batching, TransactionExtractionService's date chunking) isn't a
+   * silent black box while PENDING. Never the source of truth for anything —
+   * same fire-and-forget, log-and-continue style as createJob/finishJob.
+   */
+  protected async reportProgress(job: ExtractionJob | null, progress: string): Promise<void> {
+    if (!job || !this.jobs) return;
+    try {
+      await this.jobs.update(job.id, { progress });
+    } catch (err) {
+      this.logger.debug(
+        `Could not persist progress for job ${job.id} (continuing): ${String(err)}`,
+      );
     }
   }
 }

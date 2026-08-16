@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ExtractionJob } from '@prisma/client';
 import { chunkDateRange } from '../date-range-chunker';
 import { ExtractVouchersDto } from '../dto/extract.dto';
 import { TallyVoucher } from '../interfaces/tally.interfaces';
@@ -22,7 +23,7 @@ import { ExtractionType, TallyExtractionServiceBase } from './tally-extraction.b
  */
 @Injectable()
 export class TransactionExtractionService extends TallyExtractionServiceBase {
-  async getVouchers(dto: ExtractVouchersDto): Promise<TallyVoucher[]> {
+  async getVouchers(dto: ExtractVouchersDto, signal?: AbortSignal): Promise<TallyVoucher[]> {
     const resolved = this.resolveCompany(dto.company);
     this.assertDateRange(dto.from, dto.to);
 
@@ -30,7 +31,7 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
       ExtractionType.VOUCHERS,
       resolved,
       { company: resolved, from: dto.from, to: dto.to, voucherType: dto.voucherType ?? null },
-      () => this.fetchVouchersChunked(resolved, dto),
+      (job) => this.fetchVouchersChunked(resolved, dto, signal, job),
     );
   }
 
@@ -51,11 +52,13 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
   private async fetchVouchersChunked(
     company: string,
     dto: ExtractVouchersDto,
+    signal?: AbortSignal,
+    job?: ExtractionJob | null,
   ): Promise<TallyVoucher[]> {
     const chunks = chunkDateRange(dto.from, dto.to, this.tally.voucherChunkDays);
     if (chunks.length <= 1) {
       const xml = this.builder.buildVouchersRequest(company, dto.from, dto.to, dto.voucherType);
-      const raw = await this.connector.post(xml);
+      const raw = await this.connector.post(xml, { signal });
       return this.parser.mapVouchers(raw);
     }
 
@@ -66,15 +69,17 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
 
     const results: TallyVoucher[] = [];
     for (const [index, chunk] of chunks.entries()) {
+      if (signal?.aborted) throw new Error('Extraction cancelled.');
       const startedAt = Date.now();
       const xml = this.builder.buildVouchersRequest(company, chunk.from, chunk.to, dto.voucherType);
-      const raw = await this.connector.post(xml, { retries: 0 });
+      const raw = await this.connector.post(xml, { retries: 0, signal });
       const parsed = this.parser.mapVouchers(raw);
       results.push(...parsed);
-      this.logger.log(
-        `  chunk ${index + 1}/${chunks.length} (${chunk.from}-${chunk.to}): ` +
-          `${parsed.length} record(s) in ${Date.now() - startedAt}ms`,
-      );
+      const progressMsg =
+        `chunk ${index + 1}/${chunks.length} (${chunk.from}-${chunk.to}): ` +
+        `${parsed.length} record(s) in ${Date.now() - startedAt}ms`;
+      this.logger.log(`  ${progressMsg}`);
+      await this.reportProgress(job ?? null, progressMsg);
 
       // Pace requests rather than firing the next chunk the instant this one
       // lands — Tally serves one request at a time on hardware that's often
@@ -82,9 +87,35 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
       // instead of finishing any faster. No pause after the last chunk.
       const isLastChunk = index === chunks.length - 1;
       if (!isLastChunk && this.tally.chunkDelayMs > 0) {
-        await this.sleep(this.tally.chunkDelayMs);
+        await this.sleep(this.tally.chunkDelayMs, signal);
       }
     }
-    return results;
+    return this.dedupeVouchers(results);
+  }
+
+  /**
+   * Observed against a live TallyPrime instance: chunked Day Book requests
+   * can leak the same voucher into every chunk's response, even chunks whose
+   * SVFROMDATE/SVTODATE window doesn't contain that voucher's date — Tally's
+   * report engine doesn't appear to fully reset internal state between
+   * back-to-back "Export Data" requests for the same report/company a few
+   * seconds apart. Deduping by AlterID (Tally's own per-record change
+   * counter — unique per record, unlike voucher number which can repeat
+   * across voucher types) removes exactly those leaked repeats. Falls back
+   * to a composite key only for the rare record with no AlterID at all.
+   */
+  private dedupeVouchers(vouchers: TallyVoucher[]): TallyVoucher[] {
+    const seen = new Set<string>();
+    const deduped: TallyVoucher[] = [];
+    for (const v of vouchers) {
+      const key =
+        v.alterId !== null
+          ? `id:${v.alterId}`
+          : `composite:${v.date}|${v.voucherType}|${v.voucherNumber}|${v.partyLedgerName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(v);
+    }
+    return deduped;
   }
 }

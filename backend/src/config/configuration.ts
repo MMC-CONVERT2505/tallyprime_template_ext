@@ -101,20 +101,34 @@ export interface ExtractionConfig {
   resultTtlSeconds: number;
   /**
    * How long TallyTunnelGateway.sendCommand waits for a connected agent to
-   * answer one extraction command. Must comfortably exceed the agent's own
-   * worst-case Tally round trip for a SINGLE call (its TALLY_TIMEOUT_MS ×
+   * answer one extraction command before giving up, sending 'cancel', and
+   * letting BullMQ retry (see ExtractionsProcessor — that retry is now
+   * deduped/serialized per job via sendCommand's dedupeKey, so widening this
+   * value doesn't paper over a stuck agent, it just changes when a genuinely
+   * abandoned command gets cancelled). Must comfortably exceed the agent's
+   * own worst-case Tally round trip for a SINGLE call (its TALLY_TIMEOUT_MS ×
    * (maxRetries + 1) + backoff — with that config's own 60s/2-retry
    * defaults, up to ~180s) — or a slow-but-working Tally call gets
-   * misreported as "agent did not respond" and the result silently dropped
-   * when it arrives late.
+   * misreported as "agent did not respond."
    *
-   * A chunked VOUCHERS command (see date-range-chunker.ts) is several such
-   * calls in sequence, not one — worst case (all chunks time out, 0 retries
-   * each) is roughly chunks × (TALLY_TIMEOUT_MS + TALLY_CHUNK_DELAY_MS). At
-   * the 7-day/60s/2s defaults, a full month is 5 chunks ≈ 310s; the default
-   * here leaves headroom above that. This is a ceiling for one
-   * already-dispatched command, not added latency on the common path — a
-   * fast Tally still answers fast.
+   * Two families of multi-call commands can legitimately exceed a single
+   * call's budget, not just one:
+   *   - A chunked VOUCHERS command (date-range-chunker.ts): worst case (all
+   *     chunks time out, 0 retries each) is roughly
+   *     chunks × (TALLY_TIMEOUT_MS + TALLY_CHUNK_DELAY_MS). At the
+   *     7-day/60s/2s defaults, a full month is 5 chunks ≈ 310s.
+   *   - A batched LEDGERS/STOCK_ITEMS command (MasterExtractionService's
+   *     AlterID batching): one un-batched names+AlterID pass
+   *     (TALLY_TIMEOUT_MS × (maxRetries+1)) plus
+   *     batchCount × (TALLY_TIMEOUT_MS + TALLY_CHUNK_DELAY_MS). At the
+   *     300/60s/2s defaults, a 6,000-ledger company is 20 batches ≈ 24 min —
+   *     this static default is sized to comfortably outlast a "large but not
+   *     extreme" company; ExtractionsProcessor.estimateBatchedTimeoutMs
+   *     computes a per-job override above this floor once the connector has
+   *     at least one successful prior fetch to estimate a batch count from.
+   *
+   * This is a ceiling for one already-dispatched command, not added latency
+   * on the common path — a fast Tally still answers fast.
    */
   commandTimeoutMs: number;
 }
@@ -204,7 +218,7 @@ export default (): AppConfig => {
     },
     extraction: {
       resultTtlSeconds: toInt(process.env.EXTRACTION_RESULT_TTL_SECONDS, 3600),
-      commandTimeoutMs: toInt(process.env.EXTRACTION_COMMAND_TIMEOUT_MS, 360000),
+      commandTimeoutMs: toInt(process.env.EXTRACTION_COMMAND_TIMEOUT_MS, 900000),
     },
   };
 };

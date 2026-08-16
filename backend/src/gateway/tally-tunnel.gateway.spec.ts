@@ -259,5 +259,154 @@ describe('TallyTunnelGateway', () => {
       );
       expect(config.getOrThrow).toHaveBeenCalledWith('extraction');
     });
+
+    it('sends a cancel message to the agent when the timeout fires', async () => {
+      const { socket } = await connectedAgent();
+
+      const promise = gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 20, 'job-1');
+      const sentCommand = JSON.parse(socket.send.mock.calls[1][0]);
+      await expect(promise).rejects.toThrow('did not respond within 20ms');
+
+      const cancelMessage = JSON.parse(socket.send.mock.calls[2][0]);
+      expect(cancelMessage).toEqual({ type: 'cancel', requestId: sentCommand.requestId });
+    });
+
+    describe('duplicate-dispatch prevention (dedupeKey)', () => {
+      it('rejects a retry with the same dedupeKey while the first is still outstanding, without sending a second command', async () => {
+        const { socket } = await connectedAgent();
+
+        const first = gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 30_000, 'job-1');
+        expect(socket.send).toHaveBeenCalledTimes(2); // hello-ack + the one command
+
+        await expect(
+          gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 30_000, 'job-1'),
+        ).rejects.toThrow(/already has command/);
+        expect(socket.send).toHaveBeenCalledTimes(2); // still just the one command — no duplicate sent
+
+        // Resolve the still-pending first command so its timer doesn't leak past this test.
+        const sentCommand = JSON.parse(socket.send.mock.calls[1][0]);
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'result',
+              requestId: sentCommand.requestId,
+              ok: true,
+              data: [],
+            }),
+          ),
+        );
+        await expect(first).resolves.toEqual([]);
+      });
+
+      it('lets a retry with the same dedupeKey proceed once a late result confirms the abandoned attempt actually finished', async () => {
+        const { socket } = await connectedAgent();
+
+        const first = gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 20, 'job-1');
+        const firstCommand = JSON.parse(socket.send.mock.calls[1][0]);
+        await expect(first).rejects.toThrow('did not respond within 20ms');
+
+        // The agent's late confirmation, arriving after the timeout already fired.
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'result',
+              requestId: firstCommand.requestId,
+              ok: true,
+              data: [],
+            }),
+          ),
+        );
+        await flush();
+
+        const second = gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 30_000, 'job-1');
+        const secondCommand = JSON.parse(
+          socket.send.mock.calls[socket.send.mock.calls.length - 1][0],
+        );
+        expect(secondCommand).toMatchObject({ type: 'command' });
+
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'result',
+              requestId: secondCommand.requestId,
+              ok: true,
+              data: [],
+            }),
+          ),
+        );
+        await expect(second).resolves.toEqual([]);
+      });
+
+      it('does not block two different dedupeKeys, or no dedupeKey at all, against the same connection', async () => {
+        const { socket } = await connectedAgent();
+
+        const a = gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 30_000, 'job-A');
+        const b = gateway.sendCommand(CONNECTION_ID, 'vouchers', {}, 30_000, 'job-B');
+        const c = gateway.sendCommand(CONNECTION_ID, 'groups', {}, 30_000); // no dedupeKey
+
+        expect(socket.send).toHaveBeenCalledTimes(4); // hello-ack + 3 commands, none blocked
+
+        const [cmdA, cmdB, cmdC] = socket.send.mock.calls
+          .slice(1)
+          .map((call) => JSON.parse(call[0]));
+        for (const cmd of [cmdA, cmdB, cmdC]) {
+          socket.emit(
+            'message',
+            Buffer.from(
+              JSON.stringify({ type: 'result', requestId: cmd.requestId, ok: true, data: [] }),
+            ),
+          );
+        }
+        await expect(Promise.all([a, b, c])).resolves.toEqual([[], [], []]);
+      });
+
+      it('clears the dedupe guard on disconnect, so a retry against a reconnected agent is not blocked forever', async () => {
+        const { socket } = await connectedAgent();
+
+        const first = gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 30_000, 'job-1');
+        socket.connectionId = CONNECTION_ID;
+        gateway.handleDisconnect(socket as any);
+
+        const reconnected = makeFakeSocket();
+        gateway.handleConnection(reconnected as any);
+        await sendHello(reconnected, VALID_TOKEN);
+
+        const second = gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 30_000, 'job-1');
+        const secondCommand = JSON.parse(reconnected.send.mock.calls[1][0]);
+        expect(secondCommand).toMatchObject({ type: 'command' });
+        reconnected.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'result',
+              requestId: secondCommand.requestId,
+              ok: true,
+              data: [],
+            }),
+          ),
+        );
+        await expect(second).resolves.toEqual([]);
+
+        // Clean up `first`'s still-pending promise/timer (handleDisconnect only
+        // clears the dedupe guard, not the `pending` entry itself) so it
+        // doesn't leak a live timer past this test.
+        const firstCommand = JSON.parse(socket.send.mock.calls[1][0]);
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'result',
+              requestId: firstCommand.requestId,
+              ok: true,
+              data: [],
+            }),
+          ),
+        );
+        await expect(first).resolves.toEqual([]);
+      });
+    });
   });
 });

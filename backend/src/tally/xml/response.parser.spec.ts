@@ -142,8 +142,12 @@ describe('TallyResponseParser', () => {
   });
 
   describe('mapVouchers', () => {
+    // Real TallyPrime shape for a REQUESTDESC-style report export (Day Book):
+    // it reuses its "Import Data" schema, so records land under
+    // BODY.IMPORTDATA.REQUESTDATA, not BODY.DATA — captured from a live
+    // TallyPrime response, not hand-guessed.
     const salesVoucher =
-      '<ENVELOPE><BODY><DATA>' +
+      '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>' +
       '<TALLYMESSAGE><VOUCHER VCHTYPE="Sales">' +
       '<DATE>20250415</DATE><VOUCHERNUMBER>INV-1042</VOUCHERNUMBER>' +
       '<PARTYLEDGERNAME>ABC Traders</PARTYLEDGERNAME><NARRATION>Sold R&D kit</NARRATION>' +
@@ -151,7 +155,7 @@ describe('TallyResponseParser', () => {
       '<ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales Account</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>10000.00</AMOUNT></ALLLEDGERENTRIES.LIST>' +
       '<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>Widget A</STOCKITEMNAME><AMOUNT>10000.00</AMOUNT></ALLINVENTORYENTRIES.LIST>' +
       '</VOUCHER></TALLYMESSAGE>' +
-      '</DATA></BODY></ENVELOPE>';
+      '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>';
 
     it('extracts header, ledger entries, and inventory entries', () => {
       const [voucher] = parser.mapVouchers(salesVoucher);
@@ -181,11 +185,11 @@ describe('TallyResponseParser', () => {
 
     it('returns every voucher and skips non-voucher messages', () => {
       const xml =
-        '<ENVELOPE><BODY><DATA>' +
+        '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>' +
         '<TALLYMESSAGE><LEDGER><NAME>Some Master</NAME></LEDGER></TALLYMESSAGE>' + // not a voucher
         '<TALLYMESSAGE><VOUCHER VCHTYPE="Receipt"><VOUCHERNUMBER>R-1</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE>' +
         '<TALLYMESSAGE><VOUCHER VCHTYPE="Payment"><VOUCHERNUMBER>P-1</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE>' +
-        '</DATA></BODY></ENVELOPE>';
+        '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>';
       const vouchers = parser.mapVouchers(xml);
       expect(vouchers.map((v) => v.voucherNumber)).toEqual(['R-1', 'P-1']);
       expect(vouchers.map((v) => v.voucherType)).toEqual(['Receipt', 'Payment']);
@@ -193,12 +197,21 @@ describe('TallyResponseParser', () => {
 
     it('handles a single ledger entry (object, not array)', () => {
       const xml =
-        '<ENVELOPE><BODY><DATA><TALLYMESSAGE><VOUCHER VCHTYPE="Journal">' +
+        '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA><TALLYMESSAGE><VOUCHER VCHTYPE="Journal">' +
         '<ALLLEDGERENTRIES.LIST><LEDGERNAME>Only One</LEDGERNAME><AMOUNT>50.00</AMOUNT></ALLLEDGERENTRIES.LIST>' +
-        '</VOUCHER></TALLYMESSAGE></DATA></BODY></ENVELOPE>';
+        '</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>';
       const [voucher] = parser.mapVouchers(xml);
       expect(voucher.ledgerEntries).toHaveLength(1);
       expect(voucher.ledgerEntries[0]).toMatchObject({ ledgerName: 'Only One', amount: 50 });
+    });
+
+    it('falls back to BODY.DATA.TALLYMESSAGE for Tally builds that answer that way', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Journal"><VOUCHERNUMBER>J-1</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE>' +
+        '</DATA></BODY></ENVELOPE>';
+      const [voucher] = parser.mapVouchers(xml);
+      expect(voucher).toMatchObject({ voucherNumber: 'J-1', voucherType: 'Journal' });
     });
   });
 });

@@ -18,6 +18,14 @@ export interface TallyPostOptions {
   timeoutMs?: number;
   /** Overrides TallyConfig.maxRetries for this call only. 0 disables retrying. */
   retries?: number;
+  /**
+   * Aborts this call (and skips any further retry) when triggered — wired
+   * from a tunnel-dispatched command's cancellation (see AgentTunnelClient),
+   * so an abandoned request actually stops instead of continuing to occupy
+   * this connector's single serialized queue. Optional and unused on every
+   * other call path (the synchronous /tally/* routes, local-mode jobs).
+   */
+  signal?: AbortSignal;
 }
 
 export interface TallyConnector {

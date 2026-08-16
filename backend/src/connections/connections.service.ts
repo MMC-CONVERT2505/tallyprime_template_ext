@@ -71,7 +71,11 @@ export class ConnectionsService {
       });
       return { id, label, token: formatConnectionToken(id, secret), reused: false };
     } catch (err) {
-      if (defaultCompany && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      if (
+        defaultCompany &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
         const winner = await this.prisma.tallyConnection.findFirst({
           where: { orgId, defaultCompany, isActive: true },
         });
@@ -127,6 +131,8 @@ export class ConnectionsService {
         defaultCompany: true,
         isActive: true,
         lastSeenAt: true,
+        tallyReachable: true,
+        lastProbeAt: true,
         createdAt: true,
       },
       // Company-focused, not creation-order: groups an org's connections by

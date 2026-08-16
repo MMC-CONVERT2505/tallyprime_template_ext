@@ -31,7 +31,7 @@ export class TallyDiagnosticsService extends TallyExtractionServiceBase {
    * Deliberately does NOT write a job row (health runs frequently) and does not
    * use the cache (health must reflect live reality).
    */
-  async probe(): Promise<TallyProbeResult> {
+  async probe(signal?: AbortSignal): Promise<TallyProbeResult> {
     const startedAt = Date.now();
     const xml = this.builder.buildCompaniesRequest();
     // Fast-fail, no retries: this IS the health check — silently retrying
@@ -40,6 +40,7 @@ export class TallyDiagnosticsService extends TallyExtractionServiceBase {
     const raw = await this.connector.post(xml, {
       timeoutMs: this.tally.probeTimeoutMs,
       retries: 0,
+      signal,
     });
     const companies = this.parser.mapCompanies(raw);
     return {
@@ -54,7 +55,7 @@ export class TallyDiagnosticsService extends TallyExtractionServiceBase {
    * parse-validated flag) so you can explore reports/collections we have not yet
    * modelled. Useful during onboarding of a new client's Tally.
    */
-  async getRaw(dto: RawReportDto): Promise<RawExtractionResult> {
+  async getRaw(dto: RawReportDto, signal?: AbortSignal): Promise<RawExtractionResult> {
     const resolved = dto.company ? dto.company : this.tally.defaultCompany || null;
     const xml = this.builder.buildReportRequest({
       reportName: dto.reportName,
@@ -65,7 +66,7 @@ export class TallyDiagnosticsService extends TallyExtractionServiceBase {
     });
 
     return this.runExtraction(ExtractionType.RAW, resolved, { ...dto }, async () => {
-      const raw = await this.connector.post(xml);
+      const raw = await this.connector.post(xml, { signal });
       // Validate it parses (surfaces LINEERROR) but still return the raw body.
       this.parser.parse(raw);
       return { reportName: dto.reportName, company: resolved, rawXml: raw, bytes: raw.length };
