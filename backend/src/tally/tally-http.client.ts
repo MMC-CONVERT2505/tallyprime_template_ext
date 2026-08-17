@@ -180,8 +180,15 @@ export class TallyHttpClient implements TallyConnector {
     const code = axiosErr?.code;
 
     // Timeouts: axios raises ECONNABORTED (or ETIMEDOUT on some platforms).
+    // Logged at WARN, not ERROR: this is a typed, retried, gracefully-handled
+    // condition (502/504 with a hint upstream) — not a crash. Notably, this
+    // path also fires on every periodic agent heartbeat probe (see
+    // AgentTunnelClient.sendHeartbeat) while Tally is closed, which is a
+    // routine, expected state for a desktop app, not an incident. Logging
+    // that at ERROR would page on-call every heartbeat interval for as long
+    // as a client's Tally stays closed.
     if (code === 'ECONNABORTED' || code === 'ETIMEDOUT') {
-      this.logger.error(`Tally request timed out after ${timeoutMs}ms`);
+      this.logger.warn(`Tally request timed out after ${timeoutMs}ms`);
       return new TallyTimeoutException(baseUrl, timeoutMs, err);
     }
 
@@ -194,7 +201,7 @@ export class TallyHttpClient implements TallyConnector {
       code === 'ECONNRESET' ||
       code === 'EAI_AGAIN'
     ) {
-      this.logger.error(`Tally unreachable at ${baseUrl}: ${code}`);
+      this.logger.warn(`Tally unreachable at ${baseUrl}: ${code}`);
       return new TallyUnreachableException(baseUrl, err);
     }
 

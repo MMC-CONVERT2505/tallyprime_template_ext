@@ -11,7 +11,14 @@ export const envValidationSchema = Joi.object({
   APP_GLOBAL_PREFIX: Joi.string().allow('').default('api'),
 
   // Tally
-  TALLY_HOST: Joi.string().hostname().default('127.0.0.1'),
+  // hostname() alone rejects IPv6 literals (e.g. `::1`) since colons aren't
+  // valid hostname characters — but TallyPrime's "Act as Server" binds
+  // IPv6-loopback-only on some Windows machines, so TALLY_HOST legitimately
+  // needs to be `::1` there. See buildTallyConfig's formatHostForUrl for the
+  // matching URL-construction fix (IPv6 literals need bracketing).
+  TALLY_HOST: Joi.alternatives()
+    .try(Joi.string().hostname(), Joi.string().ip())
+    .default('127.0.0.1'),
   TALLY_PORT: Joi.number().port().default(9001),
   TALLY_TIMEOUT_MS: Joi.number().integer().min(1000).max(600000).default(60000),
   // Deliberately much shorter than TALLY_TIMEOUT_MS and never retried — see

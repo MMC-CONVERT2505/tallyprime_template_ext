@@ -3,7 +3,11 @@ import * as Joi from 'joi';
 /** Env schema for the agent/connector process — see agent-configuration.ts for why
  *  this is separate from (and much smaller than) the server's envValidationSchema. */
 export const agentEnvValidationSchema = Joi.object({
-  TALLY_HOST: Joi.string().hostname().default('127.0.0.1'),
+  // See env.validation.ts's TALLY_HOST for why this accepts IP literals
+  // (IPv6 in particular), not just hostnames.
+  TALLY_HOST: Joi.alternatives()
+    .try(Joi.string().hostname(), Joi.string().ip())
+    .default('127.0.0.1'),
   TALLY_PORT: Joi.number().port().default(9001),
   TALLY_TIMEOUT_MS: Joi.number().integer().min(1000).max(600000).default(60000),
   TALLY_PROBE_TIMEOUT_MS: Joi.number().integer().min(500).max(60000).default(8000),

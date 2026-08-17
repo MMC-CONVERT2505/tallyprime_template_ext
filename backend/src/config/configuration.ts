@@ -155,6 +155,20 @@ export const toInt = (v: string | undefined, fallback: number): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+/**
+ * Bracket a raw IPv6 literal for use in a URL (`::1` -> `[::1]`), a no-op for
+ * hostnames/IPv4. Without this, `http://${host}:${port}` builds an invalid
+ * URL for any IPv6 TALLY_HOST — the colons in the address collide with the
+ * URL's own `:port` separator. Encountered live: on some Windows machines
+ * TallyPrime's "Act as Server" binds the IPv6 loopback (`::1`) only, so a
+ * `127.0.0.1`-only assumption here silently means Tally is *never* reachable
+ * on that machine no matter how correctly "Act as Server" is configured —
+ * every request fails ECONNREFUSED, indistinguishable from Tally actually
+ * being closed.
+ */
+const formatHostForUrl = (host: string): string =>
+  host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+
 /** Shared by both the server config (below) and agent-configuration.ts. */
 export const buildTallyConfig = (): TallyConfig => {
   const tallyHost = process.env.TALLY_HOST ?? '127.0.0.1';
@@ -162,7 +176,7 @@ export const buildTallyConfig = (): TallyConfig => {
   return {
     host: tallyHost,
     port: tallyPort,
-    baseUrl: `http://${tallyHost}:${tallyPort}`,
+    baseUrl: `http://${formatHostForUrl(tallyHost)}:${tallyPort}`,
     timeoutMs: toInt(process.env.TALLY_TIMEOUT_MS, 60000),
     probeTimeoutMs: toInt(process.env.TALLY_PROBE_TIMEOUT_MS, 8000),
     responseEncoding: (process.env.TALLY_RESPONSE_ENCODING ?? 'auto').toLowerCase(),
