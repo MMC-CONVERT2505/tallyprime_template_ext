@@ -42,6 +42,7 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     fromDate?: string,
     toDate?: string,
     signal?: AbortSignal,
+    externalJobId?: string,
   ): Promise<TallyLedger[]> {
     const resolved = this.resolveCompany(company);
     if (fromDate && toDate) this.assertDateRange(fromDate, toDate);
@@ -50,6 +51,7 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       resolved,
       { company: resolved, fromDate: fromDate ?? null, toDate: toDate ?? null },
       (job) => this.fetchLedgersBatched(resolved, fromDate, toDate, signal, job),
+      externalJobId,
     );
   }
 
@@ -67,6 +69,7 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     fromDate?: string,
     toDate?: string,
     signal?: AbortSignal,
+    externalJobId?: string,
   ): Promise<TallyStockItem[]> {
     const resolved = this.resolveCompany(company);
     if (fromDate && toDate) this.assertDateRange(fromDate, toDate);
@@ -75,6 +78,7 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       resolved,
       { company: resolved, fromDate: fromDate ?? null, toDate: toDate ?? null },
       (job) => this.fetchStockItemsBatched(resolved, fromDate, toDate, signal, job),
+      externalJobId,
     );
   }
 
@@ -119,37 +123,81 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     signal?: AbortSignal,
     job?: ExtractionJob | null,
   ): Promise<TallyLedger[]> {
+    const isPeriodScoped = Boolean(fromDate && toDate);
     const namesXml = await this.connector.post(this.builder.buildLedgerNamesRequest(company), {
       signal,
     });
     const allEntries = this.parser.mapLedgers(namesXml);
     const totalCount = allEntries.length;
+
+    // Tally's own system-computed ledgers (RESERVEDNAME set — e.g. "Profit &
+    // Loss A/c") reliably wedge Tally when a *period-scoped* balance is
+    // requested, even alone — see TallyLedger.reservedName's doc comment.
+    // Confirmed live on this company: harmless for the all-time (unscoped)
+    // path, so only pulled out of the batchable set when period-scoped.
+    // They still appear in the result, just without a period balance —
+    // silently dropping them would under-count against totalCount below.
+    const reserved = isPeriodScoped ? allEntries.filter((l) => l.reservedName) : [];
+    if (reserved.length > 0) {
+      this.logger.warn(
+        `LEDGERS for "${company}": ${reserved.length} reserved ledger(s) ` +
+          `(${reserved.map((l) => l.name).join(', ')}) excluded from the period-scoped ` +
+          'balance fetch — Tally cannot reliably compute a period balance for its own ' +
+          'system-computed ledgers via this API. Returned with a null opening/closing balance.',
+      );
+    }
+    const reservedNames = new Set(reserved.map((l) => l.name));
     const batchable = allEntries
       .filter((l): l is TallyLedger & { alterId: number } => l.alterId !== null)
+      .filter((l) => !reservedNames.has(l.name))
       .sort((a, b) => a.alterId - b.alterId);
-    if (batchable.length !== totalCount) {
+    const skippedCount = totalCount - reserved.length - batchable.length;
+    if (skippedCount !== 0) {
       this.logger.warn(
-        `LEDGERS for "${company}": ${totalCount - batchable.length} record(s) have no AlterID ` +
+        `LEDGERS for "${company}": ${skippedCount} record(s) have no AlterID ` +
           'and cannot be batched — the count cross-check below will catch this.',
       );
     }
 
-    if (totalCount <= this.tally.masterBatchSize) {
+    // Period-scoped (fromDate/toDate) requests get a much smaller batch
+    // ceiling — see TallyConfig.periodBatchSize's doc comment: bisected
+    // live against this Tally instance (ordinary ledgers only, reserved
+    // ones already excluded above): 4 consistently fine, 10 consistently
+    // wedged. This is independent of the reserved-ledger issue above — even
+    // a batch of ordinary ledgers has a real ceiling.
+    const batchSize = isPeriodScoped ? this.tally.periodBatchSize : this.tally.masterBatchSize;
+
+    // Compares against totalCount, not batchable.length: a record missing
+    // its AlterID still comes back correctly from this unfiltered
+    // single-request path (it only needs AlterID for the batched/filtered
+    // path below), so it must still count toward "small enough for one
+    // request" — otherwise a company with one AlterID-less straggler would
+    // wrongly skip straight to batching. The plain, unfiltered single-
+    // request path only applies when there's no `reserved` set to carve
+    // out — otherwise that plain request would ask Tally for the reserved
+    // ledger's period balance too, right back into the hang this whole
+    // method exists to avoid. With any reserved ledgers present we always
+    // go through the AlterID-range batching path below, which excludes
+    // them by construction (`batchable` already excludes them).
+    if (reserved.length === 0 && totalCount <= batchSize) {
       const xml = this.builder.buildLedgersRequest(company, fromDate, toDate);
       const raw = await this.connector.post(xml, { signal });
       return this.parser.mapLedgers(raw);
     }
 
-    const batchCount = Math.ceil(batchable.length / this.tally.masterBatchSize);
+    const batchCount = Math.max(1, Math.ceil(batchable.length / batchSize));
     this.logger.log(
       `LEDGERS for "${company}": ${totalCount} record(s) — batching into ` +
-        `${batchCount} request(s) of at most ${this.tally.masterBatchSize}.`,
+        `${batchCount} request(s) of at most ${batchSize}${reserved.length ? ` (+${reserved.length} reserved, balance-less)` : ''}.`,
     );
 
-    const results: TallyLedger[] = [];
-    for (let i = 0; i < batchable.length; i += this.tally.masterBatchSize) {
+    // Reserved ledgers already have name/alterId/reservedName from the cheap
+    // names pass above and null balances (that pass never asked for them) —
+    // exactly the shape we want, no separate request needed.
+    const results: TallyLedger[] = [...reserved];
+    for (let i = 0; i < batchable.length; i += batchSize) {
       if (signal?.aborted) throw new Error('Extraction cancelled.');
-      const batch = batchable.slice(i, i + this.tally.masterBatchSize);
+      const batch = batchable.slice(i, i + batchSize);
       const startedAt = Date.now();
       const alterIdRange = { from: batch[0].alterId, to: batch[batch.length - 1].alterId };
       const xml = this.builder.buildLedgersRequest(company, fromDate, toDate, alterIdRange);
@@ -157,13 +205,13 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       const parsed = this.parser.mapLedgers(raw);
       results.push(...parsed);
       const progressMsg =
-        `batch ${i / this.tally.masterBatchSize + 1}/${batchCount} ` +
+        `batch ${i / batchSize + 1}/${batchCount} ` +
         `(AlterID ${alterIdRange.from}-${alterIdRange.to}, ${batch.length} expected): ` +
         `${parsed.length} record(s) in ${Date.now() - startedAt}ms`;
       this.logger.log(`  ${progressMsg}`);
       await this.reportProgress(job ?? null, progressMsg);
 
-      const isLastBatch = i + this.tally.masterBatchSize >= batchable.length;
+      const isLastBatch = i + batchSize >= batchable.length;
       if (!isLastBatch && this.tally.chunkDelayMs > 0) {
         await this.sleep(this.tally.chunkDelayMs, signal);
       }
@@ -202,22 +250,26 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       );
     }
 
-    if (totalCount <= this.tally.masterBatchSize) {
+    // See fetchLedgersBatched's matching comment — period-scoped
+    // OpeningValue/ClosingValue are just as replay-expensive per record.
+    const batchSize = fromDate && toDate ? this.tally.periodBatchSize : this.tally.masterBatchSize;
+
+    if (totalCount <= batchSize) {
       const xml = this.builder.buildStockItemsRequest(company, fromDate, toDate);
       const raw = await this.connector.post(xml, { signal });
       return this.parser.mapStockItems(raw);
     }
 
-    const batchCount = Math.ceil(batchable.length / this.tally.masterBatchSize);
+    const batchCount = Math.ceil(batchable.length / batchSize);
     this.logger.log(
       `STOCK_ITEMS for "${company}": ${totalCount} record(s) — batching into ` +
-        `${batchCount} request(s) of at most ${this.tally.masterBatchSize}.`,
+        `${batchCount} request(s) of at most ${batchSize}.`,
     );
 
     const results: TallyStockItem[] = [];
-    for (let i = 0; i < batchable.length; i += this.tally.masterBatchSize) {
+    for (let i = 0; i < batchable.length; i += batchSize) {
       if (signal?.aborted) throw new Error('Extraction cancelled.');
-      const batch = batchable.slice(i, i + this.tally.masterBatchSize);
+      const batch = batchable.slice(i, i + batchSize);
       const startedAt = Date.now();
       const alterIdRange = { from: batch[0].alterId, to: batch[batch.length - 1].alterId };
       const xml = this.builder.buildStockItemsRequest(company, fromDate, toDate, alterIdRange);
@@ -225,13 +277,13 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       const parsed = this.parser.mapStockItems(raw);
       results.push(...parsed);
       const progressMsg =
-        `batch ${i / this.tally.masterBatchSize + 1}/${batchCount} ` +
+        `batch ${i / batchSize + 1}/${batchCount} ` +
         `(AlterID ${alterIdRange.from}-${alterIdRange.to}, ${batch.length} expected): ` +
         `${parsed.length} record(s) in ${Date.now() - startedAt}ms`;
       this.logger.log(`  ${progressMsg}`);
       await this.reportProgress(job ?? null, progressMsg);
 
-      const isLastBatch = i + this.tally.masterBatchSize >= batchable.length;
+      const isLastBatch = i + batchSize >= batchable.length;
       if (!isLastBatch && this.tally.chunkDelayMs > 0) {
         await this.sleep(this.tally.chunkDelayMs, signal);
       }

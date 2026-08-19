@@ -29,6 +29,13 @@ export function dispatchExtraction(
   payload: Record<string, unknown>,
   services: ExtractionDispatchServices,
   signal?: AbortSignal,
+  // The queued job (TallyJobsService, ExtractionsProcessor) that's polling
+  // GET /tally/jobs/:id or /extractions/:id for this dispatch's outcome —
+  // threaded through so a batched LEDGERS/STOCK_ITEMS/VOUCHERS fetch's live
+  // "batch N/M" progress lands on the SAME row the caller can see, not a
+  // second, invisible one — see TallyExtractionServiceBase.runExtraction's
+  // externalJobId doc comment for the bug this fixes.
+  externalJobId?: string,
 ): Promise<unknown> {
   const { masters, transactions, diagnostics } = services;
   switch (action) {
@@ -42,6 +49,7 @@ export function dispatchExtraction(
         payload.fromDate as string | undefined,
         payload.toDate as string | undefined,
         signal,
+        externalJobId,
       );
     case 'stockItems':
       return masters.getStockItems(
@@ -49,11 +57,16 @@ export function dispatchExtraction(
         payload.fromDate as string | undefined,
         payload.toDate as string | undefined,
         signal,
+        externalJobId,
       );
     case 'groups':
       return masters.getGroups(payload.company as string | undefined);
     case 'vouchers':
-      return transactions.getVouchers(payload as unknown as ExtractVouchersDto, signal);
+      return transactions.getVouchers(
+        payload as unknown as ExtractVouchersDto,
+        signal,
+        externalJobId,
+      );
     case 'raw':
       return diagnostics.getRaw(payload as unknown as RawReportDto, signal);
   }

@@ -31,6 +31,7 @@ describe('ExtractionsProcessor', () => {
         maxRetries: 2,
         chunkDelayMs: 2000,
         masterBatchSize: 300,
+        periodBatchSize: 25,
       }),
     };
     const masters = {
@@ -186,6 +187,34 @@ describe('ExtractionsProcessor', () => {
       expect(sendCommand.mock.calls[0][3]).toBeGreaterThan(900000);
     });
 
+    it('estimates using the much smaller periodBatchSize (not masterBatchSize) when the job is period-scoped', async () => {
+      const sendCommand = jest.fn().mockResolvedValue([]);
+      const findFirst = jest.fn().mockResolvedValue({ recordCount: 6000 });
+      const { processor } = makeDeps({ sendCommand, findFirst });
+      const periodScopedJob = {
+        data: {
+          ...job.data,
+          payload: { company: 'ABC Ltd', fromDate: '20260401', toDate: '20260430' },
+        },
+      } as any;
+
+      await processor.process(periodScopedJob);
+      const periodScopedTimeout = sendCommand.mock.calls[0][3];
+
+      sendCommand.mockClear();
+      await processor.process(job); // same recordCount, no date range -> masterBatchSize
+      const allTimeTimeout = sendCommand.mock.calls[0][3];
+
+      // 6000 records at periodBatchSize=25 is 12x the batches of
+      // masterBatchSize=300 for the identical record count — the dynamic
+      // estimate must reflect that, not silently reuse the all-time figure
+      // (which is exactly what would hand back a too-small command timeout
+      // for a period-scoped fetch — see estimateBatchedTimeoutMs's doc
+      // comment for why that matters: the gateway would cancel a
+      // legitimately-in-progress fetch mid-flight).
+      expect(periodScopedTimeout).toBeGreaterThan(allTimeTimeout);
+    });
+
     it("falls back to undefined (sendCommand's own static default) when there is no prior successful fetch", async () => {
       const sendCommand = jest.fn().mockResolvedValue([]);
       const { processor } = makeDeps({ sendCommand }); // default findFirst resolves null
@@ -222,7 +251,16 @@ describe('ExtractionsProcessor', () => {
 
       await processor.process(localJob);
 
-      expect(masters.getLedgers).toHaveBeenCalledWith('ABC Ltd', undefined, undefined, undefined);
+      // Last arg is the job's own id — see runExtraction's externalJobId doc
+      // comment: without it, a batched fetch's live progress lands on a
+      // second, uncoordinated row the caller (GET /tally/jobs/:id) never sees.
+      expect(masters.getLedgers).toHaveBeenCalledWith(
+        'ABC Ltd',
+        undefined,
+        undefined,
+        undefined,
+        'job-2',
+      );
       expect(tunnel.sendCommand).not.toHaveBeenCalled();
       expect(redis.set).toHaveBeenCalledWith(
         'extraction-result:job-2',

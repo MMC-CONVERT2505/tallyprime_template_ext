@@ -20,6 +20,19 @@ export interface TallyLedger {
   closingBalance: number | null;
   /** Incrementing id Tally bumps on every change — the key to incremental sync. */
   alterId: number | null;
+  /**
+   * Non-null for Tally's own system-computed ledgers (e.g. "Profit & Loss
+   * A/c") — Tally's RESERVEDNAME attribute, empty/absent for every ordinary
+   * user-created ledger. These aren't real transactional accounts; "Profit &
+   * Loss A/c" is a live rollup of every income/expense voucher in the
+   * company's history. Asking Tally for its *period-scoped* balance (even
+   * alone, batch size 1) reliably wedges Tally's engine — confirmed live: a
+   * single-ledger request for it never returned and left Tally spinning one
+   * CPU core for 5+ minutes; the identical request for an ordinary ledger
+   * returns in under 100ms. See MasterExtractionService.fetchLedgersBatched,
+   * which excludes these from period-scoped batches entirely.
+   */
+  reservedName: string | null;
 }
 
 /** A Group is Tally's account-hierarchy node — never a Zoho entity on its own,

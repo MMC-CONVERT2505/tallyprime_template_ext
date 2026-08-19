@@ -157,7 +157,11 @@ export class ExtractionsProcessor extends WorkerHost {
       // this, a timed-out retry piled duplicate work onto the agent's single
       // Tally-request queue behind an uncancelled first attempt, compounding
       // with every retry).
-      const timeoutMs = await this.estimateBatchedTimeoutMs(data.connectionId, data.type);
+      const timeoutMs = await this.estimateBatchedTimeoutMs(
+        data.connectionId,
+        data.type,
+        data.payload,
+      );
       return this.tunnel.sendCommand(
         data.connectionId,
         action,
@@ -166,11 +170,20 @@ export class ExtractionsProcessor extends WorkerHost {
         data.extractionJobId,
       );
     }
-    return dispatchExtraction(action, data.payload, {
-      masters: this.masters,
-      transactions: this.transactions,
-      diagnostics: this.diagnostics,
-    });
+    // externalJobId: this job's own row (already PENDING, created before
+    // dispatch — see TallyJobsService.create) is what GET /tally/jobs/:id
+    // polls. Without threading it through, a batched fetch's live progress
+    // landed on a second, uncoordinated row only MasterExtractionService
+    // ever knew about — the row the caller actually polls stayed
+    // PENDING/progress:null for the fetch's entire duration, indistinguishable
+    // from a stuck request. See runExtraction's externalJobId doc comment.
+    return dispatchExtraction(
+      action,
+      data.payload,
+      { masters: this.masters, transactions: this.transactions, diagnostics: this.diagnostics },
+      undefined,
+      data.extractionJobId,
+    );
   }
 
   /**
@@ -188,10 +201,21 @@ export class ExtractionsProcessor extends WorkerHost {
    * independently-configured values are never reported back — padded by
    * BATCH_TIMEOUT_SAFETY_FACTOR precisely because this is an approximation,
    * not a promise the agent is actually configured identically.
+   *
+   * `payload`'s fromDate/toDate matter here: a period-scoped batch uses
+   * TallyConfig.periodBatchSize, not masterBatchSize (see that field's doc
+   * comment — period-scoped balances are batched far smaller because each
+   * one is much more expensive for Tally to compute). Estimating this job's
+   * batch count with the wrong (larger) divisor would undercount how many
+   * batches a period-scoped run actually needs — e.g. 300 vs 25 is a 12x
+   * difference in batch count — and hand back a timeout budget too small
+   * for a legitimately-in-progress fetch, so the gateway cancels it
+   * mid-flight rather than the batch itself ever failing.
    */
   private async estimateBatchedTimeoutMs(
     connectionId: string,
     type: ExtractableType,
+    payload: Record<string, unknown>,
   ): Promise<number | undefined> {
     if (type !== ExtractionType.LEDGERS && type !== ExtractionType.STOCK_ITEMS) return undefined;
 
@@ -203,9 +227,11 @@ export class ExtractionsProcessor extends WorkerHost {
     if (!last?.recordCount) return undefined;
 
     const tally = this.config.getOrThrow<TallyConfig>('tally');
+    const isPeriodScoped = Boolean(payload.fromDate && payload.toDate);
+    const batchSize = isPeriodScoped ? tally.periodBatchSize : tally.masterBatchSize;
     const estimatedBatches = Math.max(
       1,
-      Math.ceil((last.recordCount * BATCH_TIMEOUT_SAFETY_FACTOR) / tally.masterBatchSize),
+      Math.ceil((last.recordCount * BATCH_TIMEOUT_SAFETY_FACTOR) / batchSize),
     );
     const dynamicTimeoutMs =
       tally.timeoutMs * (tally.maxRetries + 1) +

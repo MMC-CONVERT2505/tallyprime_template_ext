@@ -42,6 +42,15 @@ export function ExtractionsPanel() {
   const [type, setType] = useState<ExtractableType>('GROUPS');
   const [payloadCompany, setPayloadCompany] = useState('');
   const [createBusy, setCreateBusy] = useState(false);
+  // Re-entrancy guards on refs, not just the `*Busy` state: `disabled={busy}`
+  // only blocks a second click once React has re-rendered the button, and a
+  // fast double-click can fire the handler twice before that repaint lands.
+  // For LEDGERS/STOCK_ITEMS that means two concurrent batched fetches
+  // hitting the same Tally instance — the exact load pattern that can wedge
+  // Tally's single-threaded HTTP server, not just waste a request. A ref
+  // mutation is synchronous and closes that window outright.
+  const createInFlight = useRef(false);
+  const fetchInFlight = useRef(false);
 
   // fetch-master form (primary, one-click path)
   const [companyName, setCompanyName] = useState('');
@@ -96,6 +105,8 @@ export function ExtractionsPanel() {
   };
 
   const createByConnection = async () => {
+    if (createInFlight.current) return;
+    createInFlight.current = true;
     setError(null);
     setCreateBusy(true);
     try {
@@ -108,11 +119,14 @@ export function ExtractionsPanel() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
+      createInFlight.current = false;
       setCreateBusy(false);
     }
   };
 
   const fetchMaster = async () => {
+    if (fetchInFlight.current) return;
+    fetchInFlight.current = true;
     setError(null);
     setFetchBusy(true);
     try {
@@ -126,6 +140,7 @@ export function ExtractionsPanel() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
+      fetchInFlight.current = false;
       setFetchBusy(false);
     }
   };

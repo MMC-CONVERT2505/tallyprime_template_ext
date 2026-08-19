@@ -54,6 +54,42 @@ export interface TallyConfig {
    * change (still the original single-shot request).
    */
   masterBatchSize: number;
+  /**
+   * Batch size for LEDGERS/STOCK_ITEMS requests that ALSO carry a
+   * fromDate/toDate (SVFROMDATE/SVTODATE) period scope. Defaults to 4,
+   * bisected live against a real Tally instance (not a guess) — but the
+   * batch-size ceiling is only HALF the story:
+   *
+   *  1. Tally's own system-computed ledgers (RESERVEDNAME set — e.g.
+   *     "Profit & Loss A/c") wedge Tally on a period-scoped balance request
+   *     even completely ALONE (confirmed: a single-ledger request for it
+   *     never returned, one CPU core pegged flat for 5+ minutes, forcibly
+   *     killed; the identical request for an ordinary ledger returns in
+   *     under 100ms). This has nothing to do with batch size — it's a
+   *     rollup over the company's entire income/expense history, not a
+   *     transactional account — so MasterExtractionService.
+   *     fetchLedgersBatched excludes these from period-scoped batches
+   *     entirely (still returned in the result, with a null balance and a
+   *     logged reason) rather than trying to size a batch around them.
+   *
+   *  2. SEPARATELY, ordinary (non-reserved) ledgers batched together also
+   *     have a real ceiling: bisected at 4 (consistently fine, ~40-100ms)
+   *     vs 10 (consistently wedged — this time manifesting as a stuck,
+   *     near-zero-CPU non-response rather than a CPU spin, a different
+   *     symptom from case 1 but equally unrecoverable without a kill).
+   *     The true boundary is somewhere in [5, 9]; 4 is what was actually
+   *     proven, not a round-number guess — narrowing further costs a full
+   *     Tally-hang-and-relaunch cycle per data point, so this stopped at a
+   *     safe, evidenced value rather than chasing precision.
+   *
+   * An earlier version of this fix defaulted to 25, then 1, on the
+   * assumption that ALL period-scoped multi-ledger batching was uniformly
+   * broken — wrong: once the one reserved ledger is excluded, ordinary
+   * ledgers batch together fine up to the real (higher) ceiling above. Only
+   * raise this after re-bisecting (reserved ledgers excluded first) against
+   * the specific Tally instance in question.
+   */
+  periodBatchSize: number;
 }
 
 export interface DatabaseConfig {
@@ -186,6 +222,7 @@ export const buildTallyConfig = (): TallyConfig => {
     voucherChunkDays: toInt(process.env.TALLY_VOUCHER_CHUNK_DAYS, 7),
     chunkDelayMs: toInt(process.env.TALLY_CHUNK_DELAY_MS, 2000),
     masterBatchSize: toInt(process.env.TALLY_MASTER_BATCH_SIZE, 300),
+    periodBatchSize: toInt(process.env.TALLY_PERIOD_BATCH_SIZE, 4),
   };
 };
 

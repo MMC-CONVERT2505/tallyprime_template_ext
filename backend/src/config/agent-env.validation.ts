@@ -20,6 +20,8 @@ export const agentEnvValidationSchema = Joi.object({
   TALLY_VOUCHER_CHUNK_DAYS: Joi.number().integer().min(1).max(90).default(7),
   TALLY_CHUNK_DELAY_MS: Joi.number().integer().min(0).max(30000).default(2000),
   TALLY_MASTER_BATCH_SIZE: Joi.number().integer().min(10).max(5000).default(300),
+  // See env.validation.ts's TALLY_PERIOD_BATCH_SIZE / TallyConfig.periodBatchSize.
+  TALLY_PERIOD_BATCH_SIZE: Joi.number().integer().min(1).max(500).default(4),
 
   GATEWAY_URL: Joi.string()
     .uri({ scheme: ['ws', 'wss'] })

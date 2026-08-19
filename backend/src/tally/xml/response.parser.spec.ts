@@ -78,6 +78,7 @@ describe('TallyResponseParser', () => {
         openingBalance: 1000,
         closingBalance: -2500.5,
         alterId: 42,
+        reservedName: null,
       });
       expect(ledgers[1]).toEqual({
         name: 'Sales',
@@ -86,7 +87,21 @@ describe('TallyResponseParser', () => {
         openingBalance: null,
         closingBalance: null,
         alterId: null,
+        reservedName: null,
       });
+    });
+
+    it('captures RESERVEDNAME for Tally system-computed ledgers (e.g. Profit & Loss A/c), null for ordinary ones', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<LEDGER NAME="Profit &amp; Loss A/c" RESERVEDNAME="Profit &amp; Loss A/c"><ALTERID>7</ALTERID></LEDGER>' +
+        '<LEDGER NAME="Cash" RESERVEDNAME=""><ALTERID>8</ALTERID></LEDGER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      const ledgers = parser.mapLedgers(xml);
+      expect(ledgers.map((l) => ({ name: l.name, reservedName: l.reservedName }))).toEqual([
+        { name: 'Profit & Loss A/c', reservedName: 'Profit & Loss A/c' },
+        { name: 'Cash', reservedName: null },
+      ]);
     });
   });
 

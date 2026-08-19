@@ -45,6 +45,11 @@ export const envValidationSchema = Joi.object({
   // TallyConfig.masterBatchSize. The count-based counterpart to
   // TALLY_VOUCHER_CHUNK_DAYS's date-based chunking.
   TALLY_MASTER_BATCH_SIZE: Joi.number().integer().min(10).max(5000).default(300),
+  // Defaults to 4 — see TallyConfig.periodBatchSize for the live bisection
+  // behind that default (and why Tally's reserved/system ledgers, e.g.
+  // "Profit & Loss A/c", are excluded from period-scoped batches entirely
+  // rather than folded into this number).
+  TALLY_PERIOD_BATCH_SIZE: Joi.number().integer().min(1).max(500).default(4),
 
   // Postgres (Prisma)
   DB_HOST: Joi.string().default('127.0.0.1'),

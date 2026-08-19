@@ -12,7 +12,15 @@ function useRunner<T>(fn: () => Promise<T>) {
   const [result, setResult] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Re-entrancy guard on a ref, not just the `busy` state: `disabled={busy}`
+  // only blocks a second click once React has actually re-rendered the
+  // button, and a fast double-click can fire twice before that repaint
+  // lands. A ref mutation is synchronous and visible to the very next call,
+  // closing that window outright.
+  const inFlight = useRef(false);
   const run = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -20,6 +28,7 @@ function useRunner<T>(fn: () => Promise<T>) {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };
@@ -40,6 +49,12 @@ function useTallyJob<T>(type: ExtractableType) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
+  // See useRunner's matching comment: `disabled={busy}` alone doesn't close
+  // the double-click race, and here the stakes are real — two concurrent
+  // LEDGERS/STOCK_ITEMS jobs both hitting Tally at once is exactly the kind
+  // of load that can wedge Tally's single-threaded HTTP server, not just
+  // waste a request.
+  const inFlight = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -48,6 +63,12 @@ function useTallyJob<T>(type: ExtractableType) {
   }, []);
 
   const run = async (payload?: Record<string, unknown>) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    const finish = () => {
+      inFlight.current = false;
+      setBusy(false);
+    };
     if (pollTimer.current) window.clearInterval(pollTimer.current);
     setBusy(true);
     setError(null);
@@ -65,16 +86,16 @@ function useTallyJob<T>(type: ExtractableType) {
           if (job.status === 'SUCCESS') {
             if (pollTimer.current) window.clearInterval(pollTimer.current);
             setResult((await tallyJobsApi.result(id)) as T);
-            setBusy(false);
+            finish();
           } else if (job.status === 'FAILED') {
             if (pollTimer.current) window.clearInterval(pollTimer.current);
             setError(job.error ?? 'Extraction failed.');
-            setBusy(false);
+            finish();
           }
         } catch (err) {
           if (pollTimer.current) window.clearInterval(pollTimer.current);
           setError(err instanceof ApiError ? err.message : String(err));
-          setBusy(false);
+          finish();
         }
       };
 
@@ -82,7 +103,7 @@ function useTallyJob<T>(type: ExtractableType) {
       pollTimer.current = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
-      setBusy(false);
+      finish();
     }
   };
 

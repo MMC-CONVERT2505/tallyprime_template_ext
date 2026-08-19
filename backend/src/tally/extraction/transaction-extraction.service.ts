@@ -23,7 +23,11 @@ import { ExtractionType, TallyExtractionServiceBase } from './tally-extraction.b
  */
 @Injectable()
 export class TransactionExtractionService extends TallyExtractionServiceBase {
-  async getVouchers(dto: ExtractVouchersDto, signal?: AbortSignal): Promise<TallyVoucher[]> {
+  async getVouchers(
+    dto: ExtractVouchersDto,
+    signal?: AbortSignal,
+    externalJobId?: string,
+  ): Promise<TallyVoucher[]> {
     const resolved = this.resolveCompany(dto.company);
     this.assertDateRange(dto.from, dto.to);
 
@@ -32,6 +36,7 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
       resolved,
       { company: resolved, from: dto.from, to: dto.to, voucherType: dto.voucherType ?? null },
       (job) => this.fetchVouchersChunked(resolved, dto, signal, job),
+      externalJobId,
     );
   }
 

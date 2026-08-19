@@ -17,6 +17,7 @@ describe('LedgerMapper', () => {
         openingBalance: 0,
         closingBalance: 0,
         alterId: 1,
+        reservedName: null,
       },
       {
         name: 'XYZ Supplies',
@@ -25,6 +26,7 @@ describe('LedgerMapper', () => {
         openingBalance: 0,
         closingBalance: 0,
         alterId: 2,
+        reservedName: null,
       },
       {
         name: 'CGST',
@@ -33,6 +35,7 @@ describe('LedgerMapper', () => {
         openingBalance: 0,
         closingBalance: 0,
         alterId: 3,
+        reservedName: null,
       },
       {
         name: 'Cash',
@@ -41,6 +44,7 @@ describe('LedgerMapper', () => {
         openingBalance: 0,
         closingBalance: 0,
         alterId: 4,
+        reservedName: null,
       },
     ]);
 
@@ -57,6 +61,7 @@ describe('LedgerMapper', () => {
         openingBalance: 0,
         closingBalance: 0,
         alterId: 1,
+        reservedName: null,
       },
     ]);
     expect(row['Account Type']).toBe('Other Current Liability'); // Employee -> Current Liabilities
@@ -72,6 +77,7 @@ describe('LedgerMapper', () => {
         openingBalance: -50000,
         closingBalance: -40000,
         alterId: 1,
+        reservedName: null,
       },
     ]);
     expect(row['Account Type']).toBe('Bank');
@@ -89,6 +95,7 @@ describe('LedgerMapper', () => {
         openingBalance: 10000,
         closingBalance: 10000,
         alterId: 1,
+        reservedName: null,
       },
     ]);
     expect(row['Account Type']).toBe('Income');
@@ -106,6 +113,7 @@ describe('LedgerMapper', () => {
         openingBalance: null,
         closingBalance: null,
         alterId: 1,
+        reservedName: null,
       },
     ]);
     expect(row['Account Type']).toBe('Other Current Liability');
@@ -122,6 +130,7 @@ describe('LedgerMapper', () => {
         openingBalance: 0,
         closingBalance: 0,
         alterId: 1,
+        reservedName: null,
       },
     ]);
     expect(row.Description).toBe('Petty cash float');

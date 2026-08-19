@@ -185,12 +185,16 @@ Every error comes back in one shape, and Tally failures carry a `hint`:
 
 ## Tally edge cases handled (the important part)
 
-These are the things that silently break naive Tally integrations. All are
-handled centrally in [`src/tally/xml`](src/tally/xml) and covered by unit tests.
+These are the things that silently break naive Tally integrations. Most are
+handled centrally in [`src/tally/xml`](src/tally/xml); a few live in
+`src/config`/`src/tally/extraction` where noted. All are covered by unit tests.
 
 | Quirk                                    | Handling                                                                       |
 | ---------------------------------------- | ------------------------------------------------------------------------------ |
 | **Connection refused / timeout**         | Typed `TallyUnreachable`/`TallyTimeout` exceptions → 502/504 with a fix hint.   |
+| **"Act as Server" binds IPv6 loopback only** | Some Windows machines bind Tally's HTTP server to `::1`, not `127.0.0.1` — `TALLY_HOST=::1` works (config accepts IP literals, not just hostnames; the URL builder brackets them). Otherwise indistinguishable from "Tally is closed". |
+| **Tally's own reserved ledgers (e.g. "Profit & Loss A/c") wedge Tally on a period-scoped balance** | These are Tally-computed rollups of the company's entire income/expense history, not real accounts — a period-scoped balance request for one, completely alone, never returns (confirmed: one CPU core pegged flat for 5+ min, never recovered). Detected via the `RESERVEDNAME` XML attribute (`TallyLedger.reservedName`) and excluded from period-scoped batches entirely — returned with a null balance instead — in `src/tally/extraction/master-extraction.service.ts`. |
+| **Period-scoped LEDGERS/STOCK_ITEMS batches also have a real (separate) size ceiling** | Independent of the reserved-ledger issue above: batching *ordinary* ledgers together in one period-scoped request is fine up to a point and then wedges Tally — bisected live at 4 (consistently fine) vs 10 (consistently wedged, though as a stuck non-response rather than a CPU spin). `TALLY_PERIOD_BATCH_SIZE` (default `4`) in `src/tally/extraction/master-extraction.service.ts`. |
 | **Empty `<ENVELOPE></ENVELOPE>`**        | Treated as **zero records**, not an error.                                     |
 | **Non-Tally response on the port**       | Rejected (an HTML error page/plain text would otherwise parse into junk).      |
 | **Single vs. array**                     | `toArray()` — Tally sends one object for 1 record, an array for many.          |

@@ -47,6 +47,7 @@ describe('dispatchExtraction', () => {
       '20260401',
       '20260430',
       undefined,
+      undefined,
     );
   });
 
@@ -62,6 +63,7 @@ describe('dispatchExtraction', () => {
       '20260401',
       '20260430',
       undefined,
+      undefined,
     );
   });
 
@@ -75,7 +77,7 @@ describe('dispatchExtraction', () => {
     const services = makeServices();
     const payload = { company: 'ABC Ltd', from: '20260401', to: '20260430', voucherType: 'Sales' };
     await dispatchExtraction('vouchers', payload, services as any);
-    expect(services.transactions.getVouchers).toHaveBeenCalledWith(payload, undefined);
+    expect(services.transactions.getVouchers).toHaveBeenCalledWith(payload, undefined, undefined);
   });
 
   it('routes "raw" with the whole payload as the DTO', async () => {
@@ -83,6 +85,44 @@ describe('dispatchExtraction', () => {
     const payload = { reportName: 'Trial Balance', company: 'ABC Ltd' };
     await dispatchExtraction('raw', payload, services as any);
     expect(services.diagnostics.getRaw).toHaveBeenCalledWith(payload, undefined);
+  });
+
+  it('threads externalJobId through to ledgers/stockItems/vouchers, so batch progress lands on the caller-polled row', async () => {
+    const services = makeServices();
+
+    await dispatchExtraction(
+      'ledgers',
+      { company: 'ABC Ltd' },
+      services as any,
+      undefined,
+      'job-1',
+    );
+    expect(services.masters.getLedgers).toHaveBeenCalledWith(
+      'ABC Ltd',
+      undefined,
+      undefined,
+      undefined,
+      'job-1',
+    );
+
+    await dispatchExtraction(
+      'stockItems',
+      { company: 'ABC Ltd' },
+      services as any,
+      undefined,
+      'job-2',
+    );
+    expect(services.masters.getStockItems).toHaveBeenCalledWith(
+      'ABC Ltd',
+      undefined,
+      undefined,
+      undefined,
+      'job-2',
+    );
+
+    const payload = { company: 'ABC Ltd', from: '20260401', to: '20260430' };
+    await dispatchExtraction('vouchers', payload, services as any, undefined, 'job-3');
+    expect(services.transactions.getVouchers).toHaveBeenCalledWith(payload, undefined, 'job-3');
   });
 
   it('resolves with whatever the underlying service call resolves with', async () => {

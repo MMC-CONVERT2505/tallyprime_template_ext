@@ -132,6 +132,9 @@ export class TallyResponseParser {
       openingBalance: parseTallyAmount(readText(l?.OPENINGBALANCE)),
       closingBalance: parseTallyAmount(readText(l?.CLOSINGBALANCE)),
       alterId: readInt(l?.ALTERID),
+      // Tally always emits this as an XML attribute on <LEDGER>, empty for
+      // ordinary ledgers — see TallyLedger.reservedName's doc comment.
+      reservedName: readText(l?.['@_RESERVEDNAME']) || null,
     }));
   }
 

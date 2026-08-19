@@ -14,6 +14,7 @@ describe('MasterExtractionService', () => {
       connectorPost?: jest.Mock;
       defaultCompany?: string;
       masterBatchSize?: number;
+      periodBatchSize?: number;
       chunkDelayMs?: number;
       jobs?: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
     } = {},
@@ -32,6 +33,7 @@ describe('MasterExtractionService', () => {
       getOrThrow: () => ({
         defaultCompany: overrides.defaultCompany ?? '',
         masterBatchSize: overrides.masterBatchSize ?? NO_BATCHING,
+        periodBatchSize: overrides.periodBatchSize ?? NO_BATCHING,
         // 0 by default — tests should never actually wait on this; the
         // dedicated batching tests below override it and stub out the timer.
         chunkDelayMs: overrides.chunkDelayMs ?? 0,
@@ -74,15 +76,23 @@ describe('MasterExtractionService', () => {
    */
   function collectionXml(
     tag: 'LEDGER' | 'STOCKITEM',
-    entries: Array<{ name: string; alterId: number }>,
+    entries: Array<{ name: string; alterId: number; reservedName?: string }>,
   ): string {
     const items = entries
-      .map((e) => `<${tag}><NAME>${e.name}</NAME><ALTERID>${e.alterId}</ALTERID></${tag}>`)
+      .map(
+        (e) =>
+          `<${tag} RESERVEDNAME="${e.reservedName ?? ''}">` +
+          `<NAME>${e.name}</NAME><ALTERID>${e.alterId}</ALTERID></${tag}>`,
+      )
       .join('');
     return `<ENVELOPE><BODY><DATA><COLLECTION>${items}</COLLECTION></DATA></BODY></ENVELOPE>`;
   }
 
-  const entry = (name: string, alterId: number) => ({ name, alterId });
+  const entry = (name: string, alterId: number, reservedName?: string) => ({
+    name,
+    alterId,
+    reservedName,
+  });
 
   describe('getLedgers', () => {
     it('passes fromDate/toDate through to buildLedgersRequest when both are supplied', async () => {
@@ -388,6 +398,35 @@ describe('MasterExtractionService', () => {
       ]);
     });
 
+    it('writes batch progress to the caller-supplied externalJobId instead of creating its own row, and never finalizes it (the caller owns that)', async () => {
+      const connectorPost = jest
+        .fn()
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3)]),
+        )
+        .mockResolvedValue(collectionXml('LEDGER', [entry('A', 1)]));
+      const jobs = makeJobsRepo();
+      const { service } = makeService({ connectorPost, masterBatchSize: 1, jobs });
+
+      await service.getLedgers('ABC Ltd', undefined, undefined, undefined, 'queued-job-42');
+
+      // No second, uncoordinated audit row created for this run.
+      expect(jobs.create).not.toHaveBeenCalled();
+      expect(jobs.save).not.toHaveBeenCalled();
+      // Every progress write targets the id the queued caller already owns
+      // and is polling — not a fresh id this method minted itself.
+      for (const call of jobs.update.mock.calls) {
+        expect(call[0]).toBe('queued-job-42');
+      }
+      // No terminal status/recordCount write here — the queued caller
+      // (ExtractionsProcessor) owns finalizing that row itself, once dispatch
+      // resolves; a second writer here would race it.
+      expect(jobs.update).not.toHaveBeenCalledWith(
+        'queued-job-42',
+        expect.objectContaining({ status: 'SUCCESS' }),
+      );
+    });
+
     it('logs a warning and lets the count cross-check catch it when a record has no AlterID to batch by', async () => {
       const connectorPost = jest
         .fn()
@@ -404,6 +443,97 @@ describe('MasterExtractionService', () => {
       // the full original count (2) and must fail loudly rather than
       // silently return just the 1 record that could be batched.
       await expect(service.getLedgers('ABC Ltd')).rejects.toThrow(/expected 2/);
+    });
+
+    it('uses periodBatchSize instead of masterBatchSize once fromDate/toDate are supplied, even when the collection fits within masterBatchSize', async () => {
+      const connectorPost = jest
+        .fn()
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [entry('A', 1), entry('B', 2), entry('C', 3)]),
+        ) // names+AlterID pass — 3 records
+        .mockResolvedValueOnce(collectionXml('LEDGER', [entry('A', 1), entry('B', 2)]))
+        .mockResolvedValueOnce(collectionXml('LEDGER', [entry('C', 3)]));
+      const { service, buildLedgersRequest } = makeService({
+        connectorPost,
+        masterBatchSize: 1000, // would NOT batch a 3-record collection on its own
+        periodBatchSize: 2, // but period-scoped requests must still batch at this size
+      });
+
+      const result = await service.getLedgers('ABC Ltd', '20260401', '20260430');
+
+      expect(buildLedgersRequest).toHaveBeenCalledTimes(2);
+      expect(buildLedgersRequest).toHaveBeenNthCalledWith(
+        1,
+        'ABC Ltd',
+        '20260401',
+        '20260430',
+        { from: 1, to: 2 },
+      );
+      expect(buildLedgersRequest).toHaveBeenNthCalledWith(
+        2,
+        'ABC Ltd',
+        '20260401',
+        '20260430',
+        { from: 3, to: 3 },
+      );
+      expect(result.map((l) => l.name)).toEqual(['A', 'B', 'C']);
+    });
+
+    it('excludes reserved ledgers (e.g. Profit & Loss A/c) from period-scoped batches, returning them with a null balance instead', async () => {
+      const connectorPost = jest
+        .fn()
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [
+            entry('Profit & Loss A/c', 1, 'Profit & Loss A/c'), // reserved — must not be batched
+            entry('A', 2),
+            entry('B', 3),
+          ]),
+        ) // names+AlterID pass
+        .mockResolvedValueOnce(collectionXml('LEDGER', [entry('A', 2), entry('B', 3)]));
+      const { service, buildLedgersRequest } = makeService({
+        connectorPost,
+        periodBatchSize: 10, // large enough that A+B alone would take the unbatched path
+      });
+
+      const result = await service.getLedgers('ABC Ltd', '20260401', '20260430');
+
+      // Only ONE request for the actual balance data — for A and B via an
+      // AlterID range that itself excludes the reserved ledger (1-1 is
+      // never requested). No request is ever made asking Tally for the
+      // reserved ledger's period balance.
+      expect(buildLedgersRequest).toHaveBeenCalledTimes(1);
+      expect(buildLedgersRequest).toHaveBeenCalledWith('ABC Ltd', '20260401', '20260430', {
+        from: 2,
+        to: 3,
+      });
+      expect(result).toEqual([
+        expect.objectContaining({
+          name: 'Profit & Loss A/c',
+          reservedName: 'Profit & Loss A/c',
+          openingBalance: null,
+          closingBalance: null,
+        }),
+        expect.objectContaining({ name: 'A', reservedName: null }),
+        expect.objectContaining({ name: 'B', reservedName: null }),
+      ]);
+    });
+
+    it('does not exclude reserved ledgers from the all-time (non-period-scoped) path — only period-scoped requests are affected', async () => {
+      const connectorPost = jest
+        .fn()
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [entry('Profit & Loss A/c', 1, 'Profit & Loss A/c'), entry('A', 2)]),
+        ) // names+AlterID pass
+        .mockResolvedValueOnce(
+          collectionXml('LEDGER', [entry('Profit & Loss A/c', 1, 'Profit & Loss A/c'), entry('A', 2)]),
+        ); // plain unfiltered fetch — reserved ledger included, same as any other
+      const { service, buildLedgersRequest } = makeService({ connectorPost });
+
+      const result = await service.getLedgers('ABC Ltd'); // no fromDate/toDate
+
+      expect(buildLedgersRequest).toHaveBeenCalledTimes(1);
+      expect(buildLedgersRequest).toHaveBeenCalledWith('ABC Ltd', undefined, undefined);
+      expect(result.map((l) => l.name)).toEqual(['Profit & Loss A/c', 'A']);
     });
   });
 
@@ -463,6 +593,40 @@ describe('MasterExtractionService', () => {
       const { service } = makeService({ connectorPost, masterBatchSize: 2 });
 
       await expect(service.getStockItems('ABC Ltd')).rejects.toThrow(/expected 3/);
+    });
+
+    it('uses periodBatchSize instead of masterBatchSize once fromDate/toDate are supplied, even when the collection fits within masterBatchSize', async () => {
+      const connectorPost = jest
+        .fn()
+        .mockResolvedValueOnce(
+          collectionXml('STOCKITEM', [entry('A', 1), entry('B', 2), entry('C', 3)]),
+        ) // names+AlterID pass — 3 records
+        .mockResolvedValueOnce(collectionXml('STOCKITEM', [entry('A', 1), entry('B', 2)]))
+        .mockResolvedValueOnce(collectionXml('STOCKITEM', [entry('C', 3)]));
+      const { service, buildStockItemsRequest } = makeService({
+        connectorPost,
+        masterBatchSize: 1000, // would NOT batch a 3-record collection on its own
+        periodBatchSize: 2, // but period-scoped requests must still batch at this size
+      });
+
+      const result = await service.getStockItems('ABC Ltd', '20260401', '20260430');
+
+      expect(buildStockItemsRequest).toHaveBeenCalledTimes(2);
+      expect(buildStockItemsRequest).toHaveBeenNthCalledWith(
+        1,
+        'ABC Ltd',
+        '20260401',
+        '20260430',
+        { from: 1, to: 2 },
+      );
+      expect(buildStockItemsRequest).toHaveBeenNthCalledWith(
+        2,
+        'ABC Ltd',
+        '20260401',
+        '20260430',
+        { from: 3, to: 3 },
+      );
+      expect(result.map((s) => s.name)).toEqual(['A', 'B', 'C']);
     });
   });
 });

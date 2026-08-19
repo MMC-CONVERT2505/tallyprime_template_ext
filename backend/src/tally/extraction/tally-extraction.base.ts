@@ -109,22 +109,41 @@ export abstract class TallyExtractionServiceBase {
    * Wraps an extraction in timing + audit persistence. The Tally call is the
    * source of truth for success/failure; audit writes are best-effort and
    * never mask or override the real result.
+   *
+   * `externalJobId`: when the caller already owns an ExtractionJob row for
+   * this run (the queued job path — TallyJobsService/ExtractionsProcessor
+   * both create one before dispatch, to return an id immediately and poll
+   * against), this method must write progress to THAT row, not create a
+   * second, uncoordinated one. Without this, a batched LEDGERS/STOCK_ITEMS
+   * fetch's live "batch N/M" progress landed on a row only this method ever
+   * knew existed — the caller's own GET /tally/jobs/:id (or
+   * /extractions/:id) polling read a *different* row that never left
+   * PENDING/progress:null until the very end, indistinguishable from a
+   * stuck request for however long the fetch legitimately took. The queued
+   * caller also owns that row's terminal status/recordCount write (see
+   * ExtractionsProcessor.process) — finishJob is skipped here to avoid a
+   * second, redundant writer racing the same field.
    */
   protected async runExtraction<T>(
     type: ExtractionType,
     company: string | null,
     params: Record<string, unknown>,
     work: (job: ExtractionJob | null) => Promise<T>,
+    externalJobId?: string,
   ): Promise<T> {
     const startedAt = Date.now();
-    const job = await this.createJob(type, company, params);
+    const job = externalJobId
+      ? ({ id: externalJobId } as ExtractionJob)
+      : await this.createJob(type, company, params);
     const context = `jobId=${job?.id ?? 'unaudited'} company="${company ?? 'n/a'}"`;
 
     try {
       const result = await work(job);
       const count = Array.isArray(result) ? result.length : 1;
       const durationMs = Date.now() - startedAt;
-      await this.finishJob(job, ExtractionStatus.SUCCESS, { recordCount: count, durationMs });
+      if (!externalJobId) {
+        await this.finishJob(job, ExtractionStatus.SUCCESS, { recordCount: count, durationMs });
+      }
       this.logger.log(
         `Extraction ${type} succeeded: ${count} record(s) in ${durationMs}ms (${context})`,
       );
@@ -132,7 +151,9 @@ export abstract class TallyExtractionServiceBase {
     } catch (err) {
       const durationMs = Date.now() - startedAt;
       const message = err instanceof Error ? err.message : String(err);
-      await this.finishJob(job, ExtractionStatus.FAILED, { durationMs, error: message });
+      if (!externalJobId) {
+        await this.finishJob(job, ExtractionStatus.FAILED, { durationMs, error: message });
+      }
       this.logger.warn(`Extraction ${type} failed after ${durationMs}ms (${context}): ${message}`);
       throw err;
     }
