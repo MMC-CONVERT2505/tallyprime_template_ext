@@ -78,6 +78,11 @@ web_modules/
 # never committed.
 .tally-bridge-state.json
 
+# BulkExportService's generated .zip exports (backend/public/exports/ by
+# default, see EXPORTS_DIR) — real customer financial data (GSTIN/PAN/bank
+# account numbers), never committed.
+backend/public/
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

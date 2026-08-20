@@ -213,6 +213,19 @@ export class ExtractionsService {
     );
   }
 
+  /**
+   * Public wrapper around resolveConnectionByCompany for callers (e.g.
+   * BulkExportService) that need a connectionId to call `create` with
+   * directly — VOUCHERS isn't in MASTER_EXTRACTABLE_TYPES, so `fetchMaster`
+   * can't be used for it. Returns just the id, not the full TallyConnection
+   * row (which carries tokenHash), keeping that field from leaking any
+   * further than it needs to.
+   */
+  async resolveConnectionId(orgId: string, companyName: string): Promise<string> {
+    const connection = await this.resolveConnectionByCompany(orgId, companyName);
+    return connection.id;
+  }
+
   async getStatus(orgId: string, id: string): Promise<ExtractionJob> {
     const job = await this.prisma.extractionJob.findFirst({ where: { id, orgId } });
     if (!job) {

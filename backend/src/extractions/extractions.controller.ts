@@ -9,12 +9,16 @@ import {
   Post,
   Query,
   Res,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
+import { createReadStream } from 'fs';
 import { Response } from 'express';
 import { JwtPayload } from '../auth/auth.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { BulkExportService } from './bulk-export.service';
+import { BulkExportDto } from './dto/bulk-export.dto';
 import { CreateExtractionDto } from './dto/create-extraction.dto';
 import { FetchMasterDto } from './dto/fetch-master.dto';
 import { ExtractionsService } from './extractions.service';
@@ -22,7 +26,10 @@ import { ExtractionsService } from './extractions.service';
 @Controller('extractions')
 @UseGuards(JwtAuthGuard)
 export class ExtractionsController {
-  constructor(private readonly extractions: ExtractionsService) {}
+  constructor(
+    private readonly extractions: ExtractionsService,
+    private readonly bulkExport: BulkExportService,
+  ) {}
 
   /** Recent jobs for the org, newest first — backs the UI's job list/download
    *  picker. `?limit=` caps the count (default 50, max 200). */
@@ -54,6 +61,59 @@ export class ExtractionsController {
   @HttpCode(HttpStatus.ACCEPTED)
   fetchMaster(@CurrentUser() user: JwtPayload, @Body() dto: FetchMasterDto) {
     return this.extractions.fetchMaster(user.orgId, user.email, dto);
+  }
+
+  /**
+   * Kicks off the full "every Zoho-mapped entity for this company, in one
+   * zip" export — see BulkExportService's doc comment for the exact 8-fetch
+   * + generate + zip step sequence. Poll GET /extractions/bulk-export/:id
+   * for live per-step progress, then GET .../download once status is
+   * SUCCESS. Registered ABOVE the single-job `:id` routes below so Nest's
+   * router matches the literal "bulk-export" segment before a bare `:id`
+   * pattern would otherwise swallow it.
+   */
+  @Post('bulk-export')
+  @HttpCode(HttpStatus.ACCEPTED)
+  startBulkExport(@CurrentUser() user: JwtPayload, @Body() dto: BulkExportDto) {
+    return this.bulkExport.start(user.orgId, user.email, dto.companyName, dto.fromDate, dto.toDate);
+  }
+
+  /** Recent bulk exports for the org, newest first (default 10, same shape
+   *  as GET /extractions but a separate short Redis-backed list — see
+   *  BulkExportService.list). */
+  @Get('bulk-export')
+  listBulkExports(@CurrentUser() user: JwtPayload, @Query('limit') limit: string | undefined) {
+    if (limit === undefined) return this.bulkExport.list(user.orgId);
+    const parsed = Number(limit);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new BadRequestException('limit must be a positive integer.');
+    }
+    return this.bulkExport.list(user.orgId, parsed);
+  }
+
+  @Get('bulk-export/:id')
+  bulkExportStatus(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.bulkExport.getStatus(user.orgId, id);
+  }
+
+  /**
+   * Streams the generated .zip. Authenticated + org-owned like every other
+   * route here — these exports carry real GSTIN/PAN/bank-account data, so
+   * this deliberately does NOT sit behind an unauthenticated static file
+   * mount (see BulkExportService's doc comment for the full reasoning).
+   */
+  @Get('bulk-export/:id/download')
+  async downloadBulkExport(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { filePath, filename } = await this.bulkExport.getDownload(user.orgId, id);
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    });
+    return new StreamableFile(createReadStream(filePath));
   }
 
   @Get(':id')

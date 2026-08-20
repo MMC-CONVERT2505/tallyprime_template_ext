@@ -169,6 +169,34 @@ export interface ExtractionConfig {
   commandTimeoutMs: number;
 }
 
+/**
+ * BulkExportService's "every Zoho-mapped entity for one company, zipped"
+ * orchestration — see that service's doc comment for the step sequence.
+ */
+export interface BulkExportConfig {
+  /**
+   * Where generated .zip files are written, relative to process.cwd() when
+   * not absolute (same convention as bridge-state.util.ts's
+   * DEFAULT_BRIDGE_STATE_PATH). NOT under `dist/` or `src/` — this holds
+   * runtime-generated output containing real customer financial data
+   * (GSTIN/PAN/bank details), never something to ship inside a build.
+   */
+  exportsDir: string;
+  /** How long a single step (one master/voucher extraction job) is polled
+   *  before the whole bulk export is given up on as stuck. */
+  stepTimeoutMs: number;
+  /** How often a still-PENDING step's job status is re-checked. */
+  pollIntervalMs: number;
+  /** How long a completed export's status/step record stays readable from
+   *  Redis — kept roughly as long as the zip itself stays on disk (see
+   *  retentionHours), so "can I still download this" tracks one lifetime,
+   *  not two independently-expiring ones. */
+  recordTtlSeconds: number;
+  /** Zips older than this are opportunistically deleted from exportsDir the
+   *  next time a bulk export starts — see BulkExportService.pruneOldExports. */
+  retentionHours: number;
+}
+
 export interface AppConfig {
   env: string;
   port: number;
@@ -179,6 +207,7 @@ export interface AppConfig {
   auth: AuthConfig;
   smtp: SmtpConfig;
   extraction: ExtractionConfig;
+  bulkExport: BulkExportConfig;
 }
 
 export const toBool = (v: string | undefined, fallback: boolean): boolean => {
@@ -270,6 +299,13 @@ export default (): AppConfig => {
     extraction: {
       resultTtlSeconds: toInt(process.env.EXTRACTION_RESULT_TTL_SECONDS, 3600),
       commandTimeoutMs: toInt(process.env.EXTRACTION_COMMAND_TIMEOUT_MS, 900000),
+    },
+    bulkExport: {
+      exportsDir: process.env.EXPORTS_DIR || 'public/exports',
+      stepTimeoutMs: toInt(process.env.BULK_EXPORT_STEP_TIMEOUT_MS, 1_200_000),
+      pollIntervalMs: toInt(process.env.BULK_EXPORT_POLL_INTERVAL_MS, 2000),
+      recordTtlSeconds: toInt(process.env.BULK_EXPORT_RECORD_TTL_SECONDS, 604_800),
+      retentionHours: toInt(process.env.BULK_EXPORT_RETENTION_HOURS, 168),
     },
   };
 };

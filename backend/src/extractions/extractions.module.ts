@@ -7,6 +7,7 @@ import { GatewayModule } from '../gateway/gateway.module';
 import { ZohoTemplateValidatorService } from '../mapping/zoho-template-validator.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TallyModule } from '../tally/tally.module';
+import { BulkExportService } from './bulk-export.service';
 import { EXTRACTION_QUEUE, EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS } from './extractions.constants';
 import { ExtractionsController } from './extractions.controller';
 import { ExtractionsProcessor } from './extractions.processor';
@@ -50,6 +51,6 @@ import { ExtractionsService } from './extractions.service';
     TallyModule,
   ],
   controllers: [ExtractionsController],
-  providers: [ExtractionsService, ExtractionsProcessor, ZohoTemplateValidatorService],
+  providers: [ExtractionsService, ExtractionsProcessor, ZohoTemplateValidatorService, BulkExportService],
 })
 export class ExtractionsModule {}

@@ -163,6 +163,45 @@ export interface TallyProbeResult {
   durationMs: number;
 }
 
+export type BulkExportStepKey =
+  | 'GROUPS'
+  | 'LEDGERS'
+  | 'STOCK_ITEMS'
+  | 'COST_CENTRES'
+  | 'VOUCHERS_SALES'
+  | 'VOUCHERS_PURCHASE'
+  | 'VOUCHERS_CREDIT_NOTE'
+  | 'VOUCHERS_STOCK_JOURNAL'
+  | 'GENERATE_EXCEL'
+  | 'ZIP';
+
+export interface BulkExportStep {
+  key: BulkExportStepKey;
+  label: string;
+  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED';
+  jobId?: string;
+  recordCount?: number;
+  error?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+/** Mirrors BulkExportService's PublicBulkExportRecord — the full
+ *  "every Zoho template for this company, zipped" export's tracked status. */
+export interface BulkExportRecord {
+  id: string;
+  company: string;
+  fromDate: string;
+  toDate: string;
+  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED';
+  steps: BulkExportStep[];
+  error?: string;
+  filename?: string;
+  sizeBytes?: number;
+  createdAt: string;
+  completedAt?: string;
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 
 export const authApi = {
@@ -263,6 +302,23 @@ export const extractionsApi = {
     const query = qs(opts ?? {});
     return request<Blob>('GET', `/extractions/${id}/excel${query ? `?${query}` : ''}`, { raw: true });
   },
+};
+
+/**
+ * The full "every Zoho-mapped entity for this company, in one zip" export —
+ * see backend BulkExportService's doc comment for the exact 8-fetch +
+ * generate + zip step sequence. Same async job pattern as extractionsApi
+ * (POST returns 202 + id immediately, poll status(), then download() once
+ * status is SUCCESS).
+ */
+export const bulkExportApi = {
+  start: (body: { companyName: string; fromDate: string; toDate: string }) =>
+    request<{ id: string; status: string }>('POST', '/extractions/bulk-export', { body }),
+  list: (limit?: number) =>
+    request<BulkExportRecord[]>('GET', `/extractions/bulk-export${limit ? `?limit=${limit}` : ''}`),
+  status: (id: string) => request<BulkExportRecord>('GET', `/extractions/bulk-export/${id}`),
+  download: (id: string) =>
+    request<Blob>('GET', `/extractions/bulk-export/${id}/download`, { raw: true }),
 };
 
 export const healthApi = {

@@ -672,6 +672,34 @@ tbody tr.row-selected:hover {
   text-overflow: ellipsis;
 }
 
+/* ── Bulk (full Zoho) export progress ─────────────────────────────── */
+
+.bulk-export-status {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.bulk-export-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bulk-export-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
 /* ── Advanced/power-user disclosure ────────────────────────────────── */
 
 .advanced {

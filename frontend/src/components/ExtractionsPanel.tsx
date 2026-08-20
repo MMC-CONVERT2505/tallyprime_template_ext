@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
+  bulkExportApi,
   connectionsApi,
   extractionsApi,
   EXCEL_EXPORTABLE_TYPES,
+  type BulkExportRecord,
   type ConnectionSummary,
   type ExtractableType,
   type ExtractionJob,
@@ -82,6 +84,16 @@ export function ExtractionsPanel() {
 
   // excel
   const [excelBusy, setExcelBusy] = useState(false);
+
+  // Full Zoho export (all 9 "Master and Invoice or Bill" templates, zipped)
+  const [bulkFromDate, setBulkFromDate] = useState('');
+  const [bulkToDate, setBulkToDate] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkExportId, setBulkExportId] = useState<string | null>(null);
+  const [bulkStatus, setBulkStatus] = useState<BulkExportRecord | null>(null);
+  const [bulkDownloading, setBulkDownloading] = useState(false);
+  const bulkPollTimer = useRef<number | null>(null);
+  const bulkInFlight = useRef(false);
 
   const refreshJobs = async () => {
     try {
@@ -182,6 +194,73 @@ export function ExtractionsPanel() {
     }
   };
 
+  /** Kicks off the full "every Zoho template for this company, in one zip"
+   *  export — see backend BulkExportService's doc comment for the exact
+   *  8-fetch + generate + zip step sequence this then polls through. */
+  const startBulkExport = async () => {
+    if (bulkInFlight.current || !companyName || !bulkFromDate || !bulkToDate) return;
+    bulkInFlight.current = true;
+    setError(null);
+    setBulkBusy(true);
+    try {
+      const res = await bulkExportApi.start({
+        companyName,
+        fromDate: bulkFromDate,
+        toDate: bulkToDate,
+      });
+      setBulkExportId(res.id);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      bulkInFlight.current = false;
+      setBulkBusy(false);
+    }
+  };
+
+  // Poll the running bulk export's status every 2s until it settles —
+  // same pattern as the single-job poll below, separate timer/id since both
+  // can be in flight at once.
+  useEffect(() => {
+    if (bulkPollTimer.current) window.clearInterval(bulkPollTimer.current);
+    setBulkStatus(null);
+    if (!bulkExportId) return;
+
+    const poll = async () => {
+      try {
+        const status = await bulkExportApi.status(bulkExportId);
+        setBulkStatus(status);
+        if (status.status !== 'PENDING' && status.status !== 'RUNNING' && bulkPollTimer.current) {
+          window.clearInterval(bulkPollTimer.current);
+        }
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : String(err));
+        if (bulkPollTimer.current) window.clearInterval(bulkPollTimer.current);
+      }
+    };
+
+    void poll();
+    bulkPollTimer.current = window.setInterval(() => void poll(), 2000);
+    return () => {
+      if (bulkPollTimer.current) window.clearInterval(bulkPollTimer.current);
+    };
+  }, [bulkExportId]);
+
+  const downloadBulkExport = async () => {
+    if (!bulkExportId) return;
+    setBulkDownloading(true);
+    setError(null);
+    try {
+      saveBlob(
+        await bulkExportApi.download(bulkExportId),
+        bulkStatus?.filename ?? `zoho-export-${bulkExportId}.zip`,
+      );
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setBulkDownloading(false);
+    }
+  };
+
   // Poll the active job's status every 2s until it settles.
   useEffect(() => {
     if (pollTimer.current) window.clearInterval(pollTimer.current);
@@ -264,6 +343,9 @@ export function ExtractionsPanel() {
   const statusPillClass = (status: ExtractionJob['status']) =>
     status === 'SUCCESS' ? 'pill pill-ok' : status === 'FAILED' ? 'pill pill-off' : 'pill';
 
+  const bulkStatusPillClass = (status: string) =>
+    status === 'SUCCESS' ? 'pill pill-ok' : status === 'FAILED' ? 'pill pill-off' : 'pill';
+
   return (
     <div className="panel">
       <div className="card">
@@ -318,6 +400,69 @@ export function ExtractionsPanel() {
             {fetchBusy ? 'Fetching…' : 'Fetch'}
           </button>
         </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">
+          <IconExtract />
+          <h2>Full Zoho export (all 9 templates)</h2>
+        </div>
+        <p className="muted">
+          Pulls every Zoho-mapped entity for the selected company — Chart of Accounts, Customers, Vendors, Items,
+          Reporting Tags, Invoices, Bills, Credit Notes, and Inventory Adjustments — and packages the real "Master
+          and Invoice or Bill" templates, fully seeded, into one downloadable .zip. Runs sequentially against Tally
+          (one connector, one request at a time), so a large company can take several minutes.
+        </p>
+        <div className="form form-row">
+          <label>
+            From date
+            <input type="date" value={bulkFromDate} onChange={(e) => setBulkFromDate(e.target.value)} />
+          </label>
+          <label>
+            To date
+            <input type="date" value={bulkToDate} onChange={(e) => setBulkToDate(e.target.value)} />
+          </label>
+          <button
+            onClick={() => void startBulkExport()}
+            disabled={bulkBusy || !companyName || !bulkFromDate || !bulkToDate}
+            type="button"
+          >
+            {bulkBusy && <Spinner />}
+            {bulkBusy ? 'Starting…' : 'Run full export (.zip)'}
+          </button>
+        </div>
+
+        {bulkStatus && (
+          <div className="bulk-export-status">
+            <div className="card-header">
+              <span className={bulkStatusPillClass(bulkStatus.status)}>{bulkStatus.status}</span>
+              <span className="muted small">{bulkStatus.company}</span>
+              {bulkStatus.status === 'SUCCESS' && (
+                <button
+                  onClick={() => void downloadBulkExport()}
+                  disabled={bulkDownloading}
+                  type="button"
+                  className="ghost"
+                >
+                  {bulkDownloading ? <Spinner /> : 'Download .zip'}
+                </button>
+              )}
+            </div>
+            {bulkStatus.error && <ErrorBanner message={bulkStatus.error} />}
+            <ul className="bulk-export-steps">
+              {bulkStatus.steps.map((step) => (
+                <li key={step.key}>
+                  <span className={bulkStatusPillClass(step.status)}>{step.status}</span>
+                  <span>{step.label}</span>
+                  {step.recordCount !== undefined && (
+                    <span className="muted small">{step.recordCount} record(s)</span>
+                  )}
+                  {step.error && <span className="muted small">{step.error}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <ErrorBanner message={error} />

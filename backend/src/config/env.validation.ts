@@ -94,4 +94,14 @@ export const envValidationSchema = Joi.object({
   // before ExtractionsProcessor.estimateBatchedTimeoutMs has any history to
   // learn a tighter per-job value from.
   EXTRACTION_COMMAND_TIMEOUT_MS: Joi.number().integer().min(5000).max(3600000).default(900000),
+
+  // Bulk export (BulkExportService — every Zoho-mapped entity for one
+  // company, zipped). exportsDir holds real customer financial data
+  // (GSTIN/PAN/bank details) at rest, so it's deliberately not under
+  // dist/src and not served as static/unauthenticated content.
+  EXPORTS_DIR: Joi.string().default('public/exports'),
+  BULK_EXPORT_STEP_TIMEOUT_MS: Joi.number().integer().min(30000).max(3600000).default(1_200_000),
+  BULK_EXPORT_POLL_INTERVAL_MS: Joi.number().integer().min(250).max(60000).default(2000),
+  BULK_EXPORT_RECORD_TTL_SECONDS: Joi.number().integer().min(3600).max(2_592_000).default(604_800),
+  BULK_EXPORT_RETENTION_HOURS: Joi.number().integer().min(1).max(8760).default(168),
 });
