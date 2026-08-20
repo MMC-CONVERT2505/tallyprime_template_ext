@@ -22,6 +22,7 @@ describe('ExtractionsService', () => {
           .fn()
           .mockImplementation(({ data }) => ({ id: 'job-1', status: 'PENDING', ...data })),
         findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
       },
     };
     const queue = { add: jest.fn().mockResolvedValue({}) };
@@ -30,7 +31,7 @@ describe('ExtractionsService', () => {
         overrides.tunnel?.listConnectedAgents ?? jest.fn().mockReturnValue(['conn-1']),
     };
     const redis = { get: overrides.redisGet ?? jest.fn().mockResolvedValue(null) };
-    const excel = { generate: jest.fn().mockResolvedValue(Buffer.from('fake-xlsx')) };
+    const excel = { writeIntoTemplate: jest.fn().mockResolvedValue(Buffer.from('fake-xlsx')) };
 
     const service = new ExtractionsService(
       prisma as any,
@@ -176,7 +177,7 @@ describe('ExtractionsService', () => {
         listConnectedAgents: overrides.tunnel ?? jest.fn().mockReturnValue(['conn-1']),
       };
       const redis = { get: jest.fn() };
-      const excel = { generate: jest.fn() };
+      const excel = { writeIntoTemplate: jest.fn() };
       const service = new ExtractionsService(
         prisma as any,
         queue as any,
@@ -296,6 +297,32 @@ describe('ExtractionsService', () => {
     });
   });
 
+  describe('listJobs', () => {
+    it('scopes to the org, orders newest first, and defaults the limit to 50', async () => {
+      const { service, prisma } = makeDeps();
+      prisma.extractionJob.findMany.mockResolvedValue([{ id: 'job-2' }, { id: 'job-1' }]);
+
+      const result = await service.listJobs('org-1');
+
+      expect(result).toEqual([{ id: 'job-2' }, { id: 'job-1' }]);
+      expect(prisma.extractionJob.findMany).toHaveBeenCalledWith({
+        where: { orgId: 'org-1' },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      });
+    });
+
+    it('clamps an explicit limit to the [1, 200] range', async () => {
+      const { service, prisma } = makeDeps();
+
+      await service.listJobs('org-1', 500);
+      expect(prisma.extractionJob.findMany.mock.calls[0][0]).toMatchObject({ take: 200 });
+
+      await service.listJobs('org-1', 0);
+      expect(prisma.extractionJob.findMany.mock.calls[1][0]).toMatchObject({ take: 1 });
+    });
+  });
+
   describe('getResult', () => {
     it('rejects while the job is still PENDING', async () => {
       const { service, prisma } = makeDeps();
@@ -358,23 +385,80 @@ describe('ExtractionsService', () => {
       const result = await service.getExcelResult('org-1', 'job-1');
 
       expect(result.filename).toBe('items-job-1.xlsx');
-      expect(excel.generate).toHaveBeenCalledTimes(1);
-      expect(excel.generate.mock.calls[0][0]).toBe('Items');
-      expect(excel.generate.mock.calls[0][2]).toEqual([
-        expect.objectContaining({ 'Item Name': 'Widget', 'Initial Stock': 5 }),
+      expect(excel.writeIntoTemplate).toHaveBeenCalledTimes(1);
+      expect(excel.writeIntoTemplate.mock.calls[0][0]).toMatch(/Item\.xlsx$/);
+      expect(excel.writeIntoTemplate.mock.calls[0][1]).toBe('Item');
+      expect(excel.writeIntoTemplate.mock.calls[0][2]).toEqual([
+        expect.objectContaining({ 'Item Name': 'Widget', 'Opening Stock': 5 }),
       ]);
     });
 
-    it('rejects a LEDGERS export with no groupsJobId, without touching the excel generator', async () => {
+    it('rejects a LEDGERS export with no groupsJobId when no successful GROUPS job exists to auto-resolve, without touching the excel generator', async () => {
       const { service, prisma, excel } = makeDeps();
-      prisma.extractionJob.findFirst.mockResolvedValue({
-        id: 'job-1',
-        status: 'SUCCESS',
-        type: 'LEDGERS',
+      prisma.extractionJob.findFirst.mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where.id === 'job-1'
+            ? { id: 'job-1', status: 'SUCCESS', type: 'LEDGERS', company: 'ABC Ltd' }
+            : null, // the auto-resolve lookup (by company+type+status) finds nothing
+        ),
+      );
+
+      await expect(service.getExcelResult('org-1', 'job-1')).rejects.toThrow(
+        'needs a completed GROUPS extraction',
+      );
+      expect(excel.writeIntoTemplate).not.toHaveBeenCalled();
+    });
+
+    it('auto-resolves groupsJobId to the most recent successful GROUPS job for the same company when not passed explicitly', async () => {
+      const jobsById: Record<string, any> = {
+        'ledgers-job': {
+          id: 'ledgers-job',
+          status: 'SUCCESS',
+          type: 'LEDGERS',
+          company: 'ABC Ltd',
+        },
+        'auto-groups-job': {
+          id: 'auto-groups-job',
+          status: 'SUCCESS',
+          type: 'GROUPS',
+          company: 'ABC Ltd',
+        },
+      };
+      const resultsById: Record<string, unknown> = {
+        'ledgers-job': [
+          {
+            name: 'Cash',
+            parent: 'Cash-in-Hand',
+            description: null,
+            openingBalance: 0,
+            closingBalance: 0,
+            alterId: 1,
+          },
+        ],
+        'auto-groups-job': [],
+      };
+      const { service, prisma, excel } = makeDeps({
+        redisGet: jest.fn().mockImplementation((key: string) => {
+          const id = key.replace('extraction-result:', '');
+          return Promise.resolve(JSON.stringify(resultsById[id]));
+        }),
+      });
+      prisma.extractionJob.findFirst.mockImplementation(({ where }: any) => {
+        if (where.id) return Promise.resolve(jobsById[where.id] ?? null);
+        // The auto-resolve lookup: no `id` in `where`, just company/type/status.
+        expect(where).toMatchObject({
+          orgId: 'org-1',
+          company: 'ABC Ltd',
+          type: 'GROUPS',
+          status: 'SUCCESS',
+        });
+        return Promise.resolve({ id: 'auto-groups-job' });
       });
 
-      await expect(service.getExcelResult('org-1', 'job-1')).rejects.toThrow('groupsJobId');
-      expect(excel.generate).not.toHaveBeenCalled();
+      const result = await service.getExcelResult('org-1', 'ledgers-job');
+
+      expect(result.filename).toBe('accounts-ledgers-job.xlsx');
+      expect(excel.writeIntoTemplate).toHaveBeenCalledTimes(1);
     });
 
     it('combines a LEDGERS job with a separately-completed GROUPS job to generate the Accounts workbook', async () => {
@@ -408,8 +492,9 @@ describe('ExtractionsService', () => {
       const result = await service.getExcelResult('org-1', 'ledgers-job', 'groups-job');
 
       expect(result.filename).toBe('accounts-ledgers-job.xlsx');
-      expect(excel.generate.mock.calls[0][0]).toBe('Chart of Accounts');
-      expect(excel.generate.mock.calls[0][2]).toEqual([
+      expect(excel.writeIntoTemplate.mock.calls[0][0]).toMatch(/COA\.xlsx$/);
+      expect(excel.writeIntoTemplate.mock.calls[0][1]).toBe('sample_accounts');
+      expect(excel.writeIntoTemplate.mock.calls[0][2]).toEqual([
         expect.objectContaining({
           'Account Name': 'Aaina Sinha',
           'Account Type': 'Other Current Liability',
@@ -445,6 +530,186 @@ describe('ExtractionsService', () => {
       });
 
       await expect(service.getExcelResult('org-1', 'job-1')).rejects.toThrow('not yet supported');
+    });
+
+    describe('VOUCHERS (Invoice/Bill/Credit Note/Stock Journal)', () => {
+      const voucherRow = {
+        date: '20250415',
+        voucherType: 'Sales',
+        voucherNumber: 'INV-1',
+        partyLedgerName: 'ABC Traders',
+        narration: null,
+        reference: null,
+        alterId: 1,
+        ledgerEntries: [],
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 }],
+        partyGstin: null,
+        placeOfSupply: null,
+      };
+      const itemRow = {
+        name: 'Widget A',
+        parent: null,
+        description: null,
+        baseUnit: 'Nos',
+        openingBalance: null,
+        openingValue: null,
+        closingBalance: null,
+        closingValue: null,
+        alterId: 1,
+        alias: null,
+        hsnCode: '392321',
+        gstRate: 18,
+      };
+
+      it('rejects a VOUCHERS export with no itemsJobId when no successful STOCK_ITEMS job exists to auto-resolve, without touching the excel generator', async () => {
+        const { service, prisma, excel } = makeDeps();
+        prisma.extractionJob.findFirst.mockImplementation(({ where }: any) =>
+          Promise.resolve(
+            where.id === 'voucher-job'
+              ? {
+                  id: 'voucher-job',
+                  status: 'SUCCESS',
+                  type: 'VOUCHERS',
+                  company: 'ABC Ltd',
+                  params: { voucherType: 'Sales' },
+                }
+              : null, // the auto-resolve lookup finds nothing
+          ),
+        );
+
+        await expect(service.getExcelResult('org-1', 'voucher-job')).rejects.toThrow(
+          'needs a completed STOCK_ITEMS extraction',
+        );
+        expect(excel.writeIntoTemplate).not.toHaveBeenCalled();
+      });
+
+      it('auto-resolves itemsJobId to the most recent successful STOCK_ITEMS job for the same company when not passed explicitly', async () => {
+        const jobsById: Record<string, any> = {
+          'voucher-job': {
+            id: 'voucher-job',
+            status: 'SUCCESS',
+            type: 'VOUCHERS',
+            company: 'ABC Ltd',
+            params: { voucherType: 'Sales' },
+          },
+          'auto-items-job': { id: 'auto-items-job', status: 'SUCCESS', type: 'STOCK_ITEMS' },
+        };
+        const resultsById: Record<string, unknown> = {
+          'voucher-job': [voucherRow],
+          'auto-items-job': [itemRow],
+        };
+        const { service, prisma, excel } = makeDeps({
+          redisGet: jest.fn().mockImplementation((key: string) => {
+            const id = key.replace('extraction-result:', '');
+            return Promise.resolve(JSON.stringify(resultsById[id]));
+          }),
+        });
+        prisma.extractionJob.findFirst.mockImplementation(({ where }: any) => {
+          if (where.id) return Promise.resolve(jobsById[where.id] ?? null);
+          expect(where).toMatchObject({
+            orgId: 'org-1',
+            company: 'ABC Ltd',
+            type: 'STOCK_ITEMS',
+            status: 'SUCCESS',
+          });
+          return Promise.resolve({ id: 'auto-items-job' });
+        });
+
+        const result = await service.getExcelResult('org-1', 'voucher-job');
+
+        expect(result.filename).toBe('invoices-voucher-job.xlsx');
+        expect(excel.writeIntoTemplate.mock.calls[0][2]).toEqual([
+          expect.objectContaining({ 'HSN/SAC': '392321' }),
+        ]);
+      });
+
+      it('dispatches a Sales-voucherType job to the Invoice template, using the completed STOCK_ITEMS job for HSN/GST', async () => {
+        const jobsById: Record<string, any> = {
+          'voucher-job': {
+            id: 'voucher-job',
+            status: 'SUCCESS',
+            type: 'VOUCHERS',
+            params: { voucherType: 'Sales' },
+          },
+          'items-job': { id: 'items-job', status: 'SUCCESS', type: 'STOCK_ITEMS' },
+        };
+        const resultsById: Record<string, unknown> = {
+          'voucher-job': [voucherRow],
+          'items-job': [itemRow],
+        };
+        const { service, prisma, excel } = makeDeps({
+          redisGet: jest.fn().mockImplementation((key: string) => {
+            const id = key.replace('extraction-result:', '');
+            return Promise.resolve(JSON.stringify(resultsById[id]));
+          }),
+        });
+        prisma.extractionJob.findFirst.mockImplementation(({ where }: any) =>
+          Promise.resolve(jobsById[where.id] ?? null),
+        );
+
+        const result = await service.getExcelResult(
+          'org-1',
+          'voucher-job',
+          undefined,
+          undefined,
+          'items-job',
+        );
+
+        expect(result.filename).toBe('invoices-voucher-job.xlsx');
+        expect(excel.writeIntoTemplate.mock.calls[0][0]).toMatch(/Invoice\.xlsx$/);
+        expect(excel.writeIntoTemplate.mock.calls[0][1]).toBe('Invoice');
+        expect(excel.writeIntoTemplate.mock.calls[0][2]).toEqual([
+          expect.objectContaining({
+            'Item Name': 'Widget A',
+            'HSN/SAC': '392321',
+            'Item Tax %': 18,
+          }),
+        ]);
+      });
+
+      it('rejects a voucherType with no matching Zoho template (e.g. Payment)', async () => {
+        const jobsById: Record<string, any> = {
+          'voucher-job': {
+            id: 'voucher-job',
+            status: 'SUCCESS',
+            type: 'VOUCHERS',
+            params: { voucherType: 'Payment' },
+          },
+          'items-job': { id: 'items-job', status: 'SUCCESS', type: 'STOCK_ITEMS' },
+        };
+        const { service, prisma } = makeDeps({
+          redisGet: jest.fn().mockResolvedValue(JSON.stringify([])),
+        });
+        prisma.extractionJob.findFirst.mockImplementation(({ where }: any) =>
+          Promise.resolve(jobsById[where.id] ?? null),
+        );
+
+        await expect(
+          service.getExcelResult('org-1', 'voucher-job', undefined, undefined, 'items-job'),
+        ).rejects.toThrow('not supported for voucher type "Payment"');
+      });
+
+      it('rejects when itemsJobId points at a job that is not actually a STOCK_ITEMS job', async () => {
+        const jobsById: Record<string, any> = {
+          'voucher-job': {
+            id: 'voucher-job',
+            status: 'SUCCESS',
+            type: 'VOUCHERS',
+            params: { voucherType: 'Sales' },
+          },
+          'other-job': { id: 'other-job', status: 'SUCCESS', type: 'GROUPS' },
+        };
+        const { service, prisma } = makeDeps({
+          redisGet: jest.fn().mockResolvedValue(JSON.stringify([])),
+        });
+        prisma.extractionJob.findFirst.mockImplementation(({ where }: any) =>
+          Promise.resolve(jobsById[where.id] ?? null),
+        );
+
+        await expect(
+          service.getExcelResult('org-1', 'voucher-job', undefined, undefined, 'other-job'),
+        ).rejects.toThrow('must reference a completed STOCK_ITEMS job');
+      });
     });
   });
 });

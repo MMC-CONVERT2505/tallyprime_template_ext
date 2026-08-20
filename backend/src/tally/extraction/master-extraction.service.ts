@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ExtractionJob } from '@prisma/client';
 import {
   TallyCompany,
+  TallyCostCentre,
   TallyGroup,
   TallyLedger,
   TallyStockItem,
@@ -13,10 +14,10 @@ const COMPANIES_CACHE_TTL_SECONDS = 15;
 
 /**
  * One independently-callable, independently-testable method per Tally master
- * type. Today: Companies, Ledgers, Groups, Stock Items — the masters this
- * project's Tally↔Zoho mapping (docs/tally-zoho-function-mapping.md) actually
- * needs right now. Adding another master (Godowns, Cost Centres, Currencies,
- * ...) means one more method here plus one more EnvelopeBuilder/
+ * type. Today: Companies, Ledgers, Groups, Stock Items, Cost Centres — the
+ * masters this project's Tally↔Zoho mapping (docs/tally-zoho-function-mapping.md)
+ * actually needs right now. Adding another master (Godowns, Currencies, ...)
+ * means one more method here plus one more EnvelopeBuilder/
  * TallyResponseParser pair — nothing else in this class needs to change.
  */
 @Injectable()
@@ -62,6 +63,20 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       const raw = await this.connector.post(xml);
       return this.parser.mapGroups(raw);
     });
+  }
+
+  async getCostCentres(company?: string): Promise<TallyCostCentre[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(
+      ExtractionType.COST_CENTRES,
+      resolved,
+      { company: resolved },
+      async () => {
+        const xml = this.builder.buildCostCentresRequest(resolved);
+        const raw = await this.connector.post(xml);
+        return this.parser.mapCostCentres(raw);
+      },
+    );
   }
 
   async getStockItems(

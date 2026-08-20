@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -22,6 +23,18 @@ import { ExtractionsService } from './extractions.service';
 @UseGuards(JwtAuthGuard)
 export class ExtractionsController {
   constructor(private readonly extractions: ExtractionsService) {}
+
+  /** Recent jobs for the org, newest first — backs the UI's job list/download
+   *  picker. `?limit=` caps the count (default 50, max 200). */
+  @Get()
+  list(@CurrentUser() user: JwtPayload, @Query('limit') limit: string | undefined) {
+    if (limit === undefined) return this.extractions.listJobs(user.orgId);
+    const parsed = Number(limit);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new BadRequestException('limit must be a positive integer.');
+    }
+    return this.extractions.listJobs(user.orgId, parsed);
+  }
 
   /** Kicks off an async job — poll GET /extractions/:id for status. */
   @Post()
@@ -55,17 +68,36 @@ export class ExtractionsController {
   }
 
   /**
-   * Zoho-import-ready Excel. LEDGERS jobs need a completed GROUPS job's id
-   * via ?groupsJobId= — see ExtractionsService.getExcelResult's doc comment.
+   * Zoho-import-ready Excel. LEDGERS jobs need a completed GROUPS job for
+   * the same company, VOUCHERS jobs a completed STOCK_ITEMS job — both are
+   * auto-resolved to the most recent successful match (no need to look one
+   * up and pass it); ?groupsJobId=/?itemsJobId= remain available to pin a
+   * specific older companion run. See ExtractionsService.getExcelResult's
+   * doc comment. A LEDGERS job also accepts ?ledgerEntity=COA|CUSTOMER|VENDOR
+   * to pick which of the 3 possible exports that same ledger set produces;
+   * omitted defaults to COA. Which of Invoice/Bill/Credit Note/Stock Journal
+   * a VOUCHERS job produces is fixed by the job's own voucherType, not a
+   * caller choice.
    */
   @Get(':id/excel')
   async excel(
     @CurrentUser() user: JwtPayload,
     @Param('id') id: string,
     @Query('groupsJobId') groupsJobId: string | undefined,
+    @Query('ledgerEntity') ledgerEntity: string | undefined,
+    @Query('itemsJobId') itemsJobId: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ): Promise<Buffer> {
-    const { buffer, filename } = await this.extractions.getExcelResult(user.orgId, id, groupsJobId);
+    if (ledgerEntity && !['COA', 'CUSTOMER', 'VENDOR'].includes(ledgerEntity)) {
+      throw new BadRequestException('ledgerEntity must be one of COA, CUSTOMER, VENDOR.');
+    }
+    const { buffer, filename } = await this.extractions.getExcelResult(
+      user.orgId,
+      id,
+      groupsJobId,
+      ledgerEntity as 'COA' | 'CUSTOMER' | 'VENDOR' | undefined,
+      itemsJobId,
+    );
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="${filename}"`,

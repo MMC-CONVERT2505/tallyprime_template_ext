@@ -52,3 +52,23 @@ Source: `Tally to ZohoBooks Excel Mapping.xlsx` (project root — not yet commit
 ## What this changes about Phase 5's plan
 
 `architecture.md`'s Phase 5 previously listed a rough entity set inferred from the reference migration tool's `conf.properties`. This table supersedes that with the actual, authoritative scope. Same priority logic still applies — masters (#1–13) unlock everything downstream (a voucher can't be mapped correctly without knowing its ledger's group, its stock item's group, etc.), so they come first; among transactions, the ones with the most 1:1 mapping clarity (#14–20) are lower-risk than the ones sharing a single Tally voucher type across multiple Zoho targets (#18/#22 both from Receipt, #19/#21 both from Payment — those need the same kind of disambiguation logic the reference tool's Pre-Migration Checklist documents, e.g. "which ledger is this against" rules).
+
+## Export status (which rows actually produce a downloadable file)
+
+A row only gets a downloadable Zoho import file if a real Zoho template exists for it in the project root's `Master and Invoice or Bill/` folder — see `backend/src/mapping/zoho-entity.map.ts`, the single registry of entity → template file → sheet name. Of the 33 rows above, **9 have a template and are built end-to-end** (Tally fetch → mapper → real-template Excel download):
+
+| # | Row | Zoho template | Mapper |
+|---|---|---|---|
+| 2/3 | Ledgers → Chart of Accounts | `COA.xlsx` | `LedgerMapper` |
+| 7 | Ledgers → Customers | `Customer.xlsx` | `CustomerMapper` |
+| 8 | Ledgers → Vendors | `Vendor.xlsx` | `VendorMapper` |
+| 9 | Stock Items → Items | `Item.xlsx` | `StockItemMapper` |
+| 13 | Cost Centres → Reporting Tag | `Class.xlsx` | `CostCentreMapper` |
+| 14 | Sales → Invoices | `Invoice.xlsx` | `InvoiceMapper` |
+| 15 | Purchase → Bills | `Bill.xlsx` | `BillMapper` |
+| 16 | Credit Note → Credit Notes | `Credit Note.xlsx` | `CreditNoteMapper` |
+| 24 | Stock Journal → Inventory Adjustment | `Stock Journal.xlsx` | `StockJournalMapper` |
+
+Every other row (Tax, Currencies, Company/Organizations, Debit Note, Receipt, Payment, Journal, Contra, Sales/Purchase Order, Delivery Note/Challan, Estimates, and the context-only rows #4/#10-12/#25-28) has **no template file** — deliberately out of scope rather than guessed. Add one only once a real Zoho template for it exists to read the exact columns/sheet name from.
+
+Within the 9 built entities, several fields are best-effort Tally TDL field names not yet verified against a live Tally instance (GSTIN, PAN, address, bank details, HSN/SAC, GST rate — see the `TODO verify against live Tally` comments in `backend/src/tally/xml/envelope.builder.ts` and the doc comments on `TallyLedger`/`TallyStockItem`/`TallyVoucher` in `backend/src/tally/interfaces/tally.interfaces.ts`). A wrong tag name means that field comes back blank, not a broken export — correcting it once Tally is reachable is a one-line fix per field, not a re-investigation.

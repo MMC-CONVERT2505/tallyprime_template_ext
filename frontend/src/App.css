@@ -619,7 +619,7 @@ tbody tr.row-selected:hover {
   border-color: var(--danger-border);
 }
 
-/* ── Extractions job chips ─────────────────────────────────────────── */
+/* ── Extractions job list ──────────────────────────────────────────── */
 
 .actions {
   display: flex;
@@ -628,29 +628,48 @@ tbody tr.row-selected:hover {
 
 .job-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.job-chip {
-  background: var(--surface-sunken);
-  color: var(--text);
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 7px 14px;
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  padding: 4px 6px 4px 4px;
 }
 
-.job-chip:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
-}
-
-.job-chip.active {
+.job-row.active {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: var(--accent);
+}
+
+.job-row-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  padding: 8px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+}
+
+.job-row-main:hover:not(:disabled) {
+  color: var(--text-h);
+}
+
+.job-row-main > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Advanced/power-user disclosure ────────────────────────────────── */

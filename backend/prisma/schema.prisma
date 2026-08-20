@@ -16,6 +16,7 @@ enum ExtractionType {
   RAW
   STOCK_ITEMS
   GROUPS
+  COST_CENTRES
 }
 
 enum ExtractionStatus {

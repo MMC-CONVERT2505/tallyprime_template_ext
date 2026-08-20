@@ -90,7 +90,8 @@
   "pkg": {
     "assets": [
       ".env",
-      ".env.example"
+      ".env.example",
+      "dist/mapping/templates/**/*"
     ],
     "targets": [
       "node18-win-x64"
@@ -115,5 +116,11 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "allowScripts": {
+    "argon2@0.45.1": true,
+    "msgpackr-extract@3.0.4": true,
+    "prisma@7.9.1": true,
+    "@prisma/engines@7.9.1": true
   }
 }

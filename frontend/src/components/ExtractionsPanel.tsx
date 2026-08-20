@@ -3,6 +3,7 @@ import {
   ApiError,
   connectionsApi,
   extractionsApi,
+  EXCEL_EXPORTABLE_TYPES,
   type ConnectionSummary,
   type ExtractableType,
   type ExtractionJob,
@@ -14,22 +15,42 @@ import { ResultView } from './ResultView';
 import { IconExtract } from './Icons';
 import { EmptyState, Spinner } from './ui';
 
-const EXTRACTABLE_TYPES: ExtractableType[] = ['COMPANIES', 'LEDGERS', 'STOCK_ITEMS', 'GROUPS', 'VOUCHERS', 'RAW'];
-const MASTER_TYPES: MasterType[] = ['COMPANIES', 'LEDGERS', 'STOCK_ITEMS', 'GROUPS'];
+const EXTRACTABLE_TYPES: ExtractableType[] = [
+  'COMPANIES',
+  'LEDGERS',
+  'STOCK_ITEMS',
+  'GROUPS',
+  'COST_CENTRES',
+  'VOUCHERS',
+  'RAW',
+];
+const MASTER_TYPES: MasterType[] = ['COMPANIES', 'LEDGERS', 'STOCK_ITEMS', 'GROUPS', 'COST_CENTRES'];
 
-interface TrackedJob {
-  id: string;
-  label: string;
+/** Fires a downloaded Blob as a file save — shared by the job-status card's
+ *  "Download Excel" and the job list's per-row quick-download. */
+function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export function ExtractionsPanel() {
   const { selectedCompany, selectCompany } = useSelectedCompany();
-  const [jobs, setJobs] = useState<TrackedJob[]>([]);
+  // Server-backed job history (was session-only React state before — vanished
+  // on refresh and gave the download flow nothing to work from but a job id
+  // the user had to already know). Refreshed on mount, after creating a job,
+  // and whenever the actively-polled job settles.
+  const [jobs, setJobs] = useState<ExtractionJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(true);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<ExtractionJob | null>(null);
   const [result, setResult] = useState<unknown>(null);
   const [resultBusy, setResultBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
 
   // Paired companies, for the primary flow's picker — no connectionId ever
@@ -60,8 +81,22 @@ export function ExtractionsPanel() {
   const [fetchBusy, setFetchBusy] = useState(false);
 
   // excel
-  const [groupsJobIdForExcel, setGroupsJobIdForExcel] = useState('');
   const [excelBusy, setExcelBusy] = useState(false);
+
+  const refreshJobs = async () => {
+    try {
+      const list = await extractionsApi.list(50);
+      setJobs(list);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setJobsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshJobs();
+  }, []);
 
   useEffect(() => {
     connectionsApi
@@ -99,9 +134,11 @@ export function ExtractionsPanel() {
     setResult(null);
   };
 
-  const track = (id: string, label: string) => {
-    setJobs((prev) => [{ id, label }, ...prev].slice(0, 10));
+  /** Selects a freshly-created job and pulls it into the server-backed list
+   *  immediately, rather than waiting for the next poll/refresh to show it. */
+  const trackNewJob = (id: string) => {
     selectJob(id);
+    void refreshJobs();
   };
 
   const createByConnection = async () => {
@@ -115,7 +152,7 @@ export function ExtractionsPanel() {
         type,
         payload: payloadCompany ? { company: payloadCompany } : undefined,
       });
-      track(res.id, `${type} via connectionId`);
+      trackNewJob(res.id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -136,7 +173,7 @@ export function ExtractionsPanel() {
         fromDate: fromDate || undefined,
         toDate: toDate || undefined,
       });
-      track(res.id, `${masterType} — ${companyName}`);
+      trackNewJob(res.id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -157,6 +194,7 @@ export function ExtractionsPanel() {
         setJobStatus(status);
         if (status.status !== 'PENDING' && pollTimer.current) {
           window.clearInterval(pollTimer.current);
+          void refreshJobs(); // pick up the settled status/recordCount in the list too
         }
       } catch (err) {
         setError(err instanceof ApiError ? err.message : String(err));
@@ -194,18 +232,15 @@ export function ExtractionsPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeJobId, jobStatus?.status]);
 
+  // LEDGERS' companion GROUPS job and VOUCHERS' companion STOCK_ITEMS job
+  // are auto-resolved server-side now (most recent successful match for the
+  // same company) — no groupsJobId/itemsJobId to look up or type in here.
   const downloadExcel = async () => {
     if (!activeJobId) return;
     setExcelBusy(true);
     setError(null);
     try {
-      const blob = await extractionsApi.excel(activeJobId, groupsJobIdForExcel || undefined);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `extraction-${activeJobId}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
+      saveBlob(await extractionsApi.excel(activeJobId), `extraction-${activeJobId}.xlsx`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -213,8 +248,21 @@ export function ExtractionsPanel() {
     }
   };
 
-  const statusPillClass =
-    jobStatus?.status === 'SUCCESS' ? 'pill pill-ok' : jobStatus?.status === 'FAILED' ? 'pill pill-off' : 'pill';
+  /** Download straight from a job-list row, without first selecting it. */
+  const quickDownload = async (job: ExtractionJob) => {
+    setDownloadingId(job.id);
+    setError(null);
+    try {
+      saveBlob(await extractionsApi.excel(job.id), `extraction-${job.id}.xlsx`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  const statusPillClass = (status: ExtractionJob['status']) =>
+    status === 'SUCCESS' ? 'pill pill-ok' : status === 'FAILED' ? 'pill pill-off' : 'pill';
 
   return (
     <div className="panel">
@@ -274,24 +322,44 @@ export function ExtractionsPanel() {
 
       <ErrorBanner message={error} />
 
-      {jobs.length > 0 && (
-        <div className="card">
-          <h3>Jobs (this session)</h3>
+      <div className="card">
+        <div className="card-header">
+          <h3>Jobs</h3>
+          <button onClick={() => void refreshJobs()} disabled={jobsLoading} type="button" className="ghost">
+            {jobsLoading && <Spinner />}
+            Refresh
+          </button>
+        </div>
+        {jobsLoading && jobs.length === 0 ? (
+          <p className="muted">Loading…</p>
+        ) : jobs.length === 0 ? (
+          <EmptyState message="No extractions yet — fetch some data above to see it here." />
+        ) : (
           <div className="job-list">
             {jobs.map((j) => (
-              <button
-                key={j.id}
-                type="button"
-                className={j.id === activeJobId ? 'job-chip active' : 'job-chip'}
-                onClick={() => selectJob(j.id)}
-              >
-                {j.label}
-                <span className="muted small"> {j.id.slice(0, 8)}…</span>
-              </button>
+              <div key={j.id} className={j.id === activeJobId ? 'job-row active' : 'job-row'}>
+                <button type="button" className="job-row-main" onClick={() => selectJob(j.id)}>
+                  <span className={statusPillClass(j.status)}>{j.status}</span>
+                  <span>{j.type}</span>
+                  <span className="muted">{j.company ?? '—'}</span>
+                  <span className="muted small">{new Date(j.createdAt).toLocaleString()}</span>
+                </button>
+                {j.status === 'SUCCESS' && EXCEL_EXPORTABLE_TYPES.includes(j.type) && (
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => void quickDownload(j)}
+                    disabled={downloadingId === j.id}
+                    title="Download Zoho-import-ready Excel"
+                  >
+                    {downloadingId === j.id ? <Spinner /> : 'Download'}
+                  </button>
+                )}
+              </div>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {activeJobId && (
         <div className="card">
@@ -299,7 +367,7 @@ export function ExtractionsPanel() {
             <div className="card-title">
               <IconExtract />
               <h2>Job status</h2>
-              {jobStatus && <span className={statusPillClass}>{jobStatus.status}</span>}
+              {jobStatus && <span className={statusPillClass(jobStatus.status)}>{jobStatus.status}</span>}
             </div>
             <div className="actions">
               <button
@@ -315,20 +383,18 @@ export function ExtractionsPanel() {
           </div>
           <JsonView value={jobStatus} />
 
-          <div className="form form-row">
-            <label>
-              groupsJobId (only for LEDGERS excel)
-              <input value={groupsJobIdForExcel} onChange={(e) => setGroupsJobIdForExcel(e.target.value)} />
-            </label>
-            <button
-              onClick={() => void downloadExcel()}
-              disabled={jobStatus?.status !== 'SUCCESS' || excelBusy}
-              type="button"
-            >
-              {excelBusy && <Spinner />}
-              {excelBusy ? 'Downloading…' : 'Download Excel'}
-            </button>
-          </div>
+          {jobStatus && EXCEL_EXPORTABLE_TYPES.includes(jobStatus.type) && (
+            <div className="form form-row">
+              <button
+                onClick={() => void downloadExcel()}
+                disabled={jobStatus?.status !== 'SUCCESS' || excelBusy}
+                type="button"
+              >
+                {excelBusy && <Spinner />}
+                {excelBusy ? 'Downloading…' : 'Download Excel'}
+              </button>
+            </div>
+          )}
 
           {result !== null && (
             <>

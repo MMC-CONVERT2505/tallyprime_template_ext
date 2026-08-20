@@ -26,8 +26,11 @@ function Start-Local {
   if (Get-Process redis-server -ErrorAction SilentlyContinue) {
     Write-Host 'Redis already running.'
   } else {
+    # Config path must be relative (not `"$redisDir\...`") — this msys2 build of
+    # redis-server mishandles an absolute Windows path as its first arg, mangling
+    # it into a bogus concatenated path. A bare filename + -WorkingDirectory works.
     Start-Process -FilePath "$redisDir\redis-server.exe" `
-      -ArgumentList "`"$redisDir\redis.windows.conf`" --port 6379" `
+      -ArgumentList "redis.windows.conf --port 6379" `
       -WorkingDirectory $redisDir -WindowStyle Hidden
     Write-Host 'Redis started.'
   }

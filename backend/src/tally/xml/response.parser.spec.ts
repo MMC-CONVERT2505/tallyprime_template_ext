@@ -71,6 +71,19 @@ describe('TallyResponseParser', () => {
         '</COLLECTION></DATA></BODY></ENVELOPE>';
       const ledgers = parser.mapLedgers(xml);
       expect(ledgers).toHaveLength(2);
+      const enrichmentFieldsBlank = {
+        gstin: null,
+        panNumber: null,
+        email: null,
+        phone: null,
+        mobile: null,
+        billingAddress: null,
+        billingState: null,
+        billingCountry: null,
+        billingPincode: null,
+        bankName: null,
+        bankAccountNumber: null,
+      };
       expect(ledgers[0]).toEqual({
         name: 'Cash',
         parent: 'Cash-in-Hand',
@@ -79,6 +92,7 @@ describe('TallyResponseParser', () => {
         closingBalance: -2500.5,
         alterId: 42,
         reservedName: null,
+        ...enrichmentFieldsBlank,
       });
       expect(ledgers[1]).toEqual({
         name: 'Sales',
@@ -88,7 +102,48 @@ describe('TallyResponseParser', () => {
         closingBalance: null,
         alterId: null,
         reservedName: null,
+        ...enrichmentFieldsBlank,
       });
+    });
+
+    it('parses GSTIN/PAN/contact/address/bank fields, joining multi-line address into one string', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<LEDGER><NAME>ABC Traders</NAME>' +
+        '<GSTREGISTRATIONNUMBER>33AAAAA1111A1Z1</GSTREGISTRATIONNUMBER>' +
+        '<INCOMETAXNUMBER>AAAAA1111A</INCOMETAXNUMBER>' +
+        '<EMAIL>ap@abctraders.com</EMAIL>' +
+        '<LEDGERPHONE>044-12345678</LEDGERPHONE>' +
+        '<LEDGERMOBILE>9876543210</LEDGERMOBILE>' +
+        '<ADDRESS.LIST><ADDRESS>50 Kovil Street</ADDRESS><ADDRESS>Anna Nagar</ADDRESS></ADDRESS.LIST>' +
+        '<LEDSTATENAME>Tamil Nadu</LEDSTATENAME>' +
+        '<COUNTRYNAME>India</COUNTRYNAME>' +
+        '<PINCODE>600040</PINCODE>' +
+        '<BANKDETAILS.LIST><BANKNAME>HDFC Bank</BANKNAME><BANKACCOUNTNUMBER>000123456789</BANKACCOUNTNUMBER></BANKDETAILS.LIST>' +
+        '</LEDGER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+
+      const [ledger] = parser.mapLedgers(xml);
+      expect(ledger.gstin).toBe('33AAAAA1111A1Z1');
+      expect(ledger.panNumber).toBe('AAAAA1111A');
+      expect(ledger.email).toBe('ap@abctraders.com');
+      expect(ledger.phone).toBe('044-12345678');
+      expect(ledger.mobile).toBe('9876543210');
+      expect(ledger.billingAddress).toBe('50 Kovil Street\nAnna Nagar');
+      expect(ledger.billingState).toBe('Tamil Nadu');
+      expect(ledger.billingCountry).toBe('India');
+      expect(ledger.billingPincode).toBe('600040');
+      expect(ledger.bankName).toBe('HDFC Bank');
+      expect(ledger.bankAccountNumber).toBe('000123456789');
+    });
+
+    it('leaves the enrichment fields null when a ledger has no bank/address details on file, rather than throwing', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><LEDGER><NAME>Plain Ledger</NAME></LEDGER></COLLECTION></DATA></BODY></ENVELOPE>';
+      const [ledger] = parser.mapLedgers(xml);
+      expect(ledger.billingAddress).toBeNull();
+      expect(ledger.bankName).toBeNull();
+      expect(ledger.bankAccountNumber).toBeNull();
     });
 
     it('captures RESERVEDNAME for Tally system-computed ledgers (e.g. Profit & Loss A/c), null for ordinary ones', () => {
@@ -141,6 +196,9 @@ describe('TallyResponseParser', () => {
         closingBalance: -20,
         closingValue: -1000,
         alterId: 7,
+        alias: null,
+        hsnCode: null,
+        gstRate: null,
       });
       expect(items[1]).toEqual({
         name: 'Widget B',
@@ -152,7 +210,21 @@ describe('TallyResponseParser', () => {
         closingBalance: null,
         closingValue: null,
         alterId: null,
+        alias: null,
+        hsnCode: null,
+        gstRate: null,
       });
+    });
+
+    it('parses Alias/HSN/GSTRate', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<STOCKITEM><NAME>Widget A</NAME><ALIAS>WGT-A</ALIAS><HSNCODE>392321</HSNCODE><GSTRATE>18</GSTRATE></STOCKITEM>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      const [item] = parser.mapStockItems(xml);
+      expect(item.alias).toBe('WGT-A');
+      expect(item.hsnCode).toBe('392321');
+      expect(item.gstRate).toBe(18);
     });
   });
 
@@ -185,6 +257,22 @@ describe('TallyResponseParser', () => {
       expect(voucher.inventoryEntries).toEqual([
         { stockItemName: 'Widget A', quantity: null, rate: null, amount: 10000 },
       ]);
+    });
+
+    it('parses PARTYGSTIN/PLACEOFSUPPLY, null when absent', () => {
+      const xmlWithGst =
+        '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Sales">' +
+        '<PARTYGSTIN>33AAAAA1111A1Z1</PARTYGSTIN><PLACEOFSUPPLY>Tamil Nadu</PLACEOFSUPPLY>' +
+        '</VOUCHER></TALLYMESSAGE>' +
+        '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>';
+      const [withGst] = parser.mapVouchers(xmlWithGst);
+      expect(withGst.partyGstin).toBe('33AAAAA1111A1Z1');
+      expect(withGst.placeOfSupply).toBe('Tamil Nadu');
+
+      const [withoutGst] = parser.mapVouchers(salesVoucher);
+      expect(withoutGst.partyGstin).toBeNull();
+      expect(withoutGst.placeOfSupply).toBeNull();
     });
 
     it('resolves Dr/Cr from ISDEEMEDPOSITIVE + amount sign', () => {

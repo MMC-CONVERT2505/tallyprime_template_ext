@@ -1,48 +1,43 @@
-import { ExcelColumn } from '../excel/excel-generator.service';
 import { TallyLedger } from '../tally/interfaces/tally.interfaces';
 import { ACCOUNT_TYPE_BY_STANDARD_GROUP, DEFAULT_ACCOUNT_TYPE } from './account-type.map';
 import { GroupHierarchyResolver } from './group-hierarchy.resolver';
 
-/** Zoho Books "Chart of Accounts" import columns — exact names/order taken
- *  from the reference tool's real field-mapping config (xml_to_csv_config.yml,
- *  the `Account:` section), not guessed. External Reference ID/Type are
- *  omitted: those are the reference tool's own internal cross-file bookkeeping
- *  IDs, not required by Zoho's import format. */
+/**
+ * Zoho Books "Chart of Accounts" import columns — taken from the real
+ * template (Master and Invoice or Bill/COA.xlsx, sheet "sample_accounts"),
+ * not guessed. `Account Code`/`Account #` have no Tally-side source and are
+ * always left blank rather than fabricated. `Currency` defaults to 'INR' — a
+ * currency code, not a financial value — since every company this project
+ * targets is India/GST-context; this project doesn't extract a currency
+ * master (no Zoho template exists for one either, see zoho-entity.map.ts).
+ */
 export interface ZohoAccountRow {
   'Account Name': string;
+  'Account Code': string;
   Description: string;
   'Account Type': string;
   'Parent Account': string;
+  'Account #': string;
+  Currency: string;
   'Opening Balance': number | '';
-  'Payment Account OB': number | '';
   'Debit or Credit': string;
 }
 
-export const ACCOUNT_COLUMNS: ExcelColumn[] = [
-  { header: 'Account Name', key: 'Account Name', width: 30 },
-  { header: 'Description', key: 'Description', width: 30 },
-  { header: 'Account Type', key: 'Account Type', width: 22 },
-  { header: 'Parent Account', key: 'Parent Account', width: 25 },
-  { header: 'Opening Balance', key: 'Opening Balance', width: 18 },
-  { header: 'Payment Account OB', key: 'Payment Account OB', width: 18 },
-  { header: 'Debit or Credit', key: 'Debit or Credit', width: 16 },
-];
+const DEFAULT_CURRENCY_CODE = 'INR';
 
 /** Ledgers whose direct parent is one of these become Customer/Vendor/Tax
  *  instead — matches the reference tool's entity_cr filter exactly:
  *  `PARENT not in ('Duties & Taxes', 'Sundry Debtors', 'Sundry Creditors')`.
- *  Those three mappers aren't built yet (need GST/PAN/address fields this
- *  project doesn't extract yet) — see docs/architecture.md Phase 5-7 notes. */
+ *  Customer/Vendor mappers (customer.mapper.ts/vendor.mapper.ts) are the
+ *  inverse of this same classification — see resolveAccountClassification. */
 const EXCLUDED_DIRECT_PARENTS = new Set(['Sundry Debtors', 'Sundry Creditors', 'Duties & Taxes']);
-
-const BANK_OR_CASH_TYPES = new Set(['Bank', 'Cash']);
 
 export class LedgerMapper {
   constructor(private readonly hierarchy: GroupHierarchyResolver) {}
 
   /** Only the ledgers that belong in the Zoho "Account" (Chart of Accounts)
    *  import — Customer/Vendor/Tax-bound ledgers are silently excluded here,
-   *  not mis-mapped, since those targets have their own (future) mappers. */
+   *  not mis-mapped, since those targets have their own mappers. */
   toAccountRows(ledgers: TallyLedger[]): ZohoAccountRow[] {
     return ledgers
       .filter((l) => !EXCLUDED_DIRECT_PARENTS.has(l.parent ?? ''))
@@ -50,23 +45,29 @@ export class LedgerMapper {
   }
 
   private toAccountRow(ledger: TallyLedger): ZohoAccountRow {
-    const standardGroup = this.hierarchy.resolveToStandardGroup(ledger.parent);
-    const accountType =
-      (standardGroup && ACCOUNT_TYPE_BY_STANDARD_GROUP[standardGroup]) ?? DEFAULT_ACCOUNT_TYPE;
-    const isBankOrCash = BANK_OR_CASH_TYPES.has(accountType);
+    const accountType = this.resolveAccountType(ledger);
     const amount = ledger.openingBalance;
 
     return {
       'Account Name': ledger.name,
+      'Account Code': '',
       Description: ledger.description ?? '',
       'Account Type': accountType,
       'Parent Account': ledger.parent ?? '',
+      'Account #': '',
+      Currency: DEFAULT_CURRENCY_CODE,
       // Tally's OPENINGBALANCE sign already encodes Dr/Cr (negative = Debit,
       // per the reference DSL's own inline comment) — Zoho wants the
-      // magnitude and the sign split into separate columns.
-      'Opening Balance': amount !== null && !isBankOrCash ? Math.abs(amount) : '',
-      'Payment Account OB': amount !== null && isBankOrCash ? Math.abs(amount) : '',
+      // magnitude and the sign split into a separate column. The real
+      // template has a single Opening Balance column for every account type
+      // (bank/cash included) — no split "Payment Account OB" column exists.
+      'Opening Balance': amount !== null ? Math.abs(amount) : '',
       'Debit or Credit': amount !== null ? (amount < 0 ? 'Debit' : 'Credit') : '',
     };
+  }
+
+  private resolveAccountType(ledger: TallyLedger): string {
+    const standardGroup = this.hierarchy.resolveToStandardGroup(ledger.parent);
+    return (standardGroup && ACCOUNT_TYPE_BY_STANDARD_GROUP[standardGroup]) ?? DEFAULT_ACCOUNT_TYPE;
   }
 }

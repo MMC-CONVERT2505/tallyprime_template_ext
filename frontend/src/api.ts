@@ -121,8 +121,28 @@ export type DeviceStatusResult =
       connected?: boolean;
     };
 
-export type ExtractableType = 'COMPANIES' | 'LEDGERS' | 'STOCK_ITEMS' | 'GROUPS' | 'VOUCHERS' | 'RAW';
-export type MasterType = 'COMPANIES' | 'LEDGERS' | 'STOCK_ITEMS' | 'GROUPS';
+export type ExtractableType =
+  | 'COMPANIES'
+  | 'LEDGERS'
+  | 'STOCK_ITEMS'
+  | 'GROUPS'
+  | 'COST_CENTRES'
+  | 'VOUCHERS'
+  | 'RAW';
+export type MasterType = 'COMPANIES' | 'LEDGERS' | 'STOCK_ITEMS' | 'GROUPS' | 'COST_CENTRES';
+
+/** Job types the backend can turn into a Zoho-import-ready Excel download —
+ *  mirrors ExtractionsService.getExcelResult's supported types. VOUCHERS is
+ *  included even though only 4 of its many voucherType values actually have
+ *  a matching Zoho template (Sales/Purchase/Credit Note/Stock Journal) — an
+ *  unsupported type surfaces the backend's own clear error on download
+ *  rather than being pre-filtered here from incomplete client-side info. */
+export const EXCEL_EXPORTABLE_TYPES: ExtractableType[] = [
+  'LEDGERS',
+  'STOCK_ITEMS',
+  'COST_CENTRES',
+  'VOUCHERS',
+];
 
 export interface ExtractionJob {
   id: string;
@@ -222,17 +242,27 @@ export const tallyJobsApi = {
 // ── Extractions (job API) ────────────────────────────────────────────────
 
 export const extractionsApi = {
+  /** Recent jobs for the org, newest first — the persisted job history behind
+   *  the UI's job list (server-backed, unlike the old session-only tracking). */
+  list: (limit?: number) => request<ExtractionJob[]>('GET', `/extractions${limit ? `?limit=${limit}` : ''}`),
   create: (body: { connectionId: string; type: ExtractableType; payload?: Record<string, unknown> }) =>
     request<{ id: string; status: string }>('POST', '/extractions', { body }),
   fetchMaster: (body: { companyName: string; masterType: MasterType; fromDate?: string; toDate?: string }) =>
     request<{ id: string; status: string }>('POST', '/extractions/fetch-master', { body }),
   status: (id: string) => request<ExtractionJob>('GET', `/extractions/${id}`),
   result: (id: string) => request<unknown>('GET', `/extractions/${id}/result`),
-  /** Excel needs the Authorization header, so a plain <a href> won't work — fetch as a blob and hand back an object URL to download/open. */
-  excel: (id: string, groupsJobId?: string) =>
-    request<Blob>('GET', `/extractions/${id}/excel${groupsJobId ? `?groupsJobId=${groupsJobId}` : ''}`, {
-      raw: true,
-    }),
+  /**
+   * Excel needs the Authorization header, so a plain <a href> won't work —
+   * fetch as a blob and hand back an object URL to download/open. LEDGERS'
+   * companion GROUPS job and VOUCHERS' companion STOCK_ITEMS job are
+   * auto-resolved server-side (most recent successful match for the same
+   * company) — `opts` only needs to be set to pin a specific older companion
+   * run or pick a non-default `ledgerEntity`.
+   */
+  excel: (id: string, opts?: { groupsJobId?: string; itemsJobId?: string; ledgerEntity?: string }) => {
+    const query = qs(opts ?? {});
+    return request<Blob>('GET', `/extractions/${id}/excel${query ? `?${query}` : ''}`, { raw: true });
+  },
 };
 
 export const healthApi = {

@@ -1,16 +1,36 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { ExtractionJob, Prisma, TallyConnection } from '@prisma/client';
+import { ExtractionJob, ExtractionType, Prisma, TallyConnection } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { PrismaService } from '../database/prisma.service';
 import { ExcelGeneratorService } from '../excel/excel-generator.service';
 import { TallyTunnelGateway } from '../gateway/tally-tunnel.gateway';
-import { ACCOUNT_COLUMNS, LedgerMapper } from '../mapping/ledger.mapper';
+import { BillMapper } from '../mapping/bill.mapper';
+import { CostCentreMapper } from '../mapping/cost-centre.mapper';
+import { CreditNoteMapper } from '../mapping/credit-note.mapper';
+import { CustomerMapper } from '../mapping/customer.mapper';
+import { LedgerMapper } from '../mapping/ledger.mapper';
 import { GroupHierarchyResolver } from '../mapping/group-hierarchy.resolver';
-import { ITEM_COLUMNS, StockItemMapper } from '../mapping/stock-item.mapper';
+import { InvoiceMapper } from '../mapping/invoice.mapper';
+import { StockItemMapper } from '../mapping/stock-item.mapper';
+import { StockJournalMapper } from '../mapping/stock-journal.mapper';
+import { VendorMapper } from '../mapping/vendor.mapper';
+import { buildStockItemIndex } from '../mapping/voucher-line.shared';
+import {
+  ZOHO_ENTITIES,
+  ZohoEntityKey,
+  templatePathFor,
+  zohoEntityForVoucherType,
+} from '../mapping/zoho-entity.map';
 import { REDIS_CLIENT } from '../redis/redis.module';
-import { TallyGroup, TallyLedger, TallyStockItem } from '../tally/interfaces/tally.interfaces';
+import {
+  TallyCostCentre,
+  TallyGroup,
+  TallyLedger,
+  TallyStockItem,
+  TallyVoucher,
+} from '../tally/interfaces/tally.interfaces';
 import { CreateExtractionDto } from './dto/create-extraction.dto';
 import { FetchMasterDto } from './dto/fetch-master.dto';
 import { ExtractableType } from './extraction-action.map';
@@ -201,6 +221,17 @@ export class ExtractionsService {
     return job;
   }
 
+  /** Recent jobs for the org, newest first — what the UI's job list/download
+   *  picker is actually backed by (there was no persisted listing before
+   *  this; the frontend tracked jobs in session-only React state). */
+  async listJobs(orgId: string, limit = 50): Promise<ExtractionJob[]> {
+    return this.prisma.extractionJob.findMany({
+      where: { orgId },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(Math.max(limit, 1), 200),
+    });
+  }
+
   async getResult(orgId: string, id: string): Promise<unknown> {
     const { data } = await this.loadSuccessfulResult(orgId, id);
     return data;
@@ -208,37 +239,76 @@ export class ExtractionsService {
 
   /**
    * Zoho-import-ready Excel for the entity types that have a mapper today.
-   * LEDGERS requires a separately-completed GROUPS job (its id passed via
-   * `groupsJobId`) to resolve the Account Type correctly — see
+   * LEDGERS requires a separately-completed GROUPS job to resolve the
+   * Account Type/Customer-vs-Vendor classification correctly — see
    * src/mapping/group-hierarchy.resolver.ts for why a flat parent-name
-   * lookup isn't good enough. Each extraction job stays single-purpose (one
-   * job, one Tally call, per docs/architecture.md Phase 4); combining two
-   * completed jobs' results happens here, at export time, not by growing the
-   * job payload.
+   * lookup isn't good enough. VOUCHERS similarly requires a completed
+   * STOCK_ITEMS job to resolve each line's HSN/GST rate — see
+   * invoice.mapper.ts's doc comment for why that comes from the item master
+   * rather than the voucher itself. Each extraction job stays single-purpose
+   * (one job, one Tally call, per docs/architecture.md Phase 4); combining
+   * two completed jobs' results happens here, at export time, not by
+   * growing the job payload.
+   *
+   * The companion job (`groupsJobId`/`itemsJobId`) is auto-resolved to the
+   * most recent successful job of that type for the same org+company when
+   * not passed explicitly — a caller (the UI, a script) never needs to know
+   * or look up a second job's id to download; a manual override is still
+   * accepted for the rare case of wanting a specific older companion run.
+   * Caught live: requiring callers to paste a companion job id by hand was
+   * exactly the kind of manual-lookup UX this project's whole "extraction
+   * job" abstraction was supposed to make unnecessary.
+   *
+   * A single LEDGERS job can produce 3 different Zoho exports (Chart of
+   * Accounts, Customers, Vendors) depending which slice of the same ledger
+   * set the caller wants — `ledgerEntity` selects which; defaults to 'COA'
+   * for backward compatibility with callers that don't pass it. A VOUCHERS
+   * job's target (Invoice/Bill/Credit Note/Stock Journal) isn't a caller
+   * choice at all — it's fixed by which `voucherType` the job was fetched
+   * with (stored on the job's own `params`), resolved via
+   * zohoEntityForVoucherType.
    */
   async getExcelResult(
     orgId: string,
     id: string,
     groupsJobId?: string,
+    ledgerEntity: 'COA' | 'CUSTOMER' | 'VENDOR' = 'COA',
+    itemsJobId?: string,
   ): Promise<ExcelExportResult> {
     const job = await this.getStatus(orgId, id);
     this.assertSuccessful(job);
 
-    // Checked before touching Redis: a caller who forgot ?groupsJobId= gets a
-    // clear, immediate 400 rather than a misleading "result expired" if the
-    // job's result also happens to have fallen out of its TTL.
     if (job.type === 'LEDGERS' && !groupsJobId) {
-      throw new BadRequestException(
-        "LEDGERS Excel export requires a completed GROUPS job id via ?groupsJobId= (needed to classify each ledger's Account Type correctly).",
-      );
+      groupsJobId = await this.resolveLatestSuccessfulJobId(orgId, job.company, 'GROUPS');
+      if (!groupsJobId) {
+        throw new BadRequestException(
+          'LEDGERS Excel export needs a completed GROUPS extraction for the same company first ' +
+            `(none found for "${job.company ?? 'this company'}") — run one via POST ` +
+            '/extractions/fetch-master with masterType: GROUPS, or pass ?groupsJobId= explicitly.',
+        );
+      }
+    }
+    if (job.type === 'VOUCHERS' && !itemsJobId) {
+      itemsJobId = await this.resolveLatestSuccessfulJobId(orgId, job.company, 'STOCK_ITEMS');
+      if (!itemsJobId) {
+        throw new BadRequestException(
+          'VOUCHERS Excel export needs a completed STOCK_ITEMS extraction for the same company ' +
+            `first (none found for "${job.company ?? 'this company'}") — run one via POST ` +
+            '/extractions/fetch-master with masterType: STOCK_ITEMS, or pass ?itemsJobId= explicitly.',
+        );
+      }
     }
 
     const data = await this.loadResultData(id);
 
     if (job.type === 'STOCK_ITEMS') {
       const rows = new StockItemMapper().toItemRows(data as TallyStockItem[]);
-      const buffer = await this.excel.generate('Items', ITEM_COLUMNS, rows);
-      return { buffer, filename: `items-${id}.xlsx` };
+      return this.writeZohoExport('ITEM', rows, `items-${id}.xlsx`);
+    }
+
+    if (job.type === 'COST_CENTRES') {
+      const rows = new CostCentreMapper().toReportingTagRows(data as TallyCostCentre[]);
+      return this.writeZohoExport('COST_CENTRE', rows, `reporting-tags-${id}.xlsx`);
     }
 
     if (job.type === 'LEDGERS') {
@@ -248,14 +318,93 @@ export class ExtractionsService {
         throw new BadRequestException('groupsJobId must reference a completed GROUPS job.');
       }
       const groups = await this.loadResultData(groupsJobId!);
-
       const resolver = new GroupHierarchyResolver(groups as TallyGroup[]);
-      const rows = new LedgerMapper(resolver).toAccountRows(data as TallyLedger[]);
-      const buffer = await this.excel.generate('Chart of Accounts', ACCOUNT_COLUMNS, rows);
-      return { buffer, filename: `accounts-${id}.xlsx` };
+      const ledgers = data as TallyLedger[];
+
+      if (ledgerEntity === 'CUSTOMER') {
+        const rows = new CustomerMapper(resolver).toCustomerRows(ledgers);
+        return this.writeZohoExport('CUSTOMER', rows, `customers-${id}.xlsx`);
+      }
+      if (ledgerEntity === 'VENDOR') {
+        const rows = new VendorMapper(resolver).toVendorRows(ledgers);
+        return this.writeZohoExport('VENDOR', rows, `vendors-${id}.xlsx`);
+      }
+      const rows = new LedgerMapper(resolver).toAccountRows(ledgers);
+      return this.writeZohoExport('COA', rows, `accounts-${id}.xlsx`);
+    }
+
+    if (job.type === 'VOUCHERS') {
+      const params = job.params as Record<string, unknown> | null;
+      const voucherType = typeof params?.voucherType === 'string' ? params.voucherType : undefined;
+      const entityKey = zohoEntityForVoucherType(voucherType);
+      if (!entityKey) {
+        throw new BadRequestException(
+          `Excel export not supported for voucher type "${voucherType ?? 'unknown'}" ` +
+            '(no matching Zoho template — see zoho-entity.map.ts).',
+        );
+      }
+
+      const itemsJob = await this.getStatus(orgId, itemsJobId!);
+      this.assertSuccessful(itemsJob);
+      if (itemsJob.type !== 'STOCK_ITEMS') {
+        throw new BadRequestException('itemsJobId must reference a completed STOCK_ITEMS job.');
+      }
+      const items = await this.loadResultData(itemsJobId!);
+      const itemIndex = buildStockItemIndex(items as TallyStockItem[]);
+      const vouchers = data as TallyVoucher[];
+
+      if (entityKey === 'INVOICE') {
+        const rows = new InvoiceMapper(itemIndex).toInvoiceRows(vouchers);
+        return this.writeZohoExport('INVOICE', rows, `invoices-${id}.xlsx`);
+      }
+      if (entityKey === 'BILL') {
+        const rows = new BillMapper(itemIndex).toBillRows(vouchers);
+        return this.writeZohoExport('BILL', rows, `bills-${id}.xlsx`);
+      }
+      if (entityKey === 'CREDIT_NOTE') {
+        const rows = new CreditNoteMapper(itemIndex).toCreditNoteRows(vouchers);
+        return this.writeZohoExport('CREDIT_NOTE', rows, `credit-notes-${id}.xlsx`);
+      }
+      const rows = new StockJournalMapper(itemIndex).toStockJournalRows(vouchers);
+      return this.writeZohoExport('STOCK_JOURNAL', rows, `inventory-adjustments-${id}.xlsx`);
     }
 
     throw new BadRequestException(`Excel export not yet supported for ${job.type}.`);
+  }
+
+  /**
+   * The auto-resolution behind getExcelResult's companion-job lookup: the
+   * most recently *created* successful job of `type` for the same org+
+   * company — not the most recent by any other measure, since a caller
+   * downloading right after a fresh extraction almost always wants that
+   * fresh data, not an older run that happened to finish later (retries can
+   * reorder completion times). Returns undefined (not a throw) when there's
+   * no candidate — the caller decides how to respond to "not found."
+   */
+  private async resolveLatestSuccessfulJobId(
+    orgId: string,
+    company: string | null,
+    type: ExtractionType,
+  ): Promise<string | undefined> {
+    if (!company) return undefined;
+    const job = await this.prisma.extractionJob.findFirst({
+      where: { orgId, company, type, status: 'SUCCESS' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    return job?.id;
+  }
+
+  /** Writes mapped rows into the real Zoho template for `key` (see
+   *  zoho-entity.map.ts) and returns a ready-to-download buffer. */
+  private async writeZohoExport<T extends object>(
+    key: ZohoEntityKey,
+    rows: T[],
+    filename: string,
+  ): Promise<ExcelExportResult> {
+    const { sheetName } = ZOHO_ENTITIES[key];
+    const buffer = await this.excel.writeIntoTemplate(templatePathFor(key), sheetName, rows);
+    return { buffer, filename };
   }
 
   private assertSuccessful(job: ExtractionJob): void {

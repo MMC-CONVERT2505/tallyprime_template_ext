@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { RedisConfig } from '../config/configuration';
 import { ExcelModule } from '../excel/excel.module';
 import { GatewayModule } from '../gateway/gateway.module';
+import { ZohoTemplateValidatorService } from '../mapping/zoho-template-validator.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TallyModule } from '../tally/tally.module';
 import { EXTRACTION_QUEUE, EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS } from './extractions.constants';
@@ -49,6 +50,6 @@ import { ExtractionsService } from './extractions.service';
     TallyModule,
   ],
   controllers: [ExtractionsController],
-  providers: [ExtractionsService, ExtractionsProcessor],
+  providers: [ExtractionsService, ExtractionsProcessor, ZohoTemplateValidatorService],
 })
 export class ExtractionsModule {}

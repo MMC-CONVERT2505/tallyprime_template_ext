@@ -3,6 +3,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { TallyResponseException } from '../exceptions/tally.exceptions';
 import {
   TallyCompany,
+  TallyCostCentre,
   TallyGroup,
   TallyInventoryEntry,
   TallyLedger,
@@ -135,7 +136,42 @@ export class TallyResponseParser {
       // Tally always emits this as an XML attribute on <LEDGER>, empty for
       // ordinary ledgers — see TallyLedger.reservedName's doc comment.
       reservedName: readText(l?.['@_RESERVEDNAME']) || null,
+      // Best-effort field names — see TallyLedger's doc comment and
+      // EnvelopeBuilder.buildLedgersRequest's TODO. A tag Tally doesn't
+      // recognize simply isn't present in `l`, so readText/toArray already
+      // degrade to null/[] here with no extra handling needed.
+      gstin: readText(l?.GSTREGISTRATIONNUMBER),
+      panNumber: readText(l?.INCOMETAXNUMBER),
+      email: readText(l?.EMAIL),
+      phone: readText(l?.LEDGERPHONE),
+      mobile: readText(l?.LEDGERMOBILE),
+      billingAddress: this.readAddressList(l?.['ADDRESS.LIST']),
+      billingState: readText(l?.LEDSTATENAME),
+      billingCountry: readText(l?.COUNTRYNAME),
+      billingPincode: readText(l?.PINCODE),
+      bankName: readText(this.firstBankDetail(l)?.BANKNAME),
+      bankAccountNumber: readText(this.firstBankDetail(l)?.BANKACCOUNTNUMBER),
     }));
+  }
+
+  /** ADDRESS.LIST is a single wrapper tag whose ADDRESS child repeats one
+   *  entry per line — confirmed against fast-xml-parser's actual output
+   *  (`{ "ADDRESS.LIST": { "ADDRESS": ["line1", "line2"] } }`), unlike
+   *  BANKDETAILS.LIST below, which repeats as sibling tags. Joined with a
+   *  newline into the single billingAddress field callers actually want. */
+  private readAddressList(addressList: unknown): string | null {
+    const container = addressList as { ADDRESS?: unknown } | null | undefined;
+    const lines = toArray<unknown>(container?.ADDRESS)
+      .map((line) => readText(line))
+      .filter((line): line is string => line !== null);
+    return lines.length > 0 ? lines.join('\n') : null;
+  }
+
+  /** A ledger can have multiple bank accounts on file; the first is the best
+   *  single value this project's flat Vendor.xlsx row (one bank name/account
+   *  number column each) can represent. */
+  private firstBankDetail(ledger: any): any {
+    return toArray<any>(ledger?.['BANKDETAILS.LIST'])[0];
   }
 
   mapGroups(rawXml: string): TallyGroup[] {
@@ -147,6 +183,18 @@ export class TallyResponseParser {
       name: readText(g?.NAME) ?? readText(g?.['@_NAME']) ?? '',
       parent: readText(g?.PARENT),
       alterId: readInt(g?.ALTERID),
+    }));
+  }
+
+  mapCostCentres(rawXml: string): TallyCostCentre[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'COSTCENTRE');
+    return items.map((c) => ({
+      name: readText(c?.NAME) ?? readText(c?.['@_NAME']) ?? '',
+      parent: readText(c?.PARENT),
+      alterId: readInt(c?.ALTERID),
     }));
   }
 
@@ -165,6 +213,10 @@ export class TallyResponseParser {
       closingBalance: parseTallyAmount(readText(s?.CLOSINGBALANCE)),
       closingValue: parseTallyAmount(readText(s?.CLOSINGVALUE)),
       alterId: readInt(s?.ALTERID),
+      // Best-effort field names — see TallyStockItem's doc comment.
+      alias: readText(s?.ALIAS),
+      hsnCode: readText(s?.HSNCODE),
+      gstRate: parseTallyAmount(readText(s?.GSTRATE)),
     }));
   }
 
@@ -230,6 +282,8 @@ export class TallyResponseParser {
       alterId: readInt(v?.ALTERID),
       ledgerEntries,
       inventoryEntries,
+      partyGstin: readText(v?.PARTYGSTIN),
+      placeOfSupply: readText(v?.PLACEOFSUPPLY),
     };
   }
 

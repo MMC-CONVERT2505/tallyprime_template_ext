@@ -15,6 +15,7 @@ export const TUNNEL_ACTIONS = [
   'ledgers',
   'stockItems',
   'groups',
+  'costCentres',
   'vouchers',
   'raw',
 ] as const;

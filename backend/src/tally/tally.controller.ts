@@ -64,6 +64,12 @@ export class TallyController {
     return this.masters.getGroups(query.company);
   }
 
+  /** Cost Centre master list (Name, Parent, AlterID) — maps to Zoho Books' Reporting Tag. */
+  @Get('cost-centres')
+  costCentres(@Query() query: ExtractLedgersDto) {
+    return this.masters.getCostCentres(query.company);
+  }
+
   /** Vouchers for a date range, optionally filtered by voucher type. */
   @Get('vouchers')
   vouchers(@Query() query: ExtractVouchersDto) {

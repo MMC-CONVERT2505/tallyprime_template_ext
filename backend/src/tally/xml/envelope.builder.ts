@@ -159,6 +159,29 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>OpeningBalance</NATIVEMETHOD>
         <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>
         <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+        <!--
+          TODO verify against live Tally: field names below power
+          Customer.xlsx/Vendor.xlsx (GSTIN/PAN/contact/address/bank) and are
+          best-effort per Tally's documented XML schema, not yet confirmed
+          against a real Tally instance (none reachable during this
+          implementation pass — see TallyLedger's doc comment). A wrong name
+          just means Tally silently omits that tag from its response (comes
+          back null downstream), not a request failure, so this is safe to
+          ship now and correct in place once verified. Address/BankDetails
+          are TDL List fields, not simple scalars — requested as their dotted
+          list tag (matching this codebase's existing ALLLEDGERENTRIES.LIST-
+          style convention for nested lists), least certain of this batch.
+        -->
+        <NATIVEMETHOD>GSTREGISTRATIONNUMBER</NATIVEMETHOD>
+        <NATIVEMETHOD>INCOMETAXNUMBER</NATIVEMETHOD>
+        <NATIVEMETHOD>EMAIL</NATIVEMETHOD>
+        <NATIVEMETHOD>LEDGERPHONE</NATIVEMETHOD>
+        <NATIVEMETHOD>LEDGERMOBILE</NATIVEMETHOD>
+        <NATIVEMETHOD>ADDRESS.LIST</NATIVEMETHOD>
+        <NATIVEMETHOD>LEDSTATENAME</NATIVEMETHOD>
+        <NATIVEMETHOD>COUNTRYNAME</NATIVEMETHOD>
+        <NATIVEMETHOD>PINCODE</NATIVEMETHOD>
+        <NATIVEMETHOD>BANKDETAILS.LIST</NATIVEMETHOD>
         ${this.alterIdRangeFilterRef(alterIdRange)}
       </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(
@@ -230,6 +253,10 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>
         <NATIVEMETHOD>ClosingValue</NATIVEMETHOD>
         <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+        <!-- TODO verify against live Tally — see TallyStockItem's doc comment. -->
+        <NATIVEMETHOD>ALIAS</NATIVEMETHOD>
+        <NATIVEMETHOD>HSNCODE</NATIVEMETHOD>
+        <NATIVEMETHOD>GSTRATE</NATIVEMETHOD>
         ${this.alterIdRangeFilterRef(alterIdRange)}
       </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(
@@ -251,7 +278,31 @@ export class EnvelopeBuilder {
     return this.buildCollectionRequest('Stock Item Names', collection, company);
   }
 
-  /** Day Book vouchers for a date range, optionally filtered by voucher type. */
+  /**
+   * Cost Centre master export: Name, Parent, AlterID — same lean shape as
+   * buildGroupsRequest. Maps to Zoho Books' "Reporting Tag" import
+   * (Master and Invoice or Bill/Class.xlsx).
+   */
+  buildCostCentresRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Cost Centres" ISINITIALIZE="Yes">
+        <TYPE>CostCentre</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>Parent</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Cost Centres', collection, company);
+  }
+
+  /**
+   * Day Book vouchers for a date range, optionally filtered by voucher type.
+   * A report-export request (see buildReportRequest) — you don't pick fields
+   * here, Tally decides the shape, and a real GST-enabled voucher already
+   * includes PARTYGSTIN/PLACEOFSUPPLY (and much more) in its export XML,
+   * unrequested. TallyResponseParser.mapVoucher reads them straight off the
+   * parsed tree; if a live capture later shows either tag isn't actually
+   * present, that's a parser-side name fix, not a change to this method.
+   */
   buildVouchersRequest(
     company: string,
     fromDate: string,

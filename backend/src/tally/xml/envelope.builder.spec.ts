@@ -52,6 +52,14 @@ describe('EnvelopeBuilder', () => {
     expect(xml).toContain('<NATIVEMETHOD>Description</NATIVEMETHOD>');
   });
 
+  it('requests the GSTIN/PAN/contact/address/bank fields Customer.xlsx/Vendor.xlsx need', () => {
+    const xml = builder.buildLedgersRequest('ABC Ltd');
+    expect(xml).toContain('<NATIVEMETHOD>GSTREGISTRATIONNUMBER</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>INCOMETAXNUMBER</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>ADDRESS.LIST</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>BANKDETAILS.LIST</NATIVEMETHOD>');
+  });
+
   it('scopes ledger balances to a period via SVFROMDATE/SVTODATE when supplied', () => {
     const xml = builder.buildLedgersRequest('ABC Ltd', '20260401', '20260430');
     expect(xml).toContain('<SVFROMDATE>20260401</SVFROMDATE>');
@@ -64,10 +72,26 @@ describe('EnvelopeBuilder', () => {
     expect(xml).not.toContain('<SVTODATE>');
   });
 
+  it('requests the Alias/HSN/GSTRate fields Item.xlsx needs', () => {
+    const xml = builder.buildStockItemsRequest('ABC Ltd');
+    expect(xml).toContain('<NATIVEMETHOD>ALIAS</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>HSNCODE</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>GSTRATE</NATIVEMETHOD>');
+  });
+
   it('scopes stock item balances to a period via SVFROMDATE/SVTODATE when supplied', () => {
     const xml = builder.buildStockItemsRequest('ABC Ltd', '20260401', '20260430');
     expect(xml).toContain('<SVFROMDATE>20260401</SVFROMDATE>');
     expect(xml).toContain('<SVTODATE>20260430</SVTODATE>');
+  });
+
+  it('builds a lean cost centre collection request scoped to a company', () => {
+    const xml = builder.buildCostCentresRequest('ABC Ltd');
+    expect(xml).toContain('<TYPE>CostCentre</TYPE>');
+    expect(xml).toContain('<SVCURRENTCOMPANY>ABC Ltd</SVCURRENTCOMPANY>');
+    expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>Parent</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>AlterID</NATIVEMETHOD>');
   });
 
   it('builds a lean group collection request scoped to a company', () => {

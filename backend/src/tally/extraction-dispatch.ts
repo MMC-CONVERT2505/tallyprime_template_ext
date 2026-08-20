@@ -61,6 +61,8 @@ export function dispatchExtraction(
       );
     case 'groups':
       return masters.getGroups(payload.company as string | undefined);
+    case 'costCentres':
+      return masters.getCostCentres(payload.company as string | undefined);
     case 'vouchers':
       return transactions.getVouchers(
         payload as unknown as ExtractVouchersDto,

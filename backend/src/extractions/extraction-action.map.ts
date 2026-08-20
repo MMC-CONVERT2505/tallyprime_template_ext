@@ -8,6 +8,7 @@ export const EXTRACTABLE_TYPES = [
   ExtractionType.LEDGERS,
   ExtractionType.STOCK_ITEMS,
   ExtractionType.GROUPS,
+  ExtractionType.COST_CENTRES,
   ExtractionType.VOUCHERS,
   ExtractionType.RAW,
 ] as const;
@@ -22,6 +23,7 @@ export const MASTER_EXTRACTABLE_TYPES = [
   ExtractionType.LEDGERS,
   ExtractionType.STOCK_ITEMS,
   ExtractionType.GROUPS,
+  ExtractionType.COST_CENTRES,
 ] as const;
 
 export type MasterExtractableType = (typeof MASTER_EXTRACTABLE_TYPES)[number];
@@ -31,6 +33,7 @@ const TYPE_TO_ACTION: Record<ExtractableType, TunnelAction> = {
   [ExtractionType.LEDGERS]: 'ledgers',
   [ExtractionType.STOCK_ITEMS]: 'stockItems',
   [ExtractionType.GROUPS]: 'groups',
+  [ExtractionType.COST_CENTRES]: 'costCentres',
   [ExtractionType.VOUCHERS]: 'vouchers',
   [ExtractionType.RAW]: 'raw',
 };

@@ -33,6 +33,29 @@ export interface TallyLedger {
    * which excludes these from period-scoped batches entirely.
    */
   reservedName: string | null;
+  /**
+   * Fields below power Customer.xlsx/Vendor.xlsx export (Sundry Debtors/
+   * Creditors ledgers) and a fuller COA export — Tally doesn't expose these
+   * on the cheap Name+AlterID pass, only on the full Lean Ledgers collection.
+   * TDL field names (NATIVEMETHOD tags in EnvelopeBuilder.buildLedgersRequest)
+   * are best-effort based on Tally's documented schema, NOT yet verified
+   * against a live Tally instance — see that method's doc comment. A wrong
+   * tag name just means Tally omits it (comes back null here), not a parse
+   * error, so this is safe to ship and correct later.
+   */
+  gstin: string | null;
+  panNumber: string | null;
+  email: string | null;
+  phone: string | null;
+  mobile: string | null;
+  /** Mailing address lines, joined with '\n' — Tally reports this as a
+   *  multi-line list, not a single field. */
+  billingAddress: string | null;
+  billingState: string | null;
+  billingCountry: string | null;
+  billingPincode: string | null;
+  bankName: string | null;
+  bankAccountNumber: string | null;
 }
 
 /** A Group is Tally's account-hierarchy node — never a Zoho entity on its own,
@@ -40,6 +63,14 @@ export interface TallyLedger {
  *  sub-group (e.g. "Employee", "Reimbursement Payable") ultimately rolls up
  *  to. See src/mapping/group-hierarchy.resolver.ts. */
 export interface TallyGroup {
+  name: string;
+  parent: string | null;
+  alterId: number | null;
+}
+
+/** A Cost Centre is Tally's project/department/branch-style allocation tag —
+ *  maps to Zoho Books' "Reporting Tag" (Master and Invoice or Bill/Class.xlsx). */
+export interface TallyCostCentre {
   name: string;
   parent: string | null;
   alterId: number | null;
@@ -69,6 +100,20 @@ export interface TallyStockItem {
   closingBalance: number | null;
   closingValue: number | null;
   alterId: number | null;
+  /** Alternate/short name, maps to Zoho Item.xlsx's "Alias Name" column. */
+  alias: string | null;
+  /**
+   * HSN/GST fields powering Item.xlsx's tax columns. TDL field names (see
+   * EnvelopeBuilder.buildStockItemsRequest) are best-effort, not yet
+   * verified against a live Tally instance — same caveat as TallyLedger's
+   * enrichment fields. `gstRate` is a single combined percentage (e.g. 18);
+   * GST law guarantees the inter-state (IGST) rate equals the intra-state
+   * (CGST+SGST) rate for the same HSN, so one field covers both — confirmed
+   * against the real Item.xlsx template's own sample data, which pairs e.g.
+   * "GST18"/18/Group with "IGST18"/18/Group for the same row.
+   */
+  hsnCode: string | null;
+  gstRate: number | null;
 }
 
 export interface TallyInventoryEntry {
@@ -88,6 +133,16 @@ export interface TallyVoucher {
   alterId: number | null;
   ledgerEntries: TallyLedgerEntry[];
   inventoryEntries: TallyInventoryEntry[];
+  /**
+   * Power Invoice.xlsx/Bill.xlsx/Credit Note.xlsx's GST columns. Both are
+   * flat scalar fields on the voucher (unlike the per-line GST detail this
+   * project deliberately avoids parsing — see invoice.mapper.ts's doc
+   * comment), so higher confidence than TallyLedger/TallyStockItem's
+   * enrichment fields, but still unverified against a live Tally instance —
+   * see EnvelopeBuilder.buildVouchersRequest's doc comment.
+   */
+  partyGstin: string | null;
+  placeOfSupply: string | null;
 }
 
 /** Envelope-level metadata Tally returns alongside data (line/error counts). */

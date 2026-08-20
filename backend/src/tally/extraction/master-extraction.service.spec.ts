@@ -166,6 +166,29 @@ describe('MasterExtractionService', () => {
     });
   });
 
+  describe('getCostCentres', () => {
+    it('resolves the company and returns the mapped cost centres', async () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><COSTCENTRE><NAME>Mumbai Branch</NAME><PARENT>Primary Cost Centre</PARENT><ALTERID>7</ALTERID></COSTCENTRE></COLLECTION></DATA></BODY></ENVELOPE>';
+      const { service } = makeService({ connectorPost: jest.fn().mockResolvedValue(xml) });
+
+      const result = await service.getCostCentres('ABC Ltd');
+
+      expect(result).toEqual([
+        { name: 'Mumbai Branch', parent: 'Primary Cost Centre', alterId: 7 },
+      ]);
+    });
+
+    it('falls back to the configured default company when none is supplied', async () => {
+      const connectorPost = jest.fn().mockResolvedValue('<ENVELOPE></ENVELOPE>');
+      const { service } = makeService({ connectorPost, defaultCompany: 'Default Co' });
+
+      await service.getCostCentres();
+
+      expect(connectorPost).toHaveBeenCalledWith(expect.stringContaining('Default Co'));
+    });
+  });
+
   describe('getCompanies', () => {
     it('caches the result and does not call the connector again on a cache hit', async () => {
       const cached = [{ name: 'Cached Co' }];
@@ -462,20 +485,14 @@ describe('MasterExtractionService', () => {
       const result = await service.getLedgers('ABC Ltd', '20260401', '20260430');
 
       expect(buildLedgersRequest).toHaveBeenCalledTimes(2);
-      expect(buildLedgersRequest).toHaveBeenNthCalledWith(
-        1,
-        'ABC Ltd',
-        '20260401',
-        '20260430',
-        { from: 1, to: 2 },
-      );
-      expect(buildLedgersRequest).toHaveBeenNthCalledWith(
-        2,
-        'ABC Ltd',
-        '20260401',
-        '20260430',
-        { from: 3, to: 3 },
-      );
+      expect(buildLedgersRequest).toHaveBeenNthCalledWith(1, 'ABC Ltd', '20260401', '20260430', {
+        from: 1,
+        to: 2,
+      });
+      expect(buildLedgersRequest).toHaveBeenNthCalledWith(2, 'ABC Ltd', '20260401', '20260430', {
+        from: 3,
+        to: 3,
+      });
       expect(result.map((l) => l.name)).toEqual(['A', 'B', 'C']);
     });
 
@@ -522,10 +539,16 @@ describe('MasterExtractionService', () => {
       const connectorPost = jest
         .fn()
         .mockResolvedValueOnce(
-          collectionXml('LEDGER', [entry('Profit & Loss A/c', 1, 'Profit & Loss A/c'), entry('A', 2)]),
+          collectionXml('LEDGER', [
+            entry('Profit & Loss A/c', 1, 'Profit & Loss A/c'),
+            entry('A', 2),
+          ]),
         ) // names+AlterID pass
         .mockResolvedValueOnce(
-          collectionXml('LEDGER', [entry('Profit & Loss A/c', 1, 'Profit & Loss A/c'), entry('A', 2)]),
+          collectionXml('LEDGER', [
+            entry('Profit & Loss A/c', 1, 'Profit & Loss A/c'),
+            entry('A', 2),
+          ]),
         ); // plain unfiltered fetch — reserved ledger included, same as any other
       const { service, buildLedgersRequest } = makeService({ connectorPost });
 
@@ -612,20 +635,14 @@ describe('MasterExtractionService', () => {
       const result = await service.getStockItems('ABC Ltd', '20260401', '20260430');
 
       expect(buildStockItemsRequest).toHaveBeenCalledTimes(2);
-      expect(buildStockItemsRequest).toHaveBeenNthCalledWith(
-        1,
-        'ABC Ltd',
-        '20260401',
-        '20260430',
-        { from: 1, to: 2 },
-      );
-      expect(buildStockItemsRequest).toHaveBeenNthCalledWith(
-        2,
-        'ABC Ltd',
-        '20260401',
-        '20260430',
-        { from: 3, to: 3 },
-      );
+      expect(buildStockItemsRequest).toHaveBeenNthCalledWith(1, 'ABC Ltd', '20260401', '20260430', {
+        from: 1,
+        to: 2,
+      });
+      expect(buildStockItemsRequest).toHaveBeenNthCalledWith(2, 'ABC Ltd', '20260401', '20260430', {
+        from: 3,
+        to: 3,
+      });
       expect(result.map((s) => s.name)).toEqual(['A', 'B', 'C']);
     });
   });
