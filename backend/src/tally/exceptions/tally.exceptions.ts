@@ -51,6 +51,29 @@ export class TallyTimeoutException extends TallyException {
   }
 }
 
+/**
+ * Fails fast, before even attempting the network call, once enough recent
+ * requests have already timed out/failed that Tally is very likely
+ * completely wedged — not just one flaky call. See TallyHttpClient's
+ * circuit breaker. Without this, every retry (both TallyHttpClient's own and
+ * the outer BullMQ job-level retry) independently rediscovers the same hang
+ * by waiting out a full TALLY_TIMEOUT_MS, turning one stuck Tally into
+ * minutes of serial 60s+ waits before anything finally reports failure.
+ */
+export class TallyCircuitOpenException extends TallyException {
+  constructor(baseUrl: string, recentFailures: number, retryAfterMs: number) {
+    super(
+      `Tally at ${baseUrl} appears unresponsive (${recentFailures} consecutive requests failed) ` +
+        '— not retrying yet.',
+      HttpStatus.SERVICE_UNAVAILABLE,
+      'Tally is very likely wedged, not just slow: check the TallyPrime window for a blocking ' +
+        'dialog (a security/password prompt, license reminder, unsaved report, "Quit?" ' +
+        'confirmation) and dismiss it, or restart TallyPrime if nothing is visible. Requests will ' +
+        `resume automatically in about ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s.`,
+    );
+  }
+}
+
 /** Reached Tally, but the HTTP layer returned a non-2xx status. */
 export class TallyHttpException extends TallyException {
   constructor(baseUrl: string, statusCode: number, body?: string) {

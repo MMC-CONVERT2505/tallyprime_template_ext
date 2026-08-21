@@ -7,6 +7,7 @@ import { firstValueFrom } from 'rxjs';
 import { TallyConfig } from '../config/configuration';
 import { TallyConnector, TallyPostOptions } from './tally-connector.interface';
 import {
+  TallyCircuitOpenException,
   TallyHttpException,
   TallyTimeoutException,
   TallyUnreachableException,
@@ -45,6 +46,19 @@ export class TallyHttpClient implements TallyConnector {
    */
   private queue: Promise<unknown> = Promise.resolve();
 
+  /**
+   * Circuit breaker state — see TallyCircuitOpenException's doc comment for
+   * the full rationale. `consecutiveFailures` counts LOGICAL requests (each
+   * already past its own retries within `postWithRetry`), not individual
+   * HTTP attempts, so a single call configured with `retries: 0` (batch
+   * fetches) still only counts once toward the threshold. Reset to 0 on any
+   * success. Plain instance fields are safe here with no locking: every
+   * request already funnels through the single `queue` above, so exactly one
+   * of these ever runs at a time.
+   */
+  private consecutiveFailures = 0;
+  private circuitOpenUntil = 0;
+
   constructor(
     private readonly http: HttpService,
     private readonly config: ConfigService,
@@ -60,13 +74,42 @@ export class TallyHttpClient implements TallyConnector {
    * failures (timeout/unreachable) with exponential backoff — NOT a non-2xx
    * response from Tally itself (TallyHttpException), since that's a
    * definitive answer, not a dropped connection, and retrying it wouldn't
-   * change the outcome.
-   * @throws TallyUnreachableException | TallyTimeoutException | TallyHttpException
+   * change the outcome. Once enough consecutive requests have failed that
+   * hint transient bad luck instead reads as "Tally is wedged," further
+   * calls fail immediately (TallyCircuitOpenException) until the open window
+   * elapses — see TallyConfig.circuitBreakerThreshold.
+   * @throws TallyCircuitOpenException | TallyUnreachableException | TallyTimeoutException | TallyHttpException
    */
   post(xml: string, opts?: TallyPostOptions): Promise<string> {
-    const run = this.queue.then(() => this.postWithRetry(xml, opts));
+    const run = this.queue.then(() => this.postWithCircuitBreaker(xml, opts));
     this.queue = run.catch(() => undefined);
     return run;
+  }
+
+  private async postWithCircuitBreaker(xml: string, opts?: TallyPostOptions): Promise<string> {
+    const remainingMs = this.circuitOpenUntil - Date.now();
+    if (remainingMs > 0) {
+      throw new TallyCircuitOpenException(this.tally.baseUrl, this.consecutiveFailures, remainingMs);
+    }
+
+    try {
+      const result = await this.postWithRetry(xml, opts);
+      this.consecutiveFailures = 0;
+      this.circuitOpenUntil = 0;
+      return result;
+    } catch (err) {
+      if (err instanceof TallyTimeoutException || err instanceof TallyUnreachableException) {
+        this.consecutiveFailures++;
+        if (this.consecutiveFailures >= this.tally.circuitBreakerThreshold) {
+          this.circuitOpenUntil = Date.now() + this.tally.circuitOpenMs;
+          this.logger.warn(
+            `Tally circuit opened after ${this.consecutiveFailures} consecutive failures — ` +
+              `failing fast for the next ${this.tally.circuitOpenMs}ms instead of retrying.`,
+          );
+        }
+      }
+      throw err;
+    }
   }
 
   private async postWithRetry(xml: string, opts?: TallyPostOptions): Promise<string> {

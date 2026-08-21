@@ -58,11 +58,21 @@ async function request<T>(
   return parsed as T;
 }
 
+/**
+ * The backend's error envelope (AllExceptionsFilter) attaches an actionable
+ * `hint` to every Tally-originated failure — e.g. "check the TallyPrime
+ * window for a blocking dialog" — separate from `message`. Dropping it here
+ * meant every one of those hints was computed server-side and then silently
+ * discarded before ever reaching the user; the error banner showed only the
+ * bare "Tally at ... did not respond" with no indication of what to actually
+ * do about it.
+ */
 function describeError(status: number, body: unknown): string {
-  const message = (body as { message?: string | string[] } | null)?.message;
-  if (Array.isArray(message)) return message.join('; ');
-  if (typeof message === 'string') return message;
-  return `HTTP ${status}`;
+  const parsed = body as { message?: string | string[]; hint?: string } | null;
+  const messagePart = Array.isArray(parsed?.message)
+    ? parsed.message.join('; ')
+    : (parsed?.message ?? `HTTP ${status}`);
+  return parsed?.hint ? `${messagePart} — ${parsed.hint}` : messagePart;
 }
 
 // ── Types (mirroring the backend DTOs/response shapes) ──────────────────────

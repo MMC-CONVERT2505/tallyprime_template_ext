@@ -90,6 +90,27 @@ export interface TallyConfig {
    * the specific Tally instance in question.
    */
   periodBatchSize: number;
+  /**
+   * Circuit breaker for a genuinely wedged Tally (not just one flaky call) —
+   * see TallyHttpClient. After this many CONSECUTIVE logical requests (each
+   * already past its own retries) come back as a transient failure (timeout/
+   * unreachable), every further request fails immediately with a clear,
+   * actionable message instead of independently waiting out a full
+   * TALLY_TIMEOUT_MS to rediscover the same hang. Caught live 2026-08-21: a
+   * STOCK_ITEMS batch timeout was followed by 3+ more independent ~60s/8s
+   * timeouts before the job finally gave up, while a raw HTTP probe straight
+   * to Tally's port (bypassing this app entirely) confirmed it was accepting
+   * the TCP connection instantly but never answering ANY request — Tally's
+   * own engine was wedged (most likely a blocking dialog: a security/
+   * password prompt, license reminder, or unsaved report on screen), which
+   * no amount of client-side retrying can fix. 2 is deliberately not 1: the
+   * existing "one bad request does not jam the queue" guarantee (see
+   * tally-http.client.spec.ts) must still hold for a single flaky call.
+   */
+  circuitBreakerThreshold: number;
+  /** How long the circuit stays open (failing fast) after tripping, before
+   *  the next request is allowed through normally to test recovery. */
+  circuitOpenMs: number;
 }
 
 export interface DatabaseConfig {
@@ -252,6 +273,8 @@ export const buildTallyConfig = (): TallyConfig => {
     chunkDelayMs: toInt(process.env.TALLY_CHUNK_DELAY_MS, 2000),
     masterBatchSize: toInt(process.env.TALLY_MASTER_BATCH_SIZE, 300),
     periodBatchSize: toInt(process.env.TALLY_PERIOD_BATCH_SIZE, 4),
+    circuitBreakerThreshold: toInt(process.env.TALLY_CIRCUIT_BREAKER_THRESHOLD, 2),
+    circuitOpenMs: toInt(process.env.TALLY_CIRCUIT_OPEN_MS, 15000),
   };
 };
 

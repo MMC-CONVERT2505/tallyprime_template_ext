@@ -50,6 +50,9 @@ export const envValidationSchema = Joi.object({
   // "Profit & Loss A/c", are excluded from period-scoped batches entirely
   // rather than folded into this number).
   TALLY_PERIOD_BATCH_SIZE: Joi.number().integer().min(1).max(500).default(4),
+  // Circuit breaker for a genuinely wedged Tally — see TallyConfig.circuitBreakerThreshold.
+  TALLY_CIRCUIT_BREAKER_THRESHOLD: Joi.number().integer().min(1).max(20).default(2),
+  TALLY_CIRCUIT_OPEN_MS: Joi.number().integer().min(1000).max(300000).default(15000),
 
   // Postgres (Prisma)
   DB_HOST: Joi.string().default('127.0.0.1'),

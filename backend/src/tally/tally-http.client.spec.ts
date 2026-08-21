@@ -1,13 +1,21 @@
 import { from, of, throwError } from 'rxjs';
 import { TallyHttpClient } from './tally-http.client';
 import {
+  TallyCircuitOpenException,
   TallyHttpException,
   TallyTimeoutException,
   TallyUnreachableException,
 } from './exceptions/tally.exceptions';
 
 describe('TallyHttpClient — retry with backoff', () => {
-  function makeClient(tallyOverrides: Partial<{ maxRetries: number; retryBaseMs: number }> = {}) {
+  function makeClient(
+    tallyOverrides: Partial<{
+      maxRetries: number;
+      retryBaseMs: number;
+      circuitBreakerThreshold: number;
+      circuitOpenMs: number;
+    }> = {},
+  ) {
     const httpPost = jest.fn();
     const http = { post: httpPost } as any;
     const config = {
@@ -17,6 +25,8 @@ describe('TallyHttpClient — retry with backoff', () => {
         responseEncoding: 'auto',
         maxRetries: 2,
         retryBaseMs: 1, // keep tests fast — backoff shape is covered separately below
+        circuitBreakerThreshold: 2,
+        circuitOpenMs: 15000,
         ...tallyOverrides,
       }),
     } as any;
@@ -219,6 +229,96 @@ describe('TallyHttpClient — retry with backoff', () => {
 
       await expect(client.post('<ENVELOPE/>', { signal: controller.signal })).rejects.toThrow();
       expect(httpPost).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('circuit breaker (a genuinely wedged Tally, not just one flaky call)', () => {
+    const connectionRefused = () => Object.assign(new Error('refused'), { code: 'ECONNREFUSED' });
+
+    it('opens after `circuitBreakerThreshold` consecutive transient failures, failing the next call immediately without touching the network', async () => {
+      const { client, httpPost } = makeClient({
+        maxRetries: 0,
+        circuitBreakerThreshold: 2,
+        circuitOpenMs: 15000,
+      });
+      httpPost.mockReturnValue(throwError(connectionRefused));
+
+      await expect(client.post('<ENVELOPE/>1')).rejects.toThrow(TallyUnreachableException);
+      await expect(client.post('<ENVELOPE/>2')).rejects.toThrow(TallyUnreachableException);
+      expect(httpPost).toHaveBeenCalledTimes(2); // circuit not open yet — both attempted
+
+      await expect(client.post('<ENVELOPE/>3')).rejects.toThrow(TallyCircuitOpenException);
+      expect(httpPost).toHaveBeenCalledTimes(2); // third call never touched the network
+    });
+
+    it('resets the failure count and keeps the circuit closed on any success in between', async () => {
+      const { client, httpPost } = makeClient({ maxRetries: 0, circuitBreakerThreshold: 2 });
+      httpPost
+        .mockReturnValueOnce(throwError(connectionRefused))
+        .mockReturnValueOnce(
+          of({ status: 200, headers: {}, data: Buffer.from('<ENVELOPE></ENVELOPE>') }),
+        )
+        .mockReturnValueOnce(throwError(connectionRefused));
+
+      await expect(client.post('<ENVELOPE/>1')).rejects.toThrow(TallyUnreachableException);
+      await expect(client.post('<ENVELOPE/>2')).resolves.toBe('<ENVELOPE></ENVELOPE>');
+      // A single failure after the reset must not trip the circuit — it takes
+      // `circuitBreakerThreshold` CONSECUTIVE failures, not 2 failures total.
+      await expect(client.post('<ENVELOPE/>3')).rejects.toThrow(TallyUnreachableException);
+      expect(httpPost).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not count a definitive non-2xx response (TallyHttpException) toward the circuit — only transient failures', async () => {
+      const { client, httpPost } = makeClient({ maxRetries: 0, circuitBreakerThreshold: 2 });
+      httpPost.mockReturnValue(of({ status: 500, headers: {}, data: Buffer.from('err') }));
+
+      await expect(client.post('<ENVELOPE/>1')).rejects.toThrow(TallyHttpException);
+      await expect(client.post('<ENVELOPE/>2')).rejects.toThrow(TallyHttpException);
+      await expect(client.post('<ENVELOPE/>3')).rejects.toThrow(TallyHttpException);
+      expect(httpPost).toHaveBeenCalledTimes(3); // never short-circuited
+    });
+
+    it('allows a request through again, and closes the circuit on its success, once circuitOpenMs elapses', async () => {
+      const { client, httpPost } = makeClient({
+        maxRetries: 0,
+        circuitBreakerThreshold: 2,
+        circuitOpenMs: 20, // short enough to actually wait out in a unit test
+      });
+      httpPost
+        .mockReturnValueOnce(throwError(connectionRefused))
+        .mockReturnValueOnce(throwError(connectionRefused))
+        .mockReturnValueOnce(
+          of({ status: 200, headers: {}, data: Buffer.from('<ENVELOPE></ENVELOPE>') }),
+        );
+
+      await expect(client.post('<ENVELOPE/>1')).rejects.toThrow(TallyUnreachableException);
+      await expect(client.post('<ENVELOPE/>2')).rejects.toThrow(TallyUnreachableException);
+      await expect(client.post('<ENVELOPE/>3')).rejects.toThrow(TallyCircuitOpenException);
+      expect(httpPost).toHaveBeenCalledTimes(2);
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      await expect(client.post('<ENVELOPE/>4')).resolves.toBe('<ENVELOPE></ENVELOPE>');
+      expect(httpPost).toHaveBeenCalledTimes(3);
+    });
+
+    it("re-opens the circuit for another full window if the recovery attempt also fails (doesn't just try once and give up forever)", async () => {
+      const { client, httpPost } = makeClient({
+        maxRetries: 0,
+        circuitBreakerThreshold: 2,
+        circuitOpenMs: 20,
+      });
+      httpPost.mockReturnValue(throwError(connectionRefused));
+
+      await expect(client.post('<ENVELOPE/>1')).rejects.toThrow(TallyUnreachableException);
+      await expect(client.post('<ENVELOPE/>2')).rejects.toThrow(TallyUnreachableException);
+      await expect(client.post('<ENVELOPE/>3')).rejects.toThrow(TallyCircuitOpenException);
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      // The recovery attempt itself fails — circuit must re-open, not stay closed.
+      await expect(client.post('<ENVELOPE/>4')).rejects.toThrow(TallyUnreachableException);
+      await expect(client.post('<ENVELOPE/>5')).rejects.toThrow(TallyCircuitOpenException);
     });
   });
 });
