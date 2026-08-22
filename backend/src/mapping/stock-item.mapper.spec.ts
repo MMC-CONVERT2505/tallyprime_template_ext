@@ -28,6 +28,7 @@ describe('StockItemMapper', () => {
         baseUnit: 'Nos',
         openingBalance: 100,
         openingValue: 5000,
+        closingBalance: 80,
       }),
     ]);
 
@@ -39,6 +40,7 @@ describe('StockItemMapper', () => {
       'Usage unit': 'Nos',
       'Opening Stock': 100,
       'Opening Stock Value': 5000,
+      'Stock On Hand': 80,
       'Item Type': 'goods',
       Status: 'Active',
       'Intra State Tax Name': '',
@@ -48,6 +50,11 @@ describe('StockItemMapper', () => {
       'Inter State Tax Rate': '',
       'Inter State Tax Type': '',
     });
+  });
+
+  it('maps closingBalance to Stock On Hand — a gap-fill regression test: this field was already fetched from Tally but never written to the template', () => {
+    const [row] = mapper.toItemRows([item({ name: 'Widget B', closingBalance: 42 })]);
+    expect(row['Stock On Hand']).toBe(42);
   });
 
   it('leaves fields blank rather than throwing when everything is null (a brand-new item)', () => {
@@ -60,6 +67,7 @@ describe('StockItemMapper', () => {
       'Usage unit': '',
       'Opening Stock': '',
       'Opening Stock Value': '',
+      'Stock On Hand': '',
       'Item Type': 'goods',
       Status: 'Active',
       'Intra State Tax Name': '',

@@ -92,6 +92,89 @@ describe('TransactionExtractionService', () => {
     expect(result[0]).toMatchObject({ voucherNumber: '1' });
   });
 
+  describe('filtering by voucher type', () => {
+    // Regression test for a live incident (2026-08-22): a bulk export
+    // requested Sales/Purchase/Credit Note/Stock Journal vouchers as 4
+    // separate calls, and all 4 came back with the exact same single
+    // Journal-type voucher — Tally's Day Book export ignores the
+    // VOUCHERTYPENAME static variable entirely. filterByVoucherType is the
+    // fix: it discards anything Tally returns that doesn't actually match
+    // the requested type, regardless of whether the request-side hint worked.
+    function mixedTypesXml(): string {
+      return (
+        '<ENVELOPE><BODY><DATA>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Journal"><DATE>20260401</DATE>' +
+        '<VOUCHERNUMBER>J-1</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Sales"><DATE>20260401</DATE>' +
+        '<VOUCHERNUMBER>S-1</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE>' +
+        '</DATA></BODY></ENVELOPE>'
+      );
+    }
+
+    it('discards a voucher type Tally returns anyway, even though the request asked to filter it out', async () => {
+      const { service } = makeService({
+        connectorPost: jest.fn().mockResolvedValue(mixedTypesXml()),
+      });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20260401',
+        to: '20260430',
+        voucherType: 'Sales',
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ voucherNumber: 'S-1', voucherType: 'Sales' });
+    });
+
+    it('is case/whitespace-insensitive when matching the requested type', async () => {
+      const { service } = makeService({
+        connectorPost: jest.fn().mockResolvedValue(mixedTypesXml()),
+      });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20260401',
+        to: '20260430',
+        voucherType: '  sales  ',
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ voucherNumber: 'S-1' });
+    });
+
+    it('passes everything through unfiltered when no voucherType was requested', async () => {
+      const { service } = makeService({
+        connectorPost: jest.fn().mockResolvedValue(mixedTypesXml()),
+      });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20260401',
+        to: '20260430',
+      });
+
+      expect(result).toHaveLength(2);
+    });
+
+    it('also filters the chunked path, after dedup', async () => {
+      const { service } = makeService({
+        connectorPost: jest.fn().mockResolvedValue(mixedTypesXml()),
+        voucherChunkDays: 7,
+      });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20260401',
+        to: '20260415', // 3 chunks
+        voucherType: 'Sales',
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ voucherNumber: 'S-1' });
+    });
+  });
+
   describe('chunking a wide date range', () => {
     function voucherXml(voucherNumber: string): string {
       return (

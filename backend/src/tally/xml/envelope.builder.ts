@@ -160,19 +160,29 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>
         <NATIVEMETHOD>AlterID</NATIVEMETHOD>
         <!--
-          TODO verify against live Tally: field names below power
-          Customer.xlsx/Vendor.xlsx (GSTIN/PAN/contact/address/bank) and are
-          best-effort per Tally's documented XML schema, not yet confirmed
-          against a real Tally instance (none reachable during this
-          implementation pass — see TallyLedger's doc comment). A wrong name
-          just means Tally silently omits that tag from its response (comes
-          back null downstream), not a request failure, so this is safe to
-          ship now and correct in place once verified. Address/BankDetails
-          are TDL List fields, not simple scalars — requested as their dotted
-          list tag (matching this codebase's existing ALLLEDGERENTRIES.LIST-
-          style convention for nested lists), least certain of this batch.
+          Fields below power Customer.xlsx/Vendor.xlsx (GSTIN/PAN/contact/
+          address/bank) — VERIFIED live 2026-08-22 against a real Tally
+          instance (COREDGE.IO INDIA PRIVATE LIMITED), not guessed. Two
+          names were wrong in an earlier pass and corrected here:
+            - GSTIN is NOT a flat field (GSTREGISTRATIONNUMBER never
+              existed) — it lives inside LEDGSTREGDETAILS.LIST, a REPEATING
+              list of a party's GST registrations over time (state changes,
+              re-registrations), each entry optionally carrying GSTIN/
+              PLACEOFSUPPLY/APPLICABLEFROM/GSTREGISTRATIONTYPE. A ledger can
+              have entries with no GSTIN at all (pre-GST history) mixed with
+              ones that do — response.parser.ts picks the last entry that
+              actually has one.
+            - BankDetails is a flat scalar (just the account number, e.g.
+              "50200054487488"), not a LIST field — and Tally has no
+              separate "bank name" field at all; Vendor.xlsx's Bank Name
+              column has no Tally source and stays blank.
+          EMAIL/LEDGERPHONE/LEDGERMOBILE/ADDRESS.LIST/LEDSTATENAME/
+          COUNTRYNAME/PINCODE/INCOMETAXNUMBER were all confirmed correct as
+          originally written — real values observed for ledgers that had
+          them filled in Tally (most don't; that's sparse real-world data,
+          not a wrong field name).
         -->
-        <NATIVEMETHOD>GSTREGISTRATIONNUMBER</NATIVEMETHOD>
+        <NATIVEMETHOD>LEDGSTREGDETAILS.LIST</NATIVEMETHOD>
         <NATIVEMETHOD>INCOMETAXNUMBER</NATIVEMETHOD>
         <NATIVEMETHOD>EMAIL</NATIVEMETHOD>
         <NATIVEMETHOD>LEDGERPHONE</NATIVEMETHOD>
@@ -181,7 +191,7 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>LEDSTATENAME</NATIVEMETHOD>
         <NATIVEMETHOD>COUNTRYNAME</NATIVEMETHOD>
         <NATIVEMETHOD>PINCODE</NATIVEMETHOD>
-        <NATIVEMETHOD>BANKDETAILS.LIST</NATIVEMETHOD>
+        <NATIVEMETHOD>BANKDETAILS</NATIVEMETHOD>
         ${this.alterIdRangeFilterRef(alterIdRange)}
       </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(

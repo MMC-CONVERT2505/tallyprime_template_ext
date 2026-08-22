@@ -54,10 +54,14 @@ describe('EnvelopeBuilder', () => {
 
   it('requests the GSTIN/PAN/contact/address/bank fields Customer.xlsx/Vendor.xlsx need', () => {
     const xml = builder.buildLedgersRequest('ABC Ltd');
-    expect(xml).toContain('<NATIVEMETHOD>GSTREGISTRATIONNUMBER</NATIVEMETHOD>');
+    // Field names verified live 2026-08-22 against a real Tally instance —
+    // see this method's doc comment for the corrections made from an
+    // earlier, unverified pass (GSTIN is NOT a flat field; BankDetails is
+    // NOT a `.LIST`).
+    expect(xml).toContain('<NATIVEMETHOD>LEDGSTREGDETAILS.LIST</NATIVEMETHOD>');
     expect(xml).toContain('<NATIVEMETHOD>INCOMETAXNUMBER</NATIVEMETHOD>');
     expect(xml).toContain('<NATIVEMETHOD>ADDRESS.LIST</NATIVEMETHOD>');
-    expect(xml).toContain('<NATIVEMETHOD>BANKDETAILS.LIST</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>BANKDETAILS</NATIVEMETHOD>');
   });
 
   it('scopes ledger balances to a period via SVFROMDATE/SVTODATE when supplied', () => {

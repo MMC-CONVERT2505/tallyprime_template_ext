@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ExtractionJob } from '@prisma/client';
 import {
   TallyCompany,
@@ -79,6 +79,20 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     );
   }
 
+  /**
+   * Period-scoped (fromDate/toDate) requests are REJECTED by default — see
+   * TallyConfig.stockItemsPeriodScopingEnabled's doc comment. Confirmed live
+   * 2026-08-22 against a real Tally instance: unlike LEDGERS (safe once
+   * batched to periodBatchSize=4 and reserved ledgers excluded), a
+   * period-scoped Stock Item value request wedged Tally's engine solid even
+   * at a batch size of ONE item — batch size was never the actual variable;
+   * something about computing a period-scoped OpeningValue/ClosingValue for
+   * this company's stock items (several of which are service/subscription
+   * line items, not physical inventory — "Not Applicable" units) is fatal
+   * regardless. Rather than continuing to offer a "smaller batch" mitigation
+   * that's now proven not to work, this fails fast with a clear reason
+   * instead of wedging Tally again on every attempt.
+   */
   async getStockItems(
     company?: string,
     fromDate?: string,
@@ -87,7 +101,19 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     externalJobId?: string,
   ): Promise<TallyStockItem[]> {
     const resolved = this.resolveCompany(company);
-    if (fromDate && toDate) this.assertDateRange(fromDate, toDate);
+    if (fromDate && toDate) {
+      this.assertDateRange(fromDate, toDate);
+      if (!this.tally.stockItemsPeriodScopingEnabled) {
+        throw new BadRequestException(
+          'Period-scoped Stock Item fetches (fromDate/toDate) are disabled — confirmed live to ' +
+            "wedge Tally's engine regardless of batch size, unlike Ledgers. Omit fromDate/toDate " +
+            'for the safe, current-state fetch (which is also what a Zoho Item import wants — an ' +
+            'opening balance, not a balance scoped to an arbitrary date range). If you have ' +
+            'verified your own Tally instance handles this correctly, opt back in with ' +
+            'TALLY_STOCK_ITEMS_PERIOD_SCOPING_ENABLED=true.',
+        );
+      }
+    }
     return this.runExtraction(
       ExtractionType.STOCK_ITEMS,
       resolved,
@@ -265,9 +291,13 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       );
     }
 
-    // See fetchLedgersBatched's matching comment — period-scoped
-    // OpeningValue/ClosingValue are just as replay-expensive per record.
-    const batchSize = fromDate && toDate ? this.tally.periodBatchSize : this.tally.masterBatchSize;
+    // A SEPARATE, more conservative ceiling from fetchLedgersBatched's —
+    // period-scoped stock valuation (FIFO/weighted-average costing across
+    // potentially many purchase/sale lots per item) is NOT equivalent in
+    // cost to summing a ledger's transactions; see
+    // TallyConfig.periodBatchSizeStockItems's doc comment for the live
+    // incident that disproved sharing the LEDGERS-bisected value here.
+    const batchSize = fromDate && toDate ? this.tally.periodBatchSizeStockItems : this.tally.masterBatchSize;
 
     if (totalCount <= batchSize) {
       const xml = this.builder.buildStockItemsRequest(company, fromDate, toDate);

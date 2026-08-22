@@ -136,11 +136,10 @@ export class TallyResponseParser {
       // Tally always emits this as an XML attribute on <LEDGER>, empty for
       // ordinary ledgers — see TallyLedger.reservedName's doc comment.
       reservedName: readText(l?.['@_RESERVEDNAME']) || null,
-      // Best-effort field names — see TallyLedger's doc comment and
-      // EnvelopeBuilder.buildLedgersRequest's TODO. A tag Tally doesn't
-      // recognize simply isn't present in `l`, so readText/toArray already
-      // degrade to null/[] here with no extra handling needed.
-      gstin: readText(l?.GSTREGISTRATIONNUMBER),
+      // Field names verified live 2026-08-22 against a real Tally instance
+      // — see EnvelopeBuilder.buildLedgersRequest's doc comment for exactly
+      // what was wrong (GSTIN, BankDetails) vs. confirmed correct.
+      gstin: this.readLatestGstin(l?.['LEDGSTREGDETAILS.LIST']),
       panNumber: readText(l?.INCOMETAXNUMBER),
       email: readText(l?.EMAIL),
       phone: readText(l?.LEDGERPHONE),
@@ -149,16 +148,18 @@ export class TallyResponseParser {
       billingState: readText(l?.LEDSTATENAME),
       billingCountry: readText(l?.COUNTRYNAME),
       billingPincode: readText(l?.PINCODE),
-      bankName: readText(this.firstBankDetail(l)?.BANKNAME),
-      bankAccountNumber: readText(this.firstBankDetail(l)?.BANKACCOUNTNUMBER),
+      // No separate "bank name" field exists in Tally for a ledger — only
+      // the account number (BANKDETAILS, a flat scalar, not a list) —
+      // confirmed live; bankName has no source and always stays null.
+      bankName: null,
+      bankAccountNumber: readText(l?.BANKDETAILS),
     }));
   }
 
   /** ADDRESS.LIST is a single wrapper tag whose ADDRESS child repeats one
    *  entry per line — confirmed against fast-xml-parser's actual output
-   *  (`{ "ADDRESS.LIST": { "ADDRESS": ["line1", "line2"] } }`), unlike
-   *  BANKDETAILS.LIST below, which repeats as sibling tags. Joined with a
-   *  newline into the single billingAddress field callers actually want. */
+   *  (`{ "ADDRESS.LIST": { "ADDRESS": ["line1", "line2"] } }`). Joined with
+   *  a newline into the single billingAddress field callers actually want. */
   private readAddressList(addressList: unknown): string | null {
     const container = addressList as { ADDRESS?: unknown } | null | undefined;
     const lines = toArray<unknown>(container?.ADDRESS)
@@ -167,11 +168,22 @@ export class TallyResponseParser {
     return lines.length > 0 ? lines.join('\n') : null;
   }
 
-  /** A ledger can have multiple bank accounts on file; the first is the best
-   *  single value this project's flat Vendor.xlsx row (one bank name/account
-   *  number column each) can represent. */
-  private firstBankDetail(ledger: any): any {
-    return toArray<any>(ledger?.['BANKDETAILS.LIST'])[0];
+  /**
+   * LEDGSTREGDETAILS.LIST is a REPEATING list of a party's GST
+   * registrations over time (state changes, re-registrations) — confirmed
+   * live against a real ledger carrying two entries, one from before its
+   * GST registration (no GSTIN) and one after (with it). Not every entry
+   * has a GSTIN, and Tally lists them chronologically, so the correct
+   * current value is the GSTIN on the LAST entry that actually has one, not
+   * just the last entry outright.
+   */
+  private readLatestGstin(gstRegDetails: unknown): string | null {
+    const entries = toArray<any>(gstRegDetails);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const gstin = readText(entries[i]?.GSTIN);
+      if (gstin) return gstin;
+    }
+    return null;
   }
 
   mapGroups(rawXml: string): TallyGroup[] {

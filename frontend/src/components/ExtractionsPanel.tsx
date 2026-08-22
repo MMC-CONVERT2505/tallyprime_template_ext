@@ -379,7 +379,22 @@ export function ExtractionsPanel() {
           </label>
           <label>
             Master type
-            <select value={masterType} onChange={(e) => setMasterType(e.target.value as MasterType)}>
+            <select
+              value={masterType}
+              onChange={(e) => {
+                const next = e.target.value as MasterType;
+                setMasterType(next);
+                // A period-scoped Stock Items fetch is rejected server-side
+                // by default — confirmed live to wedge Tally regardless of
+                // batch size (see backend TallyConfig.stockItemsPeriodScopingEnabled).
+                // Clearing the dates here avoids a guaranteed-to-fail
+                // request rather than letting the user hit that error.
+                if (next === 'STOCK_ITEMS') {
+                  setFromDate('');
+                  setToDate('');
+                }
+              }}
+            >
               {MASTER_TYPES.map((t) => (
                 <option key={t} value={t}>
                   {t}
@@ -388,18 +403,34 @@ export function ExtractionsPanel() {
             </select>
           </label>
           <label>
-            From date (optional)
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+            From date {masterType === 'STOCK_ITEMS' ? '(disabled for Stock Items)' : '(optional)'}
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              disabled={masterType === 'STOCK_ITEMS'}
+            />
           </label>
           <label>
-            To date (optional)
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+            To date {masterType === 'STOCK_ITEMS' ? '(disabled for Stock Items)' : '(optional)'}
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              disabled={masterType === 'STOCK_ITEMS'}
+            />
           </label>
           <button onClick={() => void fetchMaster()} disabled={fetchBusy || !companyName} type="button">
             {fetchBusy && <Spinner />}
             {fetchBusy ? 'Fetching…' : 'Fetch'}
           </button>
         </div>
+        {masterType === 'STOCK_ITEMS' && (
+          <p className="muted small" style={{ marginTop: 8 }}>
+            Stock Items always fetches the current opening balance (unscoped) — a date-scoped fetch
+            is disabled because it&apos;s confirmed to hang this kind of Tally request.
+          </p>
+        )}
       </div>
 
       <div className="card">

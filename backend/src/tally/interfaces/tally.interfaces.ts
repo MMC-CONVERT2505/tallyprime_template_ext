@@ -37,11 +37,11 @@ export interface TallyLedger {
    * Fields below power Customer.xlsx/Vendor.xlsx export (Sundry Debtors/
    * Creditors ledgers) and a fuller COA export — Tally doesn't expose these
    * on the cheap Name+AlterID pass, only on the full Lean Ledgers collection.
-   * TDL field names (NATIVEMETHOD tags in EnvelopeBuilder.buildLedgersRequest)
-   * are best-effort based on Tally's documented schema, NOT yet verified
-   * against a live Tally instance — see that method's doc comment. A wrong
-   * tag name just means Tally omits it (comes back null here), not a parse
-   * error, so this is safe to ship and correct later.
+   * TDL field names (see EnvelopeBuilder.buildLedgersRequest) are VERIFIED
+   * live (2026-08-22, COREDGE.IO INDIA PRIVATE LIMITED), not guessed — that
+   * method's doc comment has the exact corrections made from the original
+   * best-effort pass (gstin and bankName/bankAccountNumber both needed
+   * fixing; everything else was already right).
    */
   gstin: string | null;
   panNumber: string | null;
@@ -54,6 +54,8 @@ export interface TallyLedger {
   billingState: string | null;
   billingCountry: string | null;
   billingPincode: string | null;
+  /** No separate "bank name" field exists in Tally for a ledger — confirmed
+   *  live; always null, kept only so callers don't need an optional field. */
   bankName: string | null;
   bankAccountNumber: string | null;
 }

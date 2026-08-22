@@ -245,6 +245,7 @@ describe('full Tally -> Zoho export pipeline (all 9 templates)', () => {
       expect(cell(sheet, 2, 'Usage unit')).toBe('Nos');
       expect(cell(sheet, 2, 'Opening Stock')).toBe(100);
       expect(cell(sheet, 2, 'Opening Stock Value')).toBe(25000);
+      expect(cell(sheet, 2, 'Stock On Hand')).toBe(80);
       expect(cell(sheet, 2, 'Item Type')).toBe('goods');
       expect(cell(sheet, 2, 'Status')).toBe('Active');
       expect(cell(sheet, 2, 'Intra State Tax Name')).toBe('GST18');
@@ -255,6 +256,7 @@ describe('full Tally -> Zoho export pipeline (all 9 templates)', () => {
 
       expect(cell(sheet, 4, 'Item Name')).toBe('Raw Material X');
       expect(cell(sheet, 4, 'Alias Name')).toBeFalsy(); // no alias in Tally for this one
+      expect(cell(sheet, 4, 'Stock On Hand')).toBe(300);
       expect(cell(sheet, 4, 'Intra State Tax Name')).toBe('GST5');
       // No Tally source for these — must stay blank.
       expect(cell(sheet, 2, 'SKU')).toBeFalsy();
@@ -275,11 +277,11 @@ describe('full Tally -> Zoho export pipeline (all 9 templates)', () => {
   });
 
   describe('Invoice.xlsx', () => {
-    it('emits one row per inventory line, resolving HSN/tax from the item master, and skips ledger-only vouchers', async () => {
+    it('emits one row per inventory line, resolving HSN/tax from the item master, plus one row for a ledger-only voucher', async () => {
       const sheet = await loadSheet(buffers['Invoice.xlsx'], 'Invoice');
-      // header + 2 lines from INV-1001 + 1 line from INV-1003 — the
-      // ledger-only voucher (INV-1002) contributes zero rows.
-      expect(sheet.rowCount).toBe(4);
+      // header + 2 lines from INV-1001 + 1 service row from INV-1002 + 1
+      // line from INV-1003.
+      expect(sheet.rowCount).toBe(5);
 
       expect(cell(sheet, 2, 'Invoice Number')).toBe('INV-1001');
       expect(cell(sheet, 2, 'Invoice Date')).toEqual(utcNoon(2026, 4, 5));
@@ -296,33 +298,50 @@ describe('full Tally -> Zoho export pipeline (all 9 templates)', () => {
       expect(cell(sheet, 2, 'Item Price')).toBe(250);
       expect(cell(sheet, 2, 'Item Tax')).toBe('GST18');
       expect(cell(sheet, 2, 'Item Tax %')).toBe(18);
+      expect(cell(sheet, 2, 'Item Tax Type')).toBe('ItemAmount');
       expect(cell(sheet, 2, 'Notes')).toBe('Sale of widgets');
 
       expect(cell(sheet, 3, 'Item Name')).toBe('Widget B');
       expect(cell(sheet, 3, 'Item Tax')).toBe('GST12');
       expect(cell(sheet, 3, 'Quantity')).toBe(5);
 
-      expect(cell(sheet, 4, 'Invoice Number')).toBe('INV-1003');
-      expect(cell(sheet, 4, 'Customer Name')).toBe('Priya Distributors');
-      expect(cell(sheet, 4, 'Place of Supply')).toBe('West Bengal');
-      expect(cell(sheet, 4, 'Item Name')).toBe('Widget B');
-      expect(cell(sheet, 4, 'Quantity')).toBe(20);
-      expect(cell(sheet, 4, 'Item Price')).toBe(380);
+      // INV-1002 — a ledger-only service invoice, no stock item at all. Used
+      // to be silently dropped entirely; now derives Item Tax straight off
+      // the posted Output IGST ledger entry instead of an item lookup.
+      expect(cell(sheet, 4, 'Invoice Number')).toBe('INV-1002');
+      expect(cell(sheet, 4, 'Customer Name')).toBe('Rohan Traders');
+      expect(cell(sheet, 4, 'Item Name')).toBeFalsy();
+      expect(cell(sheet, 4, 'Item Type')).toBe('service');
+      expect(cell(sheet, 4, 'Item Tax')).toBe('IGST18');
+      expect(cell(sheet, 4, 'Item Tax %')).toBe(18);
+      expect(cell(sheet, 4, 'Item Price')).toBe(5000); // the non-tax ledger value (Consulting Income)
+      expect(cell(sheet, 4, 'Notes')).toBe('Consulting services rendered');
+
+      expect(cell(sheet, 5, 'Invoice Number')).toBe('INV-1003');
+      expect(cell(sheet, 5, 'Customer Name')).toBe('Priya Distributors');
+      expect(cell(sheet, 5, 'Place of Supply')).toBe('West Bengal');
+      expect(cell(sheet, 5, 'Item Name')).toBe('Widget B');
+      expect(cell(sheet, 5, 'Quantity')).toBe(20);
+      expect(cell(sheet, 5, 'Item Price')).toBe(380);
 
       // Compliance/logistics columns with no Tally source stay blank.
       expect(cell(sheet, 2, 'Payment Terms')).toBeFalsy();
       expect(cell(sheet, 2, 'Sales person')).toBeFalsy();
+      // No TDS/TCS ledger entries on any of these vouchers — must stay blank.
+      expect(cell(sheet, 2, 'TDS Amount')).toBeFalsy();
+      expect(cell(sheet, 2, 'TCS Amount')).toBeFalsy();
     });
   });
 
   describe('Bill.xlsx', () => {
-    it('computes a real Tax Amount from quantity x rate x item GST rate', async () => {
+    it('computes a real Tax Amount from quantity x rate x item GST rate, plus SubTotal/Total/Balance/TDS/PO Number', async () => {
       const sheet = await loadSheet(buffers['Bill.xlsx'], 'Bill');
       expect(sheet.rowCount).toBe(2);
       expect(cell(sheet, 2, 'Bill Number')).toBe('PUR-2001');
       expect(cell(sheet, 2, 'Bill Date')).toEqual(utcNoon(2026, 4, 10));
       expect(cell(sheet, 2, 'Vendor Name')).toBe('Global Supplies Pvt Ltd');
       expect(cell(sheet, 2, 'GST Identification Number (GSTIN)')).toBe('29AAACG1234F1Z5');
+      expect(cell(sheet, 2, 'Purchase Order Number')).toBe('PO-55'); // voucher.reference
       expect(cell(sheet, 2, 'Item Name')).toBe('Raw Material X');
       expect(cell(sheet, 2, 'SKU')).toBeFalsy();
       expect(cell(sheet, 2, 'Usage unit')).toBe('Kg');
@@ -331,9 +350,18 @@ describe('full Tally -> Zoho export pipeline (all 9 templates)', () => {
       expect(cell(sheet, 2, 'Tax Name')).toBe('GST5');
       expect(cell(sheet, 2, 'Tax Percentage')).toBe(5);
       expect(cell(sheet, 2, 'Tax Amount')).toBe(1000); // 20000 * 5%
+      expect(cell(sheet, 2, 'Tax Type')).toBe('ItemAmount');
       expect(cell(sheet, 2, 'Item Total')).toBe(20000);
+      expect(cell(sheet, 2, 'SubTotal')).toBe(20000);
+      expect(cell(sheet, 2, 'Total')).toBe(21000); // 20000 + 1000 tax
+      expect(cell(sheet, 2, 'Balance')).toBe(21000);
+      expect(cell(sheet, 2, 'TDS Name')).toBe('TDS on Contractor');
+      expect(cell(sheet, 2, 'TDS Amount')).toBe(400);
+      expect(cell(sheet, 2, 'TDS Percentage')).toBe(2); // 400 / 20000 * 100
       expect(cell(sheet, 2, 'HSN/SAC')).toBe('39269099');
       expect(cell(sheet, 2, 'Vendor Notes')).toBe('Purchase of raw material');
+      // No TCS ledger entry on this voucher — must stay blank.
+      expect(cell(sheet, 2, 'TCS Amount')).toBeFalsy();
     });
   });
 
@@ -343,14 +371,18 @@ describe('full Tally -> Zoho export pipeline (all 9 templates)', () => {
       expect(sheet.rowCount).toBe(2);
       expect(cell(sheet, 2, 'Credit Note Number')).toBe('CN-3001');
       expect(cell(sheet, 2, 'Credit Note Date')).toEqual(utcNoon(2026, 4, 15));
+      expect(cell(sheet, 2, 'Reference#')).toBe('RMA-2026-01'); // voucher.reference
       expect(cell(sheet, 2, 'Customer Name')).toBe('Rohan Traders');
       expect(cell(sheet, 2, 'Item Name')).toBe('Widget A');
       expect(cell(sheet, 2, 'Quantity')).toBe(1);
       expect(cell(sheet, 2, 'Item Tax')).toBe('GST18');
+      expect(cell(sheet, 2, 'Item Tax Type')).toBe('ItemAmount');
       expect(cell(sheet, 2, 'Notes')).toBe('Sales return - damaged widget');
       // Tally has no reason-code field for a Credit Note — left blank, not
       // duplicated from Notes.
       expect(cell(sheet, 2, 'Reason')).toBeFalsy();
+      // No TCS ledger entry on this voucher — must stay blank.
+      expect(cell(sheet, 2, 'TCS Amount')).toBeFalsy();
     });
   });
 

@@ -17,9 +17,17 @@ import { ExtractionType, TallyExtractionServiceBase } from './tally-extraction.b
  * type via `voucherType`) — the actual requirement per
  * docs/tally-zoho-function-mapping.md's Transactions table (#14-24, #30-33).
  * A dedicated per-voucher-type method (fetchSales/fetchPurchases/...) isn't
- * needed on top of this: Tally's Day Book export already accepts
- * `voucherType` as a filter, so "fetch only Sales vouchers" is a parameter,
- * not a different code path.
+ * needed on top of this: "fetch only Sales vouchers" is a parameter, not a
+ * different code path.
+ *
+ * The `VOUCHERTYPENAME` static variable sent with the request (see
+ * envelope.builder.ts's buildVouchersRequest) does NOT actually narrow
+ * Tally's Day Book export — confirmed live 2026-08-22: four bulk-export
+ * requests for four different voucher types each returned the exact same
+ * unfiltered result set. filterByVoucherType below is the real filter; the
+ * static variable is left in place as a harmless best-effort hint (it costs
+ * nothing and may narrow the export on some Tally versions/reports) but is
+ * never trusted alone.
  */
 @Injectable()
 export class TransactionExtractionService extends TallyExtractionServiceBase {
@@ -64,7 +72,7 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
     if (chunks.length <= 1) {
       const xml = this.builder.buildVouchersRequest(company, dto.from, dto.to, dto.voucherType);
       const raw = await this.connector.post(xml, { signal });
-      return this.parser.mapVouchers(raw);
+      return this.filterByVoucherType(this.parser.mapVouchers(raw), dto.voucherType);
     }
 
     this.logger.log(
@@ -95,7 +103,21 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
         await this.sleep(this.tally.chunkDelayMs, signal);
       }
     }
-    return this.dedupeVouchers(results);
+    return this.filterByVoucherType(this.dedupeVouchers(results), dto.voucherType);
+  }
+
+  /**
+   * The real voucher-type filter — see this class's doc comment for why the
+   * request-side VOUCHERTYPENAME static variable can't be trusted alone.
+   * Case/whitespace-insensitive: Tally's own voucher-type names in the
+   * parsed XML have shown no casing variance in practice, but this is a
+   * cheap safety margin against a company-customized type name differing
+   * only by case. A no-op when no type filter was requested.
+   */
+  private filterByVoucherType(vouchers: TallyVoucher[], voucherType?: string): TallyVoucher[] {
+    if (!voucherType) return vouchers;
+    const target = voucherType.trim().toLowerCase();
+    return vouchers.filter((v) => v.voucherType?.trim().toLowerCase() === target);
   }
 
   /**

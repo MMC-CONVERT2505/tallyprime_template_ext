@@ -106,11 +106,10 @@ describe('TallyResponseParser', () => {
       });
     });
 
-    it('parses GSTIN/PAN/contact/address/bank fields, joining multi-line address into one string', () => {
+    it('parses PAN/contact/address/bank fields, joining multi-line address into one string', () => {
       const xml =
         '<ENVELOPE><BODY><DATA><COLLECTION>' +
         '<LEDGER><NAME>ABC Traders</NAME>' +
-        '<GSTREGISTRATIONNUMBER>33AAAAA1111A1Z1</GSTREGISTRATIONNUMBER>' +
         '<INCOMETAXNUMBER>AAAAA1111A</INCOMETAXNUMBER>' +
         '<EMAIL>ap@abctraders.com</EMAIL>' +
         '<LEDGERPHONE>044-12345678</LEDGERPHONE>' +
@@ -119,12 +118,13 @@ describe('TallyResponseParser', () => {
         '<LEDSTATENAME>Tamil Nadu</LEDSTATENAME>' +
         '<COUNTRYNAME>India</COUNTRYNAME>' +
         '<PINCODE>600040</PINCODE>' +
-        '<BANKDETAILS.LIST><BANKNAME>HDFC Bank</BANKNAME><BANKACCOUNTNUMBER>000123456789</BANKACCOUNTNUMBER></BANKDETAILS.LIST>' +
+        // A flat scalar, verified live — NOT a `.LIST`, and no separate
+        // "bank name" field exists at all (bankName always stays null).
+        '<BANKDETAILS>000123456789</BANKDETAILS>' +
         '</LEDGER>' +
         '</COLLECTION></DATA></BODY></ENVELOPE>';
 
       const [ledger] = parser.mapLedgers(xml);
-      expect(ledger.gstin).toBe('33AAAAA1111A1Z1');
       expect(ledger.panNumber).toBe('AAAAA1111A');
       expect(ledger.email).toBe('ap@abctraders.com');
       expect(ledger.phone).toBe('044-12345678');
@@ -133,8 +133,47 @@ describe('TallyResponseParser', () => {
       expect(ledger.billingState).toBe('Tamil Nadu');
       expect(ledger.billingCountry).toBe('India');
       expect(ledger.billingPincode).toBe('600040');
-      expect(ledger.bankName).toBe('HDFC Bank');
+      expect(ledger.bankName).toBeNull();
       expect(ledger.bankAccountNumber).toBe('000123456789');
+    });
+
+    it('picks the GSTIN off the last LEDGSTREGDETAILS.LIST entry that actually has one, not just the last entry outright', () => {
+      // Real shape observed live: a ledger can carry multiple registration
+      // history entries (state changes, re-registrations) — some with no
+      // GSTIN at all (pre-GST-registration history), listed chronologically.
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<LEDGER><NAME>NMDC Data Centre</NAME>' +
+        '<LEDGSTREGDETAILS.LIST><APPLICABLEFROM>20200401</APPLICABLEFROM>' +
+        '<GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE></LEDGSTREGDETAILS.LIST>' +
+        '<LEDGSTREGDETAILS.LIST><APPLICABLEFROM>20240331</APPLICABLEFROM>' +
+        '<GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE>' +
+        '<PLACEOFSUPPLY>Maharashtra</PLACEOFSUPPLY>' +
+        '<GSTIN>27AAGCN6348H1Z6</GSTIN></LEDGSTREGDETAILS.LIST>' +
+        '</LEDGER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+
+      const [ledger] = parser.mapLedgers(xml);
+      expect(ledger.gstin).toBe('27AAGCN6348H1Z6');
+    });
+
+    it('leaves gstin null when a ledger has LEDGSTREGDETAILS.LIST entries but none carry a GSTIN', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<LEDGER><NAME>No GST Yet</NAME>' +
+        '<LEDGSTREGDETAILS.LIST><APPLICABLEFROM>20200401</APPLICABLEFROM></LEDGSTREGDETAILS.LIST>' +
+        '</LEDGER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+
+      const [ledger] = parser.mapLedgers(xml);
+      expect(ledger.gstin).toBeNull();
+    });
+
+    it('leaves gstin null (not throwing) when a ledger has no LEDGSTREGDETAILS.LIST at all', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><LEDGER><NAME>Plain</NAME></LEDGER></COLLECTION></DATA></BODY></ENVELOPE>';
+      const [ledger] = parser.mapLedgers(xml);
+      expect(ledger.gstin).toBeNull();
     });
 
     it('leaves the enrichment fields null when a ledger has no bank/address details on file, rather than throwing', () => {

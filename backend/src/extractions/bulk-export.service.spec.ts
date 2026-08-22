@@ -173,6 +173,41 @@ describe('BulkExportService', () => {
     expect(stat.size).toBe(record.sizeBytes);
   });
 
+  it(
+    'fetches every master (GROUPS/LEDGERS/STOCK_ITEMS/COST_CENTRES) UNSCOPED — never forwards the ' +
+      "run's fromDate/toDate onto them — while every VOUCHERS step DOES get that date range",
+    async () => {
+      // Regression test for a live incident (2026-08-22): dispatchStep used
+      // to forward fromDate/toDate onto every master fetch unconditionally,
+      // which forced STOCK_ITEMS onto Tally's fragile period-scoped batching
+      // path (masterBatchSize=300 -> periodBatchSize=4) purely as a side
+      // effect of also fetching vouchers for that date range — and wedged a
+      // real Tally instance solid. Masters must always take the unscoped,
+      // single-request path; only vouchers have a genuine reason to be
+      // date-scoped.
+      const { id } = await service.start(
+        'org-1',
+        'user@example.com',
+        'ABC Ltd',
+        '20260401',
+        '20260430',
+      );
+      await settle('org-1', id);
+
+      for (const call of extractions.fetchMaster.mock.calls) {
+        const dto = call[2];
+        expect(dto).not.toHaveProperty('fromDate');
+        expect(dto).not.toHaveProperty('toDate');
+      }
+      expect(extractions.fetchMaster).toHaveBeenCalledTimes(4); // GROUPS, LEDGERS, STOCK_ITEMS, COST_CENTRES
+
+      for (const call of extractions.create.mock.calls) {
+        expect(call[2].payload).toMatchObject({ from: '20260401', to: '20260430' });
+      }
+      expect(extractions.create).toHaveBeenCalledTimes(4); // the 4 VOUCHERS steps
+    },
+  );
+
   it('stops immediately and marks the whole export FAILED when one fetch step fails', async () => {
     extractions.getStatus.mockImplementation(async (_orgId: string, jobId: string) => {
       // job-2 is the second dispatched job (LEDGERS, per FETCH_STEP_KEYS order).

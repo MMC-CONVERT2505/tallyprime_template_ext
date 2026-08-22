@@ -19,6 +19,7 @@ export interface ZohoItemRow {
   'Usage unit': string;
   'Opening Stock': number | '';
   'Opening Stock Value': number | '';
+  'Stock On Hand': number | '';
   /** Every Tally Stock Item represents physical inventory by construction
    *  (services live on ledgers, not stock items) — 'goods' is a correct
    *  inference here, not a guess. */
@@ -53,6 +54,11 @@ export class StockItemMapper {
       'Usage unit': item.baseUnit ?? '',
       'Opening Stock': item.openingBalance ?? '',
       'Opening Stock Value': item.openingValue ?? '',
+      // TallyStockItem.closingBalance was already fetched (CLOSINGBALANCE)
+      // but never written to this column — confirmed unused elsewhere in
+      // this mapper, so wiring it here is a pure gap-fill, not a behavior
+      // change to anything already relying on it.
+      'Stock On Hand': item.closingBalance ?? '',
       'Item Type': 'goods',
       Status: 'Active',
       'Intra State Tax Name': intra.name,

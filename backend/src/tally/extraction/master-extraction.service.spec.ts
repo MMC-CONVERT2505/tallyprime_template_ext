@@ -15,6 +15,8 @@ describe('MasterExtractionService', () => {
       defaultCompany?: string;
       masterBatchSize?: number;
       periodBatchSize?: number;
+      periodBatchSizeStockItems?: number;
+      stockItemsPeriodScopingEnabled?: boolean;
       chunkDelayMs?: number;
       jobs?: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
     } = {},
@@ -34,6 +36,11 @@ describe('MasterExtractionService', () => {
         defaultCompany: overrides.defaultCompany ?? '',
         masterBatchSize: overrides.masterBatchSize ?? NO_BATCHING,
         periodBatchSize: overrides.periodBatchSize ?? NO_BATCHING,
+        periodBatchSizeStockItems: overrides.periodBatchSizeStockItems ?? NO_BATCHING,
+        // Mirrors the real production default (false) — see
+        // TallyConfig.stockItemsPeriodScopingEnabled. Tests that exercise
+        // period-scoped STOCK_ITEMS batching must opt in explicitly.
+        stockItemsPeriodScopingEnabled: overrides.stockItemsPeriodScopingEnabled ?? false,
         // 0 by default — tests should never actually wait on this; the
         // dedicated batching tests below override it and stub out the timer.
         chunkDelayMs: overrides.chunkDelayMs ?? 0,
@@ -136,16 +143,35 @@ describe('MasterExtractionService', () => {
   });
 
   describe('getStockItems', () => {
-    it('passes fromDate/toDate through to buildStockItemsRequest when both are supplied', async () => {
-      const { service, buildStockItemsRequest } = makeService();
+    it('rejects a period-scoped request by default — confirmed live to wedge Tally regardless of batch size', async () => {
+      const { service, connector } = makeService();
+
+      await expect(service.getStockItems('ABC Ltd', '20260401', '20260430')).rejects.toThrow(
+        /Period-scoped Stock Item fetches.*are disabled/,
+      );
+      expect(connector.post).not.toHaveBeenCalled();
+    });
+
+    it('allows a period-scoped request through, passing fromDate/toDate to buildStockItemsRequest, once explicitly enabled', async () => {
+      const { service, buildStockItemsRequest } = makeService({
+        stockItemsPeriodScopingEnabled: true,
+      });
 
       await service.getStockItems('ABC Ltd', '20260401', '20260430');
 
       expect(buildStockItemsRequest).toHaveBeenCalledWith('ABC Ltd', '20260401', '20260430');
     });
 
-    it('rejects a fromDate after toDate, before ever calling the connector', async () => {
-      const { service, connector } = makeService();
+    it('never rejects an UNSCOPED request, regardless of stockItemsPeriodScopingEnabled', async () => {
+      const { service, buildStockItemsRequest } = makeService();
+
+      await service.getStockItems('ABC Ltd');
+
+      expect(buildStockItemsRequest).toHaveBeenCalledWith('ABC Ltd', undefined, undefined);
+    });
+
+    it('rejects a fromDate after toDate before checking whether period scoping is enabled at all, before ever calling the connector', async () => {
+      const { service, connector } = makeService({ stockItemsPeriodScopingEnabled: true });
 
       await expect(service.getStockItems('ABC Ltd', '20260430', '20260401')).rejects.toThrow(
         BadRequestException,
@@ -618,7 +644,7 @@ describe('MasterExtractionService', () => {
       await expect(service.getStockItems('ABC Ltd')).rejects.toThrow(/expected 3/);
     });
 
-    it('uses periodBatchSize instead of masterBatchSize once fromDate/toDate are supplied, even when the collection fits within masterBatchSize', async () => {
+    it('uses periodBatchSizeStockItems instead of masterBatchSize once fromDate/toDate are supplied, even when the collection fits within masterBatchSize', async () => {
       const connectorPost = jest
         .fn()
         .mockResolvedValueOnce(
@@ -629,7 +655,9 @@ describe('MasterExtractionService', () => {
       const { service, buildStockItemsRequest } = makeService({
         connectorPost,
         masterBatchSize: 1000, // would NOT batch a 3-record collection on its own
-        periodBatchSize: 2, // but period-scoped requests must still batch at this size
+        periodBatchSize: 1000, // must NOT be what governs this — periodBatchSizeStockItems is separate
+        periodBatchSizeStockItems: 2, // but period-scoped requests must still batch at this size
+        stockItemsPeriodScopingEnabled: true, // off by default in production — see that test above
       });
 
       const result = await service.getStockItems('ABC Ltd', '20260401', '20260430');

@@ -309,7 +309,7 @@ export class BulkExportService {
 
       await this.updateStep(id, 'ZIP', { status: 'RUNNING', startedAt: new Date().toISOString() });
       const zipBuffer = await this.zip.buildZip(entries);
-      const { filename, filePath } = await this.saveZip(company, id, zipBuffer);
+      const { filename, filePath } = await this.saveZip(orgId, company, id, zipBuffer);
       await this.updateStep(id, 'ZIP', { status: 'SUCCESS', finishedAt: new Date().toISOString() });
 
       await this.mutate(id, (record) => {
@@ -362,11 +362,29 @@ export class BulkExportService {
       COST_CENTRES: ExtractionType.COST_CENTRES,
     }[key as 'GROUPS' | 'LEDGERS' | 'STOCK_ITEMS' | 'COST_CENTRES'];
 
+    // Deliberately UNSCOPED (no fromDate/toDate) for every master, including
+    // LEDGERS/STOCK_ITEMS which technically accept a period. Two independent
+    // reasons, not just one:
+    //  1. Correctness: a Zoho Chart-of-Accounts/Item import wants the
+    //     company's real opening balance, not a balance scoped to whatever
+    //     date range this run happens to be pulling vouchers for — those are
+    //     different concepts that happen to share two form fields.
+    //  2. Safety: an unscoped master fetch takes the single-request/
+    //     masterBatchSize=300 path; a period-scoped one is forced onto the
+    //     much smaller, fragile periodBatchSize=4 path (see
+    //     TallyConfig.periodBatchSize's doc comment). Caught live 2026-08-22:
+    //     this bulk export's own STOCK_ITEMS step — 35 records, well under
+    //     masterBatchSize — got needlessly period-scoped by this method
+    //     forwarding ctx.fromDate/toDate unconditionally, forced it onto the
+    //     4-item-batch path, and wedged Tally's engine solid (confirmed via a
+    //     raw HTTP probe bypassing this app entirely, and Windows itself
+    //     reporting the tally.exe process as "Not Responding") requiring a
+    //     manual restart. The date range only has real meaning for the
+    //     VOUCHERS steps below — Tally's Day Book export has no "all time"
+    //     default the way a master's current balance does.
     return this.extractions.fetchMaster(ctx.orgId, ctx.notifyEmail, {
       companyName: ctx.company,
       masterType,
-      fromDate: ctx.fromDate,
-      toDate: ctx.toDate,
     });
   }
 
@@ -462,24 +480,43 @@ export class BulkExportService {
     ];
   }
 
+  /**
+   * Written under exportsDir/<orgId>/... — not a flat directory — so a given
+   * org's exports are physically grouped and discoverable on disk by the
+   * same org id that already gates every read (loadOwned/getDownload above).
+   * This is purely a disk-layout convenience: ownership was already correctly
+   * enforced via the Redis record's orgId field before this change, and still
+   * is (filePath is read back from that record, never reconstructed from
+   * orgId+filename by a caller).
+   */
   private async saveZip(
+    orgId: string,
     company: string,
     id: string,
     buffer: Buffer,
   ): Promise<{ filename: string; filePath: string }> {
-    const dir = this.resolveExportsDir();
+    const dir = path.join(this.resolveExportsDir(), this.sanitizeForPath(orgId, 'org'));
     await fs.mkdir(dir, { recursive: true });
-    const safeCompany = company.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 60) || 'company';
-    const filename = `${safeCompany}-zoho-export-${id}.zip`;
+    const filename = `${this.sanitizeForPath(company, 'company')}-zoho-export-${id}.zip`;
     const filePath = path.join(dir, filename);
     await fs.writeFile(filePath, buffer);
     return { filename, filePath };
   }
 
+  /** Filesystem-safe path segment — strips everything but alphanumerics/-/_ so
+   *  neither an org id nor a company name can escape exportsDir (e.g. via
+   *  `..`) or collide with a reserved name. */
+  private sanitizeForPath(value: string, fallback: string): string {
+    return value.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 60) || fallback;
+  }
+
   /** Best-effort disk cleanup of zips older than BulkExportConfig.retentionHours,
    *  swept opportunistically each time a new export starts rather than on its
    *  own timer — this whole feature has no background scheduler today, and one
-   *  isn't worth adding just for housekeeping. Never blocks or fails `start`. */
+   *  isn't worth adding just for housekeeping. Never blocks or fails `start`.
+   *  Recurses one level into the per-org subdirectories saveZip writes into,
+   *  and also sweeps any stray flat file directly under exportsDir left over
+   *  from before that layout existed. */
   private async pruneOldExports(): Promise<void> {
     try {
       const dir = this.resolveExportsDir();
@@ -489,10 +526,28 @@ export class BulkExportService {
       for (const entry of entries) {
         const entryPath = path.join(dir, entry);
         const stat = await fs.stat(entryPath).catch(() => null);
-        if (stat?.isFile() && stat.mtimeMs < cutoff) {
-          await fs
-            .unlink(entryPath)
-            .catch((err) => this.logger.debug(`Could not prune ${entryPath}: ${String(err)}`));
+        if (!stat) continue;
+        if (stat.isFile()) {
+          if (stat.mtimeMs < cutoff) {
+            await fs
+              .unlink(entryPath)
+              .catch((err) => this.logger.debug(`Could not prune ${entryPath}: ${String(err)}`));
+          }
+          continue;
+        }
+        if (stat.isDirectory()) {
+          const orgEntries = await fs.readdir(entryPath).catch(() => [] as string[]);
+          for (const orgEntry of orgEntries) {
+            const orgEntryPath = path.join(entryPath, orgEntry);
+            const orgStat = await fs.stat(orgEntryPath).catch(() => null);
+            if (orgStat?.isFile() && orgStat.mtimeMs < cutoff) {
+              await fs
+                .unlink(orgEntryPath)
+                .catch((err) =>
+                  this.logger.debug(`Could not prune ${orgEntryPath}: ${String(err)}`),
+                );
+            }
+          }
         }
       }
     } catch (err) {

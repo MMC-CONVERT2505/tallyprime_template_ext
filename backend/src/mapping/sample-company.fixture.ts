@@ -209,13 +209,29 @@ export const SAMPLE_SALES_VOUCHER_2: TallyVoucher = {
   placeOfSupply: 'West Bengal',
 };
 
-/** A ledger-only Sales voucher (services, no stock line) — must NOT produce
- *  a phantom Invoice row (invoice.mapper.ts skips vouchers with zero
- *  inventory entries by design). */
+/** A genuine ledger-only Sales voucher — a service invoice recorded in
+ *  Tally's accounting-only mode, no stock item at all. Must still produce
+ *  exactly one Invoice.xlsx row (invoice.mapper.ts used to silently drop
+ *  any voucher with zero inventory entries — a real, confirmed bug; see
+ *  bill.mapper.ts's doc comment for the live incident that surfaced it),
+ *  with Item Tax/Item Tax % derived from the posted IGST ledger entry
+ *  instead of an item master lookup. */
 export const SAMPLE_LEDGER_ONLY_SALES_VOUCHER: TallyVoucher = {
-  ...SAMPLE_SALES_VOUCHER,
+  date: '20260406',
+  voucherType: 'Sales',
   voucherNumber: 'INV-1002',
+  partyLedgerName: 'Rohan Traders',
+  narration: 'Consulting services rendered',
+  reference: null,
+  alterId: 406,
+  ledgerEntries: [
+    { ledgerName: 'Consulting Income', amount: -5000, isDeemedPositive: true, isDebit: false },
+    { ledgerName: 'Output IGST', amount: -900, isDeemedPositive: true, isDebit: false },
+    { ledgerName: 'Rohan Traders', amount: 5900, isDeemedPositive: false, isDebit: true },
+  ],
   inventoryEntries: [],
+  partyGstin: '27AABCU9603R1ZM',
+  placeOfSupply: 'Maharashtra',
 };
 
 export const SAMPLE_PURCHASE_VOUCHER: TallyVoucher = {
@@ -226,7 +242,17 @@ export const SAMPLE_PURCHASE_VOUCHER: TallyVoucher = {
   narration: 'Purchase of raw material',
   reference: 'PO-55',
   alterId: 402,
-  ledgerEntries: [],
+  // TDS deducted at source (2% of the 20000 item value) — exercises
+  // Bill.xlsx's ledger-derived TDS Name/Amount/Percentage columns.
+  ledgerEntries: [
+    { ledgerName: 'TDS on Contractor', amount: 400, isDeemedPositive: false, isDebit: false },
+    {
+      ledgerName: 'Global Supplies Pvt Ltd',
+      amount: -20600,
+      isDeemedPositive: false,
+      isDebit: false,
+    },
+  ],
   inventoryEntries: [{ stockItemName: 'Raw Material X', quantity: 200, rate: 100, amount: 20000 }],
   partyGstin: '29AAACG1234F1Z5',
   placeOfSupply: 'Karnataka',
@@ -238,7 +264,7 @@ export const SAMPLE_CREDIT_NOTE_VOUCHER: TallyVoucher = {
   voucherNumber: 'CN-3001',
   partyLedgerName: 'Rohan Traders',
   narration: 'Sales return - damaged widget',
-  reference: null,
+  reference: 'RMA-2026-01',
   alterId: 403,
   ledgerEntries: [],
   inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 250, amount: 250 }],

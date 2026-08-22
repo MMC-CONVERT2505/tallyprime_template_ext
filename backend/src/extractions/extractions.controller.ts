@@ -147,7 +147,7 @@ export class ExtractionsController {
     @Query('ledgerEntity') ledgerEntity: string | undefined,
     @Query('itemsJobId') itemsJobId: string | undefined,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<Buffer> {
+  ): Promise<StreamableFile> {
     if (ledgerEntity && !['COA', 'CUSTOMER', 'VENDOR'].includes(ledgerEntity)) {
       throw new BadRequestException('ledgerEntity must be one of COA, CUSTOMER, VENDOR.');
     }
@@ -162,6 +162,16 @@ export class ExtractionsController {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="${filename}"`,
     });
-    return buffer;
+    // Must be wrapped in StreamableFile, not returned as a bare Buffer —
+    // confirmed live 2026-08-22: Nest's Express adapter only special-cases
+    // Buffer/stream responses via StreamableFile. A bare `return buffer`
+    // falls through to Express's default res.json(), which silently
+    // JSON-serializes the Buffer (via its own toJSON -> {type:"Buffer",
+    // data:[...]}) instead of sending raw bytes — the Content-Type header
+    // still claims .xlsx, but the downloaded file is corrupt JSON, not a
+    // valid zip/xlsx. downloadBulkExport below already used this correctly;
+    // this route just hadn't been exercised through a real HTTP download
+    // before (mapper-level tests only ever inspect the Buffer in memory).
+    return new StreamableFile(buffer);
   }
 }

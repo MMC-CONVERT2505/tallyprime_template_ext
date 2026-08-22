@@ -55,10 +55,10 @@ export interface TallyConfig {
    */
   masterBatchSize: number;
   /**
-   * Batch size for LEDGERS/STOCK_ITEMS requests that ALSO carry a
-   * fromDate/toDate (SVFROMDATE/SVTODATE) period scope. Defaults to 4,
-   * bisected live against a real Tally instance (not a guess) — but the
-   * batch-size ceiling is only HALF the story:
+   * Batch size for LEDGERS requests that ALSO carry a fromDate/toDate
+   * (SVFROMDATE/SVTODATE) period scope. Defaults to 4, bisected live against
+   * a real Tally instance (not a guess) — but the batch-size ceiling is only
+   * HALF the story:
    *
    *  1. Tally's own system-computed ledgers (RESERVEDNAME set — e.g.
    *     "Profit & Loss A/c") wedge Tally on a period-scoped balance request
@@ -90,6 +90,36 @@ export interface TallyConfig {
    * the specific Tally instance in question.
    */
   periodBatchSize: number;
+  /**
+   * Batch size for the RARE case where period-scoped STOCK_ITEMS fetching is
+   * explicitly re-enabled (see `stockItemsPeriodScopingEnabled` below) on an
+   * installation that has independently verified its own Tally handles it —
+   * NOT a reuse of the LEDGERS `periodBatchSize` value, and not, on its own,
+   * a fix for anything. Live investigation 2026-08-22 (COREDGE.IO INDIA
+   * PRIVATE LIMITED): a period-scoped STOCK_ITEMS request wedged Tally's
+   * engine solid first at a batch of 4 items, then AGAIN at a batch of just
+   * ONE — proving batch size was never the actual variable; something about
+   * computing a period-scoped OpeningValue/ClosingValue for this company's
+   * stock items (several of which are service/subscription line items, not
+   * physical inventory) is fatal at any size. `stockItemsPeriodScopingEnabled`
+   * defaulting to false is the real fix; this only bounds the damage on an
+   * installation where the feature has been deliberately turned back on.
+   */
+  periodBatchSizeStockItems: number;
+  /**
+   * Whether STOCK_ITEMS extraction accepts fromDate/toDate at all. Defaults
+   * to FALSE — see periodBatchSizeStockItems's doc comment for the live
+   * incident (confirmed twice, at two different batch sizes, both requiring
+   * a manual Tally restart) that makes this the safe default rather than "try
+   * it with a small batch." A Zoho Item import wants the company's current
+   * opening balance anyway, not one scoped to an arbitrary date range picked
+   * for an unrelated voucher export — so the unscoped fetch this project
+   * always falls back to isn't just safer, it's the semantically correct
+   * request in the first place. Only flip this on for an installation that
+   * has independently verified its own Tally instance doesn't exhibit the
+   * same hang.
+   */
+  stockItemsPeriodScopingEnabled: boolean;
   /**
    * Circuit breaker for a genuinely wedged Tally (not just one flaky call) —
    * see TallyHttpClient. After this many CONSECUTIVE logical requests (each
@@ -273,6 +303,8 @@ export const buildTallyConfig = (): TallyConfig => {
     chunkDelayMs: toInt(process.env.TALLY_CHUNK_DELAY_MS, 2000),
     masterBatchSize: toInt(process.env.TALLY_MASTER_BATCH_SIZE, 300),
     periodBatchSize: toInt(process.env.TALLY_PERIOD_BATCH_SIZE, 4),
+    periodBatchSizeStockItems: toInt(process.env.TALLY_PERIOD_BATCH_SIZE_STOCK_ITEMS, 1),
+    stockItemsPeriodScopingEnabled: toBool(process.env.TALLY_STOCK_ITEMS_PERIOD_SCOPING_ENABLED, false),
     circuitBreakerThreshold: toInt(process.env.TALLY_CIRCUIT_BREAKER_THRESHOLD, 2),
     circuitOpenMs: toInt(process.env.TALLY_CIRCUIT_OPEN_MS, 15000),
   };
