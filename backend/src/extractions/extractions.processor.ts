@@ -1,7 +1,7 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ExtractionType } from '@prisma/client';
+import { ExtractionType, Prisma } from '@prisma/client';
 import { Job } from 'bullmq';
 import Redis from 'ioredis';
 import { ExtractionConfig, TallyConfig } from '../config/configuration';
@@ -91,12 +91,12 @@ export class ExtractionsProcessor extends WorkerHost {
         resultTtlSeconds,
       );
 
-      await this.prisma.extractionJob.update({
-        where: { id: extractionJobId },
-        data: { status: 'SUCCESS', recordCount, durationMs },
+      const updated = await this.markJobDone(extractionJobId, {
+        status: 'SUCCESS',
+        recordCount,
+        durationMs,
       });
-
-      if (job.data.mode === 'agent') {
+      if (updated && job.data.mode === 'agent') {
         await this.notifications.sendExtractionComplete(job.data.notifyEmail, {
           jobId: extractionJobId,
           type,
@@ -111,61 +111,90 @@ export class ExtractionsProcessor extends WorkerHost {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const durationMs = Date.now() - startedAt;
-
-      // BullMQ retries transient failures (see EXTRACTION_QUEUE's
-      // defaultJobOptions in extractions.module.ts) — safe now that every
-      // extraction is a read. Only mark the job FAILED and notify once BullMQ
-      // has actually given up; otherwise a transient blip would prematurely
-      // flip status to FAILED and send a "failed" email moments before the
-      // retry quietly succeeds.
-      //
-      // job.attemptsMade is the count of attempts made BEFORE this one (0 on
-      // the very first call — BullMQ only increments it AFTER this handler
-      // returns/throws, per Job.moveToFailed in bullmq's own source). BullMQ
-      // itself decides whether to retry using `attemptsMade + 1 < attempts`
-      // (Job.shouldRetryJob) — mirror that exact formula here, not
-      // `attemptsMade < attempts`: that off-by-one meant this branch always
-      // believed one more retry was coming, even on the true final attempt,
-      // so the FAILED update below never ran and the job stayed PENDING in
-      // Postgres forever despite BullMQ having already given up internally.
-      // Caught live: three jobs got permanently stuck exactly this way
-      // (visible in Redis as `failed` with a real failedReason, but the
-      // ExtractionJob Postgres row never left PENDING) the first time
-      // anything actually exhausted every retry attempt for real.
       const attemptsMade = job.attemptsMade ?? 0;
       const maxAttempts = job.opts?.attempts ?? 1;
-      const isFinalAttempt = attemptsMade + 1 >= maxAttempts;
-      if (!isFinalAttempt) {
+      if (attemptsMade + 1 < maxAttempts) {
         this.logger.warn(
           `Extraction job ${extractionJobId} failed on attempt ${attemptsMade + 1}/${maxAttempts} ` +
             `(${message}) — BullMQ will retry.`,
         );
-        throw err;
       }
-
-      await this.prisma.extractionJob
-        .update({
-          where: { id: extractionJobId },
-          data: { status: 'FAILED', error: message, durationMs },
-        })
-        .catch((updateErr) =>
-          this.logger.error(
-            `Could not record failure for job ${extractionJobId}: ${String(updateErr)}`,
-          ),
-        );
-
-      if (job.data.mode === 'agent') {
-        await this.notifications.sendExtractionComplete(job.data.notifyEmail, {
-          jobId: extractionJobId,
-          type,
-          status: 'FAILED',
-          error: message,
-        });
-      }
-
+      // Deliberately does NOT mark the Postgres row FAILED here, even on what
+      // looks like the final configured attempt — see onJobFailed's doc
+      // comment for why re-deriving "is this really final" from
+      // attemptsMade/attempts disagreed with BullMQ's own ground truth for a
+      // stalled job (one whose worker process died mid-attempt) and left
+      // rows stuck PENDING forever despite BullMQ having already given up.
+      // Just rethrow so BullMQ's own retry/backoff decides what happens next
+      // — onJobFailed is the single place that reconciles Postgres once
+      // BullMQ actually, verifiably has no more attempts coming.
       throw err;
     }
+  }
+
+  /**
+   * Fires on EVERY failed attempt (not just the final one — BullMQ emits
+   * 'failed' each time `process` throws, whether or not it will retry) AND,
+   * critically, on a job BullMQ's own stalled-job watchdog gives up on
+   * (worker process died/lost its lock mid-attempt) — a path that never
+   * calls `process` again at all, so nothing inside `process`'s own
+   * try/catch can ever observe it. `job.isFailed()` queries BullMQ's actual
+   * current state directly rather than re-deriving "is this final" from
+   * attemptsMade/attempts (which — confirmed live — disagreed with reality
+   * for a stalled job: BullMQ had already permanently failed it while the
+   * attempts-based check still believed a retry was coming, leaving the
+   * Postgres row stuck PENDING forever with no further attempt ever
+   * scheduled to reconcile it). This is now the SOLE place Postgres gets
+   * marked FAILED, for both causes, uniformly.
+   */
+  @OnWorkerEvent('failed')
+  async onJobFailed(job: Job<ExtractionJobData> | undefined, error: Error): Promise<void> {
+    if (!job) return; // job already removed (e.g. removeOnFail) — nothing to reconcile.
+    const permanentlyFailed = await job.isFailed().catch(() => false);
+    if (!permanentlyFailed) return; // BullMQ has already re-queued it for another attempt.
+
+    const { extractionJobId, type } = job.data;
+    const message = error?.message ?? 'Extraction failed.';
+    const durationMs = job.processedOn ? Date.now() - job.processedOn : undefined;
+
+    const updated = await this.markJobDone(extractionJobId, {
+      status: 'FAILED',
+      error: message,
+      durationMs,
+    });
+    if (!updated) return; // already reconciled by an earlier event — no duplicate notification.
+
+    this.logger.warn(`Extraction job ${extractionJobId} (${type}) permanently failed: ${message}`);
+    if (job.data.mode === 'agent') {
+      await this.notifications.sendExtractionComplete(job.data.notifyEmail, {
+        jobId: extractionJobId,
+        type,
+        status: 'FAILED',
+        error: message,
+      });
+    }
+  }
+
+  /**
+   * Atomic, idempotent terminal-status write: only transitions a job OUT of
+   * PENDING, and only once — `updateMany`'s `where` filter (not a plain
+   * `update`) makes "already settled by someone else" a normal, silent
+   * no-op (`count: 0`) instead of a race or a duplicate notification. The
+   * only two writers are this class's own success path and `onJobFailed`,
+   * but a late/duplicate BullMQ event or an out-of-order retry could
+   * otherwise call this twice for the same job.
+   */
+  private async markJobDone(
+    id: string,
+    data: Prisma.ExtractionJobUpdateManyMutationInput,
+  ): Promise<boolean> {
+    const result = await this.prisma.extractionJob
+      .updateMany({ where: { id, status: 'PENDING' }, data })
+      .catch((err) => {
+        this.logger.error(`Could not record outcome for job ${id}: ${String(err)}`);
+        return { count: 0 };
+      });
+    return result.count > 0;
   }
 
   private async dispatch(data: ExtractionJobData): Promise<unknown> {

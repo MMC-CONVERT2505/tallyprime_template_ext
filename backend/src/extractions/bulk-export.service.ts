@@ -1,7 +1,14 @@
 import { randomUUID } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnApplicationBootstrap,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ExtractionType } from '@prisma/client';
 import Redis from 'ioredis';
@@ -169,7 +176,7 @@ function delay(ms: number): Promise<void> {
  * data, so an open static mount would be a straightforward data leak.
  */
 @Injectable()
-export class BulkExportService {
+export class BulkExportService implements OnApplicationBootstrap {
   private readonly logger = new Logger(BulkExportService.name);
 
   constructor(
@@ -179,6 +186,81 @@ export class BulkExportService {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly reuse: ExtractionReuseService,
   ) {}
+
+  async onApplicationBootstrap(): Promise<void> {
+    await this.reconcileOrphanedRuns().catch((err) =>
+      this.logger.error(`Bulk-export orphan reconciliation failed: ${String(err)}`),
+    );
+  }
+
+  /**
+   * Self-healing sweep run once at boot. `run`/`retry`'s whole orchestration
+   * lives as an in-memory, fire-and-forget async function (see `run`'s doc
+   * comment) — nothing persists it beyond the process that's actually
+   * executing it. So a record still PENDING or RUNNING at the moment THIS
+   * process starts up can only mean the process that was supposed to finish
+   * it is gone (a crash, a deploy, or — in dev — a hot-reload restart mid-run:
+   * confirmed live 2026-08-23, a giant multi-decade VOUCHERS step outlived
+   * the backend process that dispatched it, finished on the connector
+   * ~8 hours later, and had nowhere to report back to — the record sat
+   * "RUNNING" forever and its lock blocked every future start/retry for that
+   * company). Nothing else will ever revisit that record on its own: unlike
+   * the underlying ExtractionJob rows (which BullMQ's own stalled-job
+   * watchdog eventually reconciles automatically — see
+   * ExtractionsProcessor.onJobFailed), a Redis JSON blob has no such
+   * built-in recovery mechanism.
+   *
+   * Marks each orphaned record FAILED with a clear, actionable reason and
+   * force-clears its run lock (a plain `del`, not the token-safe
+   * `releaseLock` — safe ONLY here: this runs during application bootstrap,
+   * before this process could possibly have started a new `run`/`retry` of
+   * its own, so there is no legitimate concurrent holder this could ever
+   * incorrectly steal from).
+   *
+   * Deliberately does NOT auto-retry — resuming is a separate, explicit user
+   * action (the "Retry Failed Functions" button). Auto-resuming every
+   * orphaned run on every boot would silently re-launch a possibly
+   * hours-long Tally extraction each time the process restarts, which is
+   * actively harmful in exactly the dev-hot-reload scenario that surfaces
+   * this bug most often.
+   */
+  private async reconcileOrphanedRuns(): Promise<void> {
+    let cursor = '0';
+    let recovered = 0;
+    do {
+      const [next, keys] = await this.redis.scan(cursor, 'MATCH', 'bulk-export:*', 'COUNT', 200);
+      cursor = next;
+      for (const key of keys) {
+        // Only plain "bulk-export:<id>" record keys — not the ":index:" or
+        // ":lock:" sub-keyspaces, which share this same prefix.
+        if (key.split(':').length !== 2) continue;
+        const id = key.slice('bulk-export:'.length);
+        const record = await this.load(id);
+        if (!record || (record.status !== 'PENDING' && record.status !== 'RUNNING')) continue;
+
+        await this.mutate(id, (r) => {
+          r.status = 'FAILED';
+          r.error =
+            'Interrupted by a server restart while this export was still running — use ' +
+            '"Retry Failed Functions" to resume (already-completed steps will not be re-fetched).';
+          r.completedAt = new Date().toISOString();
+          for (const step of r.steps) {
+            if (step.status === 'RUNNING' || step.status === 'PENDING') {
+              step.status = 'FAILED';
+              step.error = step.error ?? 'Interrupted by a server restart.';
+            }
+          }
+        });
+        await this.redis
+          .del(bulkExportLockKey(record.orgId, record.company))
+          .catch(() => undefined);
+        recovered++;
+      }
+    } while (cursor !== '0');
+    if (recovered > 0) {
+      this.logger.warn(`Recovered ${recovered} bulk export(s) orphaned by a prior restart.`);
+    }
+  }
 
   async start(
     orgId: string,

@@ -6,11 +6,12 @@ describe('ExtractionsProcessor', () => {
       sendCommand?: jest.Mock;
       getLedgers?: jest.Mock;
       findFirst?: jest.Mock;
+      updateMany?: jest.Mock;
     } = {},
   ) {
     const prisma = {
       extractionJob: {
-        update: jest.fn().mockResolvedValue({}),
+        updateMany: overrides.updateMany ?? jest.fn().mockResolvedValue({ count: 1 }),
         // No prior successful fetch by default — estimateBatchedTimeoutMs
         // falls back to the static commandTimeoutMs floor, same as before
         // dynamic sizing existed. Dedicated tests below override this.
@@ -67,6 +68,10 @@ describe('ExtractionsProcessor', () => {
       payload: { company: 'ABC Ltd' },
       notifyEmail: 'user@example.com',
     },
+    attemptsMade: 0,
+    opts: { attempts: 1 },
+    processedOn: Date.now(),
+    isFailed: jest.fn().mockResolvedValue(true),
   } as any;
 
   it('on success: stores the result in Redis with the configured TTL, marks the job SUCCESS with the record count, and notifies', async () => {
@@ -80,8 +85,8 @@ describe('ExtractionsProcessor', () => {
       'EX',
       3600,
     );
-    expect(prisma.extractionJob.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+    expect(prisma.extractionJob.updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'PENDING' },
       data: expect.objectContaining({ status: 'SUCCESS', recordCount: 2 }),
     });
     expect(notifications.sendExtractionComplete).toHaveBeenCalledWith(
@@ -90,56 +95,29 @@ describe('ExtractionsProcessor', () => {
     );
   });
 
-  it('on failure with no attempts configured (a single-attempt/final job): marks FAILED, notifies, does not touch Redis, and re-throws', async () => {
+  it('never notifies (or double-writes) a SUCCESS whose Postgres row was already settled by someone else (updateMany matches 0 rows)', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const { processor, notifications } = makeDeps({ updateMany });
+
+    await processor.process(job);
+
+    expect(notifications.sendExtractionComplete).not.toHaveBeenCalled();
+  });
+
+  // `process` itself never touches Postgres or sends a notification on
+  // failure — regardless of attempt number, it just rethrows so BullMQ's own
+  // retry/backoff decides what happens next. Postgres reconciliation and
+  // notification are the SOLE responsibility of the `onJobFailed` event
+  // handler below (see its doc comment for exactly why this split exists).
+  it('on failure: never touches Postgres or notifies from inside `process` itself, regardless of attempt number', async () => {
     const sendCommand = jest.fn().mockRejectedValue(new Error('Could not reach Tally'));
     const { processor, prisma, redis, notifications } = makeDeps({ sendCommand });
 
     await expect(processor.process(job)).rejects.toThrow('Could not reach Tally');
 
     expect(redis.set).not.toHaveBeenCalled();
-    expect(prisma.extractionJob.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
-      data: expect.objectContaining({ status: 'FAILED', error: 'Could not reach Tally' }),
-    });
-    expect(notifications.sendExtractionComplete).toHaveBeenCalledWith(
-      'user@example.com',
-      expect.objectContaining({ jobId: 'job-1', status: 'FAILED', error: 'Could not reach Tally' }),
-    );
-  });
-
-  // job.attemptsMade is 0-indexed and reflects attempts made BEFORE the
-  // current call (BullMQ increments it only after this handler returns —
-  // see Job.moveToFailed in bullmq's own source). So with attempts: 3, the
-  // three real calls the processor ever sees are attemptsMade 0, 1, then 2
-  // (the final one) — attemptsMade never reaches 3, since BullMQ doesn't
-  // invoke the processor a 4th time once it's given up.
-  it('on a non-final retry attempt (2nd of 3): does not mark FAILED or notify, just rethrows so BullMQ retries', async () => {
-    const sendCommand = jest.fn().mockRejectedValue(new Error('Tally timeout'));
-    const { processor, prisma, notifications, redis } = makeDeps({ sendCommand });
-    const retryingJob = { ...job, attemptsMade: 1, opts: { attempts: 3 } };
-
-    await expect(processor.process(retryingJob)).rejects.toThrow('Tally timeout');
-
-    expect(prisma.extractionJob.update).not.toHaveBeenCalled();
+    expect(prisma.extractionJob.updateMany).not.toHaveBeenCalled();
     expect(notifications.sendExtractionComplete).not.toHaveBeenCalled();
-    expect(redis.set).not.toHaveBeenCalled();
-  });
-
-  it('on the true final attempt (3rd of 3, attemptsMade=2): marks FAILED and notifies, same as a single-attempt job', async () => {
-    const sendCommand = jest.fn().mockRejectedValue(new Error('Tally timeout'));
-    const { processor, prisma, notifications } = makeDeps({ sendCommand });
-    const finalAttemptJob = { ...job, attemptsMade: 2, opts: { attempts: 3 } };
-
-    await expect(processor.process(finalAttemptJob)).rejects.toThrow('Tally timeout');
-
-    expect(prisma.extractionJob.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
-      data: expect.objectContaining({ status: 'FAILED', error: 'Tally timeout' }),
-    });
-    expect(notifications.sendExtractionComplete).toHaveBeenCalledWith(
-      'user@example.com',
-      expect.objectContaining({ jobId: 'job-1', status: 'FAILED', error: 'Tally timeout' }),
-    );
   });
 
   it('treats a non-array result (e.g. RAW) as a single record', async () => {
@@ -148,9 +126,93 @@ describe('ExtractionsProcessor', () => {
 
     await processor.process(job);
 
-    expect(prisma.extractionJob.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+    expect(prisma.extractionJob.updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'PENDING' },
       data: expect.objectContaining({ recordCount: 1 }),
+    });
+  });
+
+  describe("onJobFailed (the @OnWorkerEvent('failed') handler)", () => {
+    /**
+     * The regression test for the live incident this handler exists to fix:
+     * a job whose worker process died mid-attempt gets recovered by BullMQ's
+     * OWN stalled-job watchdog, which can permanently fail it (job.isFailed()
+     * === true) via a path that never calls `process` again at all — so
+     * `attemptsMade` can be arbitrarily low (here, still 0/1) even though
+     * BullMQ has already, definitively given up. The old attemptsMade-vs-
+     * attempts inference would have wrongly concluded "not final yet" and
+     * left the Postgres row stuck PENDING forever; job.isFailed() (BullMQ's
+     * own ground truth) doesn't make that mistake.
+     */
+    it('marks the job FAILED even though attemptsMade looks nowhere near the configured attempts — trusts job.isFailed(), not attempt math', async () => {
+      const { processor, prisma, notifications } = makeDeps();
+      const stalledJob = {
+        ...job,
+        attemptsMade: 1,
+        opts: { attempts: 3 },
+        isFailed: jest.fn().mockResolvedValue(true),
+      };
+
+      await processor.onJobFailed(stalledJob, new Error('job stalled more than allowable limit'));
+
+      expect(prisma.extractionJob.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-1', status: 'PENDING' },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          error: 'job stalled more than allowable limit',
+        }),
+      });
+      expect(notifications.sendExtractionComplete).toHaveBeenCalledWith(
+        'user@example.com',
+        expect.objectContaining({
+          jobId: 'job-1',
+          status: 'FAILED',
+          error: 'job stalled more than allowable limit',
+        }),
+      );
+    });
+
+    it('does nothing when BullMQ will still retry (job.isFailed() resolves false)', async () => {
+      const { processor, prisma, notifications } = makeDeps();
+      const retryingJob = { ...job, isFailed: jest.fn().mockResolvedValue(false) };
+
+      await processor.onJobFailed(retryingJob, new Error('Tally timeout'));
+
+      expect(prisma.extractionJob.updateMany).not.toHaveBeenCalled();
+      expect(notifications.sendExtractionComplete).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent — a second failed event for an already-settled job is a silent no-op (updateMany matches 0 rows)', async () => {
+      const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+      const { processor, notifications } = makeDeps({ updateMany });
+
+      await processor.onJobFailed(job, new Error('Tally timeout'));
+
+      expect(notifications.sendExtractionComplete).not.toHaveBeenCalled();
+    });
+
+    it('handles job being undefined (already removed, e.g. by removeOnFail) without throwing', async () => {
+      const { processor, prisma } = makeDeps();
+
+      await expect(processor.onJobFailed(undefined, new Error('gone'))).resolves.toBeUndefined();
+      expect(prisma.extractionJob.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('never notifies for a local-mode job — there is no notifyEmail on it', async () => {
+      const { processor, prisma, notifications } = makeDeps();
+      const localJob = {
+        data: { mode: 'local', extractionJobId: 'job-2', type: 'LEDGERS', payload: {} },
+        isFailed: jest.fn().mockResolvedValue(true),
+        processedOn: Date.now(),
+      } as any;
+
+      await processor.onJobFailed(localJob, new Error('Tally unreachable'));
+
+      expect(prisma.extractionJob.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-2', status: 'PENDING' },
+        data: expect.objectContaining({ status: 'FAILED', error: 'Tally unreachable' }),
+      });
+      expect(notifications.sendExtractionComplete).not.toHaveBeenCalled();
     });
   });
 
@@ -250,7 +312,12 @@ describe('ExtractionsProcessor', () => {
         // estimated work and would just clamp to the floor unchanged,
         // which wouldn't actually prove this is computing anything).
         await processor.process(
-          vouchersJob({ company: 'ABC Ltd', from: '20260101', to: '20261231', voucherType: 'Sales' }),
+          vouchersJob({
+            company: 'ABC Ltd',
+            from: '20260101',
+            to: '20261231',
+            voucherType: 'Sales',
+          }),
         );
 
         expect(prisma.extractionJob.findFirst).not.toHaveBeenCalled();
@@ -262,7 +329,12 @@ describe('ExtractionsProcessor', () => {
         const { processor } = makeDeps({ sendCommand });
 
         await processor.process(
-          vouchersJob({ company: 'ABC Ltd', from: '20000101', to: '20260815', voucherType: 'Sales' }),
+          vouchersJob({
+            company: 'ABC Ltd',
+            from: '20000101',
+            to: '20260815',
+            voucherType: 'Sales',
+          }),
         );
 
         expect(sendCommand.mock.calls[0][3]).toBeGreaterThan(900000 * 10);
@@ -273,7 +345,12 @@ describe('ExtractionsProcessor', () => {
         const { processor } = makeDeps({ sendCommand });
 
         await processor.process(
-          vouchersJob({ company: 'ABC Ltd', from: '20260401', to: '20260401', voucherType: 'Sales' }),
+          vouchersJob({
+            company: 'ABC Ltd',
+            from: '20260401',
+            to: '20260401',
+            voucherType: 'Sales',
+          }),
         );
 
         expect(sendCommand.mock.calls[0][3]).toBe(900000);
@@ -337,8 +414,14 @@ describe('ExtractionsProcessor', () => {
         return [];
       });
       const { processor } = makeDeps({ sendCommand });
-      const jobA = { ...job, data: { ...job.data, connectionId: 'conn-A', extractionJobId: 'job-a' } };
-      const jobB = { ...job, data: { ...job.data, connectionId: 'conn-B', extractionJobId: 'job-b' } };
+      const jobA = {
+        ...job,
+        data: { ...job.data, connectionId: 'conn-A', extractionJobId: 'job-a' },
+      };
+      const jobB = {
+        ...job,
+        data: { ...job.data, connectionId: 'conn-B', extractionJobId: 'job-b' },
+      };
 
       const first = processor.process(jobA);
       await new Promise((resolve) => setImmediate(resolve));
@@ -361,6 +444,10 @@ describe('ExtractionsProcessor', () => {
         type: 'LEDGERS',
         payload: { company: 'ABC Ltd' },
       },
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      processedOn: Date.now(),
+      isFailed: jest.fn().mockResolvedValue(true),
     } as any;
 
     it('dispatches to the local Tally services (not the tunnel), and still stores/marks the result', async () => {
@@ -385,8 +472,8 @@ describe('ExtractionsProcessor', () => {
         'EX',
         3600,
       );
-      expect(prisma.extractionJob.update).toHaveBeenCalledWith({
-        where: { id: 'job-2' },
+      expect(prisma.extractionJob.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-2', status: 'PENDING' },
         data: expect.objectContaining({ status: 'SUCCESS', recordCount: 2 }),
       });
     });
@@ -399,14 +486,17 @@ describe('ExtractionsProcessor', () => {
       expect(notifications.sendExtractionComplete).not.toHaveBeenCalled();
     });
 
-    it('on final failure: marks FAILED, does not notify, and re-throws', async () => {
+    it('on final failure (via onJobFailed): marks FAILED, does not notify, and process() itself still re-throws', async () => {
       const getLedgers = jest.fn().mockRejectedValue(new Error('Tally unreachable'));
       const { processor, prisma, notifications } = makeDeps({ getLedgers });
 
       await expect(processor.process(localJob)).rejects.toThrow('Tally unreachable');
+      expect(prisma.extractionJob.updateMany).not.toHaveBeenCalled();
 
-      expect(prisma.extractionJob.update).toHaveBeenCalledWith({
-        where: { id: 'job-2' },
+      await processor.onJobFailed(localJob, new Error('Tally unreachable'));
+
+      expect(prisma.extractionJob.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-2', status: 'PENDING' },
         data: expect.objectContaining({ status: 'FAILED', error: 'Tally unreachable' }),
       });
       expect(notifications.sendExtractionComplete).not.toHaveBeenCalled();

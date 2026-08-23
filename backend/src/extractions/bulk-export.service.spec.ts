@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { bulkExportLockKey } from './bulk-export.constants';
 import { BulkExportService, PublicBulkExportRecord } from './bulk-export.service';
 import { ZipService } from '../excel/zip.service';
 
@@ -61,6 +62,19 @@ class FakeRedis {
 
   async exists(key: string): Promise<number> {
     return this.store.has(key) ? 1 : 0;
+  }
+
+  /** Single-pass stand-in (always returns cursor '0') — real SCAN's cursor
+   *  iteration doesn't matter for these tests, only that every matching key
+   *  gets found. Searches BOTH internal maps (string values and lists share
+   *  one key namespace in real Redis, and the production code's ":index:"/
+   *  ":lock:" exclusion filters on the key string alone, before ever reading
+   *  the value — a fake that only searched `store` would let that filter
+   *  pass untested against a list-backed key). */
+  async scan(_cursor: string, _matchFlag: 'MATCH', pattern: string): Promise<[string, string[]]> {
+    const regex = new RegExp(`^${pattern.replace(/\*/g, '.*')}$`);
+    const allKeys = new Set([...this.store.keys(), ...this.lists.keys()]);
+    return ['0', [...allKeys].filter((k) => regex.test(k))];
   }
 }
 
@@ -488,6 +502,98 @@ describe('BulkExportService', () => {
 
     it('404s for an id that never existed', async () => {
       await expect(service.remove('org-1', 'no-such-id')).rejects.toThrow('Bulk export not found');
+    });
+  });
+
+  describe('onApplicationBootstrap (orphan reconciliation)', () => {
+    const orphanRecord = (overrides: Partial<any> = {}) => ({
+      id: 'orphan-1',
+      orgId: 'org-1',
+      company: 'ABC Ltd',
+      fromDate: '20260401',
+      toDate: '20260430',
+      status: 'RUNNING',
+      steps: [
+        { key: 'GROUPS', label: 'Groups', status: 'SUCCESS', jobId: 'job-1' },
+        { key: 'LEDGERS', label: 'Ledgers', status: 'RUNNING' },
+        { key: 'STOCK_ITEMS', label: 'Stock Items', status: 'PENDING' },
+        { key: 'COST_CENTRES', label: 'Cost Centres', status: 'PENDING' },
+      ],
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    });
+
+    it('marks a RUNNING record FAILED, fails its still-RUNNING/PENDING steps, leaves already-SUCCESS steps alone, and force-clears its lock', async () => {
+      const orphan = orphanRecord();
+      await redis.set(`bulk-export:${orphan.id}`, JSON.stringify(orphan));
+      await redis.set(
+        bulkExportLockKey('org-1', 'ABC Ltd'),
+        'some-stale-token-from-the-dead-process',
+      );
+
+      await service.onApplicationBootstrap();
+
+      const record = await service.getStatus('org-1', 'orphan-1');
+      expect(record.status).toBe('FAILED');
+      expect(record.error).toContain('Interrupted by a server restart');
+      expect(record.steps.find((s) => s.key === 'GROUPS')).toMatchObject({
+        status: 'SUCCESS',
+        jobId: 'job-1',
+      });
+      expect(record.steps.find((s) => s.key === 'LEDGERS')?.status).toBe('FAILED');
+      expect(record.steps.find((s) => s.key === 'STOCK_ITEMS')?.status).toBe('FAILED');
+      expect(record.steps.find((s) => s.key === 'COST_CENTRES')?.status).toBe('FAILED');
+
+      // The lock is genuinely cleared — a fresh start for the same company
+      // now succeeds instead of being rejected as "already running".
+      await expect(
+        service.start('org-1', 'user@example.com', 'ABC Ltd', '20260401', '20260430'),
+      ).resolves.toMatchObject({ status: 'PENDING' });
+    });
+
+    it('recovers a still-PENDING record the same way (orphaned before its very first step ever ran)', async () => {
+      const orphan = orphanRecord({
+        status: 'PENDING',
+        steps: orphanRecord().steps.map((s: any) => ({
+          ...s,
+          status: 'PENDING',
+          jobId: undefined,
+        })),
+      });
+      await redis.set(`bulk-export:${orphan.id}`, JSON.stringify(orphan));
+
+      await service.onApplicationBootstrap();
+
+      const record = await service.getStatus('org-1', 'orphan-1');
+      expect(record.status).toBe('FAILED');
+    });
+
+    it('leaves already-terminal records (SUCCESS/FAILED) untouched', async () => {
+      const finishedSuccess = orphanRecord({ id: 'done-success', status: 'SUCCESS' });
+      const finishedFailed = orphanRecord({ id: 'done-failed', status: 'FAILED', error: 'boom' });
+      await redis.set(`bulk-export:${finishedSuccess.id}`, JSON.stringify(finishedSuccess));
+      await redis.set(`bulk-export:${finishedFailed.id}`, JSON.stringify(finishedFailed));
+
+      await service.onApplicationBootstrap();
+
+      await expect(service.getStatus('org-1', 'done-success')).resolves.toMatchObject({
+        status: 'SUCCESS',
+      });
+      await expect(service.getStatus('org-1', 'done-failed')).resolves.toMatchObject({
+        status: 'FAILED',
+        error: 'boom',
+      });
+    });
+
+    it('never misreads the :index: or :lock: sub-keyspaces as records', async () => {
+      await redis.lpush('bulk-export:index:org-1', 'some-id');
+      await redis.set(bulkExportLockKey('org-1', 'ABC Ltd'), 'token');
+
+      await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
+    });
+
+    it('is a no-op when nothing is orphaned', async () => {
+      await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
     });
   });
 
