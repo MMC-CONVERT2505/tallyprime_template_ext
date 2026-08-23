@@ -1,4 +1,4 @@
-import { IsIn, IsObject, IsOptional, IsUUID } from 'class-validator';
+import { IsBoolean, IsIn, IsObject, IsOptional, IsUUID } from 'class-validator';
 import { EXTRACTABLE_TYPES, ExtractableType } from '../extraction-action.map';
 
 export class CreateExtractionDto {
@@ -18,4 +18,14 @@ export class CreateExtractionDto {
   @IsOptional()
   @IsObject()
   payload?: Record<string, unknown>;
+
+  /**
+   * Bypasses ExtractionReuseService — dispatches a fresh Tally fetch even if
+   * an identical request's result is still cached. Escape hatch for a caller
+   * that specifically needs current data (e.g. right after a known change in
+   * Tally), not a general "always refetch" toggle.
+   */
+  @IsOptional()
+  @IsBoolean()
+  forceRefresh?: boolean;
 }

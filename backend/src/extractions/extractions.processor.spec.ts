@@ -32,6 +32,7 @@ describe('ExtractionsProcessor', () => {
         chunkDelayMs: 2000,
         masterBatchSize: 300,
         periodBatchSize: 25,
+        voucherChunkDays: 7,
       }),
     };
     const masters = {
@@ -224,7 +225,7 @@ describe('ExtractionsProcessor', () => {
       expect(sendCommand.mock.calls[0][3]).toBeUndefined();
     });
 
-    it('never looks up history for COMPANIES/GROUPS/VOUCHERS — only LEDGERS/STOCK_ITEMS batch', async () => {
+    it('never looks up history for COMPANIES/GROUPS — only LEDGERS/STOCK_ITEMS batch (VOUCHERS computes its own timeout deterministically instead, see below)', async () => {
       const sendCommand = jest.fn().mockResolvedValue([]);
       const { processor, prisma } = makeDeps({ sendCommand });
       const groupsJob = { data: { ...job.data, type: 'GROUPS' } } as any;
@@ -233,6 +234,122 @@ describe('ExtractionsProcessor', () => {
 
       expect(prisma.extractionJob.findFirst).not.toHaveBeenCalled();
       expect(sendCommand.mock.calls[0][3]).toBeUndefined();
+    });
+
+    describe('VOUCHERS: deterministic date-range-based timeout (no history lookup, unlike LEDGERS/STOCK_ITEMS)', () => {
+      const vouchersJob = (payload: Record<string, unknown>) =>
+        ({ data: { ...job.data, type: 'VOUCHERS', payload } }) as any;
+
+      it('computes a timeout from the date range without ever consulting job history', async () => {
+        const sendCommand = jest.fn().mockResolvedValue([]);
+        const { processor, prisma } = makeDeps({ sendCommand });
+
+        // A full year at the default 7-day chunking is ~53 chunks — large
+        // enough that the dynamic estimate clearly exceeds the static
+        // 900000ms floor (a 30-day range, by contrast, is only ~340s of
+        // estimated work and would just clamp to the floor unchanged,
+        // which wouldn't actually prove this is computing anything).
+        await processor.process(
+          vouchersJob({ company: 'ABC Ltd', from: '20260101', to: '20261231', voucherType: 'Sales' }),
+        );
+
+        expect(prisma.extractionJob.findFirst).not.toHaveBeenCalled();
+        expect(sendCommand.mock.calls[0][3]).toBeGreaterThan(900000);
+      });
+
+      it('a multi-year range produces a proportionally large budget instead of the tiny static default — the exact incident this fixes', async () => {
+        const sendCommand = jest.fn().mockResolvedValue([]);
+        const { processor } = makeDeps({ sendCommand });
+
+        await processor.process(
+          vouchersJob({ company: 'ABC Ltd', from: '20000101', to: '20260815', voucherType: 'Sales' }),
+        );
+
+        expect(sendCommand.mock.calls[0][3]).toBeGreaterThan(900000 * 10);
+      });
+
+      it('a range narrow enough to be unchunked still floors at the static commandTimeoutMs', async () => {
+        const sendCommand = jest.fn().mockResolvedValue([]);
+        const { processor } = makeDeps({ sendCommand });
+
+        await processor.process(
+          vouchersJob({ company: 'ABC Ltd', from: '20260401', to: '20260401', voucherType: 'Sales' }),
+        );
+
+        expect(sendCommand.mock.calls[0][3]).toBe(900000);
+      });
+
+      it('falls back to undefined when from/to are missing from the payload', async () => {
+        const sendCommand = jest.fn().mockResolvedValue([]);
+        const { processor } = makeDeps({ sendCommand });
+
+        await processor.process(vouchersJob({ company: 'ABC Ltd' }));
+
+        expect(sendCommand.mock.calls[0][3]).toBeUndefined();
+      });
+    });
+  });
+
+  describe('per-connector dispatch serialization', () => {
+    it('serializes two agent-mode dispatches for the SAME connector — the second only starts once the first resolves', async () => {
+      const order: string[] = [];
+      let resolveFirst!: () => void;
+      const firstGate = new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      });
+      const sendCommand = jest.fn().mockImplementation(async () => {
+        order.push('start');
+        if (order.filter((e) => e === 'start').length === 1) {
+          await firstGate; // first call blocks until explicitly released below
+        }
+        order.push('end');
+        return [];
+      });
+      const { processor } = makeDeps({ sendCommand });
+      const jobA = { ...job, data: { ...job.data, extractionJobId: 'job-a' } };
+      const jobB = { ...job, data: { ...job.data, extractionJobId: 'job-b' } };
+
+      const first = processor.process(jobA);
+      // Give the first call a chance to actually start (and block on the gate).
+      await new Promise((resolve) => setImmediate(resolve));
+      const second = processor.process(jobB);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // The second dispatch must not have started yet — only one 'start' so far.
+      expect(order).toEqual(['start']);
+
+      resolveFirst();
+      await Promise.all([first, second]);
+
+      expect(order).toEqual(['start', 'end', 'start', 'end']);
+    });
+
+    it('does NOT serialize dispatches for DIFFERENT connectors — both may be in flight at once', async () => {
+      const order: string[] = [];
+      let releaseA!: () => void;
+      const gateA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      const sendCommand = jest.fn().mockImplementation(async (connectionId: string) => {
+        order.push(`start:${connectionId}`);
+        if (connectionId === 'conn-A') await gateA;
+        order.push(`end:${connectionId}`);
+        return [];
+      });
+      const { processor } = makeDeps({ sendCommand });
+      const jobA = { ...job, data: { ...job.data, connectionId: 'conn-A', extractionJobId: 'job-a' } };
+      const jobB = { ...job, data: { ...job.data, connectionId: 'conn-B', extractionJobId: 'job-b' } };
+
+      const first = processor.process(jobA);
+      await new Promise((resolve) => setImmediate(resolve));
+      const second = processor.process(jobB);
+      await second; // conn-B's dispatch completes without waiting on conn-A's gate
+
+      expect(order).toEqual(['start:conn-A', 'start:conn-B', 'end:conn-B']);
+
+      releaseA();
+      await first;
+      expect(order).toEqual(['start:conn-A', 'start:conn-B', 'end:conn-B', 'end:conn-A']);
     });
   });
 

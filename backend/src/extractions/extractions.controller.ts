@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -19,6 +20,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { BulkExportService } from './bulk-export.service';
 import { BulkExportDto } from './dto/bulk-export.dto';
+import { BulkExportRetryDto } from './dto/bulk-export-retry.dto';
 import { CreateExtractionDto } from './dto/create-extraction.dto';
 import { FetchMasterDto } from './dto/fetch-master.dto';
 import { ExtractionsService } from './extractions.service';
@@ -96,6 +98,34 @@ export class ExtractionsController {
     return this.bulkExport.getStatus(user.orgId, id);
   }
 
+  /** Removes a bulk export from history (record + its .zip on disk). Refuses
+   *  while still PENDING/RUNNING — see BulkExportService.remove. */
+  @Delete('bulk-export/:id')
+  @HttpCode(HttpStatus.OK)
+  async deleteBulkExport(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    await this.bulkExport.remove(user.orgId, id);
+    return { deleted: true };
+  }
+
+  /**
+   * Re-runs only the still-broken part of a FAILED bulk export — the
+   * "Retry Failed Functions" action. Body is optional; when omitted, every
+   * currently-retryable fetch step (FAILED, or PENDING left over from an old
+   * stuck run) is retried, plus GENERATE_EXCEL/ZIP once all fetches are
+   * fine. See BulkExportService.retry's doc comment for the exact rules —
+   * a supplied `steps` list is intersected with, never a substitute for,
+   * the server's own determination of what's actually still broken.
+   */
+  @Post('bulk-export/:id/retry')
+  @HttpCode(HttpStatus.ACCEPTED)
+  retryBulkExport(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: BulkExportRetryDto,
+  ) {
+    return this.bulkExport.retry(user.orgId, user.email, id, dto.steps);
+  }
+
   /**
    * Streams the generated .zip. Authenticated + org-owned like every other
    * route here — these exports carry real GSTIN/PAN/bank-account data, so
@@ -119,6 +149,15 @@ export class ExtractionsController {
   @Get(':id')
   status(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
     return this.extractions.getStatus(user.orgId, id);
+  }
+
+  /** Removes a single job from history. Refuses while still PENDING — see
+   *  ExtractionsService.remove. */
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  async deleteJob(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    await this.extractions.remove(user.orgId, id);
+    return { deleted: true };
   }
 
   /** Raw JSON result. Only available while status=SUCCESS and within the result TTL. */

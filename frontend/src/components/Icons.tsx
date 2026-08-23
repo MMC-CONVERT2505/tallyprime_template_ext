@@ -98,6 +98,15 @@ export function IconAlert(props: IconProps) {
   );
 }
 
+/** Row-expand toggle — rotated 90deg by the caller when open. */
+export function IconChevronRight(props: IconProps) {
+  return (
+    <svg {...base} width="14" height="14" {...props}>
+      <path d="M9 5.5 15.5 12 9 18.5" />
+    </svg>
+  );
+}
+
 export function IconRefresh(props: IconProps) {
   return (
     <svg {...base} width="15" height="15" {...props}>

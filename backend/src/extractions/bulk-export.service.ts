@@ -5,15 +5,19 @@ import { BadRequestException, Inject, Injectable, Logger, NotFoundException } fr
 import { ConfigService } from '@nestjs/config';
 import { ExtractionType } from '@prisma/client';
 import Redis from 'ioredis';
-import { BulkExportConfig } from '../config/configuration';
+import { BulkExportConfig, TallyConfig } from '../config/configuration';
 import { REDIS_CLIENT } from '../redis/redis.module';
+import { acquireLock, releaseLock } from '../redis/lock.util';
 import { ZipEntry, ZipService } from '../excel/zip.service';
+import { estimateVouchersTimeoutMs } from '../tally/voucher-timeout-estimate';
 import {
   BULK_EXPORT_INDEX_MAX_ENTRIES,
   bulkExportIndexKey,
   bulkExportKey,
   bulkExportLockKey,
 } from './bulk-export.constants';
+import { ExtractionReuseService } from './extraction-reuse.service';
+import { EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS } from './extractions.constants';
 import { ExtractionsService } from './extractions.service';
 
 export type BulkExportStepKey =
@@ -68,7 +72,13 @@ export type PublicBulkExportRecord = Omit<BulkExportRecord, 'filePath' | 'orgId'
  *  the voucher — see invoice.mapper.ts's doc comment). Also the ONLY safe
  *  order given a single Tally connector serves one request at a time (see
  *  TallyConfig.chunkDelayMs's doc comment) — this orchestrator never fires
- *  two of these concurrently. */
+ *  two of these concurrently. NOTE: this ordering is about avoiding
+ *  concurrent load on one Tally connector and about a later
+ *  Excel-generation-time companion-job lookup — NOT a fetch-time data
+ *  dependency between the steps themselves (dispatchStep below never feeds
+ *  one step's jobId into another's request), which is exactly what makes
+ *  isolating and independently retrying a failed step safe (see
+ *  runFetchPhase). */
 const STEP_LABELS: Record<BulkExportStepKey, string> = {
   GROUPS: 'Groups (account hierarchy)',
   LEDGERS: 'Ledgers → Chart of Accounts / Customers / Vendors',
@@ -95,12 +105,25 @@ const FETCH_STEP_KEYS: BulkExportStepKey[] = [
 
 const ALL_STEP_KEYS: BulkExportStepKey[] = [...FETCH_STEP_KEYS, 'GENERATE_EXCEL', 'ZIP'];
 
+/** Exported for BulkExportRetryDto's validation — every valid value a
+ *  caller's `steps` list may contain. */
+export const BULK_EXPORT_STEP_KEYS: BulkExportStepKey[] = [...ALL_STEP_KEYS];
+
 const VOUCHER_TYPE_BY_STEP: Partial<Record<BulkExportStepKey, string>> = {
   VOUCHERS_SALES: 'Sales',
   VOUCHERS_PURCHASE: 'Purchase',
   VOUCHERS_CREDIT_NOTE: 'Credit Note',
   VOUCHERS_STOCK_JOURNAL: 'Stock Journal',
 };
+
+interface RunContext {
+  orgId: string;
+  notifyEmail: string;
+  company: string;
+  connectionId: string;
+  fromDate: string;
+  toDate: string;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -127,6 +150,14 @@ function delay(ms: number): Promise<void> {
  * can poll GET /extractions/bulk-export/:id the same way it already polls a
  * single extraction job.
  *
+ * A fetch step's failure is ISOLATED, not fatal to the whole run: every
+ * other fetch step is still attempted (they have no fetch-time dependency on
+ * each other — see FETCH_STEP_KEYS's doc comment), and `retry` lets a caller
+ * re-run just what failed (or what's left over PENDING from an old,
+ * pre-this-feature stuck run) without redoing already-successful steps. Only
+ * once every fetch step is SUCCESS does the run proceed to generating the 9
+ * Excel templates and zipping them.
+ *
  * The generated .zip is written to disk (BulkExportConfig.exportsDir, not
  * inside dist/src) rather than held only in Redis/memory — these can run
  * several minutes for a large company and produce a multi-entity archive
@@ -146,6 +177,7 @@ export class BulkExportService {
     private readonly zip: ZipService,
     private readonly config: ConfigService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    private readonly reuse: ExtractionReuseService,
   ) {}
 
   async start(
@@ -165,11 +197,10 @@ export class BulkExportService {
     // halfway through.
     const connectionId = await this.extractions.resolveConnectionId(orgId, companyName);
 
-    const cfg = this.bulkExportConfig();
     const lockKey = bulkExportLockKey(orgId, companyName);
-    const lockTtlSeconds = Math.ceil((cfg.stepTimeoutMs * (FETCH_STEP_KEYS.length + 2)) / 1000);
-    const acquired = await this.redis.set(lockKey, '1', 'EX', lockTtlSeconds, 'NX');
-    if (!acquired) {
+    const lockTtlMs = this.computeLockTtlMs(fromDate, toDate);
+    const lockToken = await acquireLock(this.redis, lockKey, lockTtlMs);
+    if (!lockToken) {
       throw new BadRequestException(
         `A bulk export for "${companyName}" is already running — wait for it to finish ` +
           '(GET /extractions/bulk-export/:id) before starting another.',
@@ -198,15 +229,148 @@ export class BulkExportService {
 
     // Fire-and-forget: the caller polls status, matching this project's
     // existing single-job async pattern (POST returns 202 + id immediately).
-    void this.run(id, orgId, notifyEmail, companyName, connectionId, fromDate, toDate).catch(
-      (err) => {
-        this.logger.error(
-          `Bulk export ${id} crashed outside its own error handling: ${String(err)}`,
-        );
-      },
-    );
+    void this.run(
+      id,
+      { orgId, notifyEmail, company: companyName, connectionId, fromDate, toDate },
+      lockKey,
+      lockToken,
+    ).catch((err) => {
+      this.logger.error(`Bulk export ${id} crashed outside its own error handling: ${String(err)}`);
+    });
 
     return { id, status: record.status };
+  }
+
+  /**
+   * Re-runs only what's actually still broken in a FAILED bulk export:
+   *   - any fetch step currently FAILED, or stuck PENDING (a run created
+   *     before this feature shipped, which used to abort the whole export
+   *     on the first failure — this lets an old stuck record self-heal too),
+   *   - PLUS any fetch step that's marked SUCCESS but whose cached result
+   *     has since expired out of Redis (its own TTL is much shorter than
+   *     this record's — see ExtractionReuseService.isResultCached).
+   * If every fetch step is (or turns out to still be) fine, only
+   * GENERATE_EXCEL/ZIP are redone — no new Tally dispatch at all.
+   *
+   * `steps`, if supplied, is intersected with the real retryable set above,
+   * never trusted on its own — a stale client list can't force a wasted
+   * re-fetch of a step that meanwhile succeeded via another path, and can't
+   * skip a step that's genuinely still broken (the run just stays FAILED
+   * with that step still flagged, same as it does today).
+   */
+  async retry(
+    orgId: string,
+    notifyEmail: string,
+    id: string,
+    steps?: BulkExportStepKey[],
+  ): Promise<{ id: string; status: BulkExportStatus }> {
+    const record = await this.loadOwned(orgId, id);
+    if (record.status !== 'FAILED') {
+      throw new BadRequestException(
+        `Bulk export ${id} is ${record.status.toLowerCase()}, not FAILED — nothing to retry.`,
+      );
+    }
+
+    const lockKey = bulkExportLockKey(orgId, record.company);
+    const lockTtlMs = this.computeLockTtlMs(record.fromDate, record.toDate);
+    const lockToken = await acquireLock(this.redis, lockKey, lockTtlMs);
+    if (!lockToken) {
+      throw new BadRequestException(
+        `A bulk export for "${record.company}" is already running — wait for it to finish ` +
+          'before retrying.',
+      );
+    }
+
+    try {
+      const staleSuccessKeys = await this.findStaleSuccessSteps(record);
+      const retryableKeys = new Set<BulkExportStepKey>(staleSuccessKeys);
+      for (const step of record.steps) {
+        if (
+          FETCH_STEP_KEYS.includes(step.key) &&
+          (step.status === 'FAILED' || step.status === 'PENDING')
+        ) {
+          retryableKeys.add(step.key);
+        }
+      }
+
+      const fetchStepsToRetry = FETCH_STEP_KEYS.filter(
+        (key) => retryableKeys.has(key) && (!steps || steps.includes(key)),
+      );
+
+      // Every fetch step NOT being retried keeps its existing (still valid)
+      // jobId, so generateAllTemplates never has to re-fetch data that's
+      // already sitting in Redis.
+      const reusableJobIds: Partial<Record<BulkExportStepKey, string>> = {};
+      for (const step of record.steps) {
+        if (
+          FETCH_STEP_KEYS.includes(step.key) &&
+          step.status === 'SUCCESS' &&
+          step.jobId &&
+          !fetchStepsToRetry.includes(step.key)
+        ) {
+          reusableJobIds[step.key] = step.jobId;
+        }
+      }
+
+      await this.mutate(id, (r) => {
+        r.status = 'PENDING';
+        r.error = undefined;
+        r.completedAt = undefined;
+        for (const key of fetchStepsToRetry) {
+          const step = r.steps.find((s) => s.key === key);
+          if (!step) continue;
+          step.status = 'PENDING';
+          step.error = undefined;
+          step.jobId = undefined;
+          step.recordCount = undefined;
+          step.startedAt = undefined;
+          step.finishedAt = undefined;
+        }
+        // GENERATE_EXCEL and ZIP are always retried together, never
+        // independently — both are fast, local, Tally-independent steps (no
+        // Redis-expiry concern, no reason to cache/skip one), so once every
+        // fetch step is (or already was) fine, just redo both rather than
+        // adding the complexity of caching intermediate template buffers to
+        // support a "only ZIP failed" fast path.
+        if (fetchStepsToRetry.length === 0) {
+          for (const key of ['GENERATE_EXCEL', 'ZIP'] as const) {
+            const step = r.steps.find((s) => s.key === key);
+            if (!step) continue;
+            step.status = 'PENDING';
+            step.error = undefined;
+            step.startedAt = undefined;
+            step.finishedAt = undefined;
+          }
+        }
+      });
+
+      const connectionId = await this.extractions.resolveConnectionId(orgId, record.company);
+
+      void this.run(
+        id,
+        {
+          orgId,
+          notifyEmail,
+          company: record.company,
+          connectionId,
+          fromDate: record.fromDate,
+          toDate: record.toDate,
+        },
+        lockKey,
+        lockToken,
+        fetchStepsToRetry,
+        reusableJobIds,
+      ).catch((err) => {
+        this.logger.error(
+          `Bulk export ${id} retry crashed outside its own error handling: ${String(err)}`,
+        );
+      });
+    } catch (err) {
+      await releaseLock(this.redis, lockKey, lockToken).catch(() => undefined);
+      throw err;
+    }
+
+    return { id, status: 'PENDING' };
   }
 
   async getStatus(orgId: string, id: string): Promise<PublicBulkExportRecord> {
@@ -241,86 +405,74 @@ export class BulkExportService {
   }
 
   /**
-   * The actual sequential run: 8 fetch steps, then write all 9 templates,
-   * then zip. Every step's outcome (including the two synthetic
-   * GENERATE_EXCEL/ZIP steps) is persisted to Redis as it happens, so a
-   * caller polling mid-run sees live progress, not just a final result.
+   * Removes a bulk export from history: its Redis record, its entry in the
+   * org's index list, and the generated .zip on disk (best-effort — an
+   * already-missing file, e.g. past its own retention window, is not an
+   * error). Refuses to delete a still in-flight run (PENDING/RUNNING) rather
+   * than yanking the record out from under `run`/`retry` mid-flight — that
+   * wouldn't crash anything (`mutate` no-ops once `load` returns null), but
+   * would silently orphan a run whose progress the UI can no longer show.
+   * Deliberately does NOT delete the underlying per-step ExtractionJob rows
+   * (Postgres) or their cached Redis results — those remain valid history/
+   * reuse candidates (see ExtractionReuseService) independent of whether this
+   * particular bulk-export grouping is still visible.
+   */
+  async remove(orgId: string, id: string): Promise<void> {
+    const record = await this.loadOwned(orgId, id);
+    if (record.status === 'PENDING' || record.status === 'RUNNING') {
+      throw new BadRequestException(
+        `Bulk export ${id} is still ${record.status.toLowerCase()} — wait for it to finish ` +
+          'before deleting it.',
+      );
+    }
+    if (record.filePath) {
+      await fs
+        .unlink(record.filePath)
+        .catch((err) => this.logger.debug(`Could not remove ${record.filePath}: ${String(err)}`));
+    }
+    await this.redis.del(bulkExportKey(id));
+    await this.redis.lrem(bulkExportIndexKey(orgId), 0, id);
+  }
+
+  /**
+   * The actual run, shared by both a fresh `start()` (every fetch step) and
+   * a `retry()` (a subset, plus reused jobIds for the rest). Every step's
+   * outcome (including the two synthetic GENERATE_EXCEL/ZIP steps) is
+   * persisted to Redis as it happens, so a caller polling mid-run sees live
+   * progress, not just a final result. Always releases `lockToken` on the
+   * way out, success or failure.
    */
   private async run(
     id: string,
-    orgId: string,
-    notifyEmail: string,
-    company: string,
-    connectionId: string,
-    fromDate: string,
-    toDate: string,
+    ctx: RunContext,
+    lockKey: string,
+    lockToken: string,
+    fetchStepsToAttempt: BulkExportStepKey[] = FETCH_STEP_KEYS,
+    reusableJobIds: Partial<Record<BulkExportStepKey, string>> = {},
   ): Promise<void> {
-    const cfg = this.bulkExportConfig();
-    const jobIds: Partial<Record<BulkExportStepKey, string>> = {};
-
     try {
       await this.setStatus(id, 'RUNNING');
 
-      for (const key of FETCH_STEP_KEYS) {
-        await this.updateStep(id, key, { status: 'RUNNING', startedAt: new Date().toISOString() });
-        try {
-          const { id: jobId } = await this.dispatchStep(key, {
-            orgId,
-            notifyEmail,
-            company,
-            connectionId,
-            fromDate,
-            toDate,
-          });
-          const finished = await this.awaitJob(orgId, jobId, cfg.stepTimeoutMs, cfg.pollIntervalMs);
-          if (finished.status === 'FAILED') {
-            throw new Error(finished.error ?? `${STEP_LABELS[key]} extraction failed.`);
-          }
-          jobIds[key] = jobId;
-          await this.updateStep(id, key, {
-            status: 'SUCCESS',
-            jobId,
-            recordCount: finished.recordCount ?? undefined,
-            finishedAt: new Date().toISOString(),
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          await this.updateStep(id, key, {
-            status: 'FAILED',
-            error: message,
-            finishedAt: new Date().toISOString(),
-          });
-          throw new Error(`Step "${STEP_LABELS[key]}" failed: ${message}`);
-        }
+      let jobIds: Partial<Record<BulkExportStepKey, string>> = { ...reusableJobIds };
+      let allSucceeded = true;
+
+      if (fetchStepsToAttempt.length > 0) {
+        const result = await this.runFetchPhase(id, ctx, fetchStepsToAttempt);
+        jobIds = { ...jobIds, ...result.jobIds };
+        allSucceeded = result.allSucceeded;
       }
 
-      await this.updateStep(id, 'GENERATE_EXCEL', {
-        status: 'RUNNING',
-        startedAt: new Date().toISOString(),
-      });
-      const entries = await this.generateAllTemplates(
-        orgId,
+      const allFetchStepsPresent = FETCH_STEP_KEYS.every((key) => Boolean(jobIds[key]));
+      if (!allSucceeded || !allFetchStepsPresent) {
+        await this.failRun(id);
+        return;
+      }
+
+      await this.finishGenerateAndZip(
+        id,
+        ctx.orgId,
+        ctx.company,
         jobIds as Record<BulkExportStepKey, string>,
-      );
-      await this.updateStep(id, 'GENERATE_EXCEL', {
-        status: 'SUCCESS',
-        finishedAt: new Date().toISOString(),
-      });
-
-      await this.updateStep(id, 'ZIP', { status: 'RUNNING', startedAt: new Date().toISOString() });
-      const zipBuffer = await this.zip.buildZip(entries);
-      const { filename, filePath } = await this.saveZip(orgId, company, id, zipBuffer);
-      await this.updateStep(id, 'ZIP', { status: 'SUCCESS', finishedAt: new Date().toISOString() });
-
-      await this.mutate(id, (record) => {
-        record.status = 'SUCCESS';
-        record.filename = filename;
-        record.filePath = filePath;
-        record.sizeBytes = zipBuffer.length;
-        record.completedAt = new Date().toISOString();
-      });
-      this.logger.log(
-        `Bulk export ${id} (${company}) succeeded: ${filename} (${zipBuffer.length} bytes).`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -329,10 +481,209 @@ export class BulkExportService {
         record.error = message;
         record.completedAt = new Date().toISOString();
       });
-      this.logger.warn(`Bulk export ${id} (${company}) failed: ${message}`);
+      this.logger.warn(`Bulk export ${id} (${ctx.company}) failed: ${message}`);
     } finally {
-      await this.redis.del(bulkExportLockKey(orgId, company)).catch(() => undefined);
+      await releaseLock(this.redis, lockKey, lockToken).catch(() => undefined);
     }
+  }
+
+  /**
+   * Dispatches and awaits each of `stepsToAttempt` in sequence. A step's
+   * failure is caught and recorded but does NOT abort the loop — every
+   * requested step gets a real attempt, since none of them depend on
+   * another's fetch-time result (see FETCH_STEP_KEYS's doc comment).
+   */
+  private async runFetchPhase(
+    id: string,
+    ctx: RunContext,
+    stepsToAttempt: BulkExportStepKey[],
+  ): Promise<{ allSucceeded: boolean; jobIds: Partial<Record<BulkExportStepKey, string>> }> {
+    const cfg = this.bulkExportConfig();
+    const jobIds: Partial<Record<BulkExportStepKey, string>> = {};
+    let allSucceeded = true;
+
+    for (const key of stepsToAttempt) {
+      await this.updateStep(id, key, {
+        status: 'RUNNING',
+        startedAt: new Date().toISOString(),
+        error: undefined,
+      });
+      try {
+        const { id: jobId } = await this.dispatchStep(key, ctx);
+        const stepTimeoutMs = this.pollBudgetFor(key, ctx.fromDate, ctx.toDate, cfg.stepTimeoutMs);
+        const finished = await this.awaitJob(ctx.orgId, jobId, stepTimeoutMs, cfg.pollIntervalMs);
+        if (finished.status === 'FAILED') {
+          throw new Error(finished.error ?? `${STEP_LABELS[key]} extraction failed.`);
+        }
+        jobIds[key] = jobId;
+        await this.updateStep(id, key, {
+          status: 'SUCCESS',
+          jobId,
+          recordCount: finished.recordCount ?? undefined,
+          finishedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        allSucceeded = false;
+        const message = err instanceof Error ? err.message : String(err);
+        await this.updateStep(id, key, {
+          status: 'FAILED',
+          error: message,
+          finishedAt: new Date().toISOString(),
+        });
+        this.logger.warn(
+          `Bulk export ${id}: step "${STEP_LABELS[key]}" failed (${message}) — continuing with ` +
+            'the remaining steps.',
+        );
+      }
+    }
+
+    return { allSucceeded, jobIds };
+  }
+
+  /** VOUCHERS steps get a deterministic, date-range-based poll budget
+   *  (accounting for BullMQ's full retry envelope — a step's Postgres row
+   *  only flips to FAILED once every attempt is exhausted, not after the
+   *  first) instead of the static default, which was sized for far smaller
+   *  ranges — see estimateVouchersTimeoutMs's doc comment for the exact
+   *  incident this fixes. Master steps are unaffected. */
+  private pollBudgetFor(
+    key: BulkExportStepKey,
+    fromDate: string,
+    toDate: string,
+    staticStepTimeoutMs: number,
+  ): number {
+    if (VOUCHER_TYPE_BY_STEP[key]) {
+      return this.vouchersStepPollBudgetMs(fromDate, toDate);
+    }
+    return staticStepTimeoutMs;
+  }
+
+  private vouchersStepPollBudgetMs(fromDate: string, toDate: string): number {
+    const tally = this.config.getOrThrow<TallyConfig>('tally');
+    const perAttemptMs = estimateVouchersTimeoutMs(fromDate, toDate, tally);
+    const { attempts = 1, backoff } = EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS;
+    const baseDelayMs = typeof backoff === 'object' && backoff ? (backoff.delay ?? 0) : 0;
+    // Sum of an exponential backoff series (delay, delay*2, delay*4, ...)
+    // across (attempts - 1) retries — matches BullMQ's own formula, mirrored
+    // here since this needs to reason about the worst case ahead of time,
+    // not just apply it retry-by-retry the way BullMQ does internally.
+    const totalBackoffMs = attempts > 1 ? baseDelayMs * (2 ** (attempts - 1) - 1) : 0;
+    return perAttemptMs * attempts + totalBackoffMs;
+  }
+
+  /** Worst-case wall-clock budget for the whole run, used to size the
+   *  per-(org,company) lock's TTL generously above it — computed from the
+   *  SAME per-step poll budgets `runFetchPhase` actually uses (including the
+   *  dynamic VOUCHERS estimate), not a fixed multiple of the static step
+   *  timeout, so a legitimately-long-running wide-range run can't outlive
+   *  its own lock. */
+  private computeLockTtlMs(fromDate: string, toDate: string): number {
+    const cfg = this.bulkExportConfig();
+    const fetchPhaseTotalMs = FETCH_STEP_KEYS.reduce(
+      (sum, key) => sum + this.pollBudgetFor(key, fromDate, toDate, cfg.stepTimeoutMs),
+      0,
+    );
+    // GENERATE_EXCEL/ZIP have no Tally round trip or BullMQ retry envelope —
+    // two step-timeouts' worth of margin is generous, not a tight estimate.
+    return fetchPhaseTotalMs + cfg.stepTimeoutMs * 2;
+  }
+
+  /** Which currently-SUCCESS fetch steps' cached Redis result has expired —
+   *  see retry's doc comment for why this matters (a step's result TTL is
+   *  much shorter than the bulk-export record's own TTL). */
+  private async findStaleSuccessSteps(record: BulkExportRecord): Promise<BulkExportStepKey[]> {
+    const successSteps = record.steps.filter(
+      (s) => FETCH_STEP_KEYS.includes(s.key) && s.status === 'SUCCESS' && s.jobId,
+    );
+    const stale: BulkExportStepKey[] = [];
+    await Promise.all(
+      successSteps.map(async (step) => {
+        const cached = await this.reuse.isResultCached(step.jobId!);
+        if (!cached) stale.push(step.key);
+      }),
+    );
+    return stale;
+  }
+
+  /** Aggregates every currently-FAILED step's error into one overall
+   *  message and marks the run FAILED — used both when a fresh fetch phase
+   *  doesn't fully succeed and when a retry still leaves something broken. */
+  private async failRun(id: string): Promise<void> {
+    const record = await this.load(id);
+    const failedSteps = record?.steps.filter((s) => s.status === 'FAILED') ?? [];
+    const message =
+      failedSteps.length > 0
+        ? `${failedSteps.length} of ${FETCH_STEP_KEYS.length} fetch step(s) failed: ` +
+          failedSteps.map((s) => `${s.label} (${s.error ?? 'unknown error'})`).join('; ')
+        : 'One or more fetch steps did not complete.';
+    await this.mutate(id, (r) => {
+      r.status = 'FAILED';
+      r.error = message;
+      r.completedAt = new Date().toISOString();
+    });
+    this.logger.warn(`Bulk export ${id}: ${message}`);
+  }
+
+  /** GENERATE_EXCEL then ZIP, each independently marked FAILED (and
+   *  re-thrown) if it errors, so a caller always sees exactly which of the
+   *  two broke rather than either step staying stuck at RUNNING forever. */
+  private async finishGenerateAndZip(
+    id: string,
+    orgId: string,
+    company: string,
+    jobIds: Record<BulkExportStepKey, string>,
+  ): Promise<void> {
+    await this.updateStep(id, 'GENERATE_EXCEL', {
+      status: 'RUNNING',
+      startedAt: new Date().toISOString(),
+      error: undefined,
+    });
+    let entries: ZipEntry[];
+    try {
+      entries = await this.generateAllTemplates(orgId, jobIds);
+    } catch (err) {
+      await this.updateStep(id, 'GENERATE_EXCEL', {
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : String(err),
+        finishedAt: new Date().toISOString(),
+      });
+      throw err;
+    }
+    await this.updateStep(id, 'GENERATE_EXCEL', {
+      status: 'SUCCESS',
+      finishedAt: new Date().toISOString(),
+    });
+
+    await this.updateStep(id, 'ZIP', {
+      status: 'RUNNING',
+      startedAt: new Date().toISOString(),
+      error: undefined,
+    });
+    let zipBuffer: Buffer;
+    let saved: { filename: string; filePath: string };
+    try {
+      zipBuffer = await this.zip.buildZip(entries);
+      saved = await this.saveZip(orgId, company, id, zipBuffer);
+    } catch (err) {
+      await this.updateStep(id, 'ZIP', {
+        status: 'FAILED',
+        error: err instanceof Error ? err.message : String(err),
+        finishedAt: new Date().toISOString(),
+      });
+      throw err;
+    }
+    await this.updateStep(id, 'ZIP', { status: 'SUCCESS', finishedAt: new Date().toISOString() });
+
+    await this.mutate(id, (record) => {
+      record.status = 'SUCCESS';
+      record.filename = saved.filename;
+      record.filePath = saved.filePath;
+      record.sizeBytes = zipBuffer.length;
+      record.completedAt = new Date().toISOString();
+    });
+    this.logger.log(
+      `Bulk export ${id} (${company}) succeeded: ${saved.filename} (${zipBuffer.length} bytes).`,
+    );
   }
 
   private dispatchStep(
@@ -625,9 +976,9 @@ export class BulkExportService {
   }
 
   /** Read-modify-write against Redis — fine without optimistic locking since
-   *  exactly one `run` ever mutates a given bulk export id (the lock in
-   *  `start` prevents two concurrent runs for the same org+company, and each
-   *  run only ever touches its own id). */
+   *  exactly one `run` ever mutates a given bulk export id at a time (the
+   *  per-(org,company) lock in `start`/`retry` prevents two concurrent runs
+   *  against the same record, and each run only ever touches its own id). */
   private async mutate(id: string, fn: (record: BulkExportRecord) => void): Promise<void> {
     const record = await this.load(id);
     if (!record) return;

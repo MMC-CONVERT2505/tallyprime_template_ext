@@ -672,13 +672,69 @@ tbody tr.row-selected:hover {
   text-overflow: ellipsis;
 }
 
-/* ── Bulk (full Zoho) export progress ─────────────────────────────── */
-
-.bulk-export-status {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+/* A bulk export's summary line is the same shape as job-row-main but isn't
+   itself a click target (its chevron and action buttons are) — a plain div,
+   not a button, so no hover/focus button styling to reset. */
+.job-row-summary {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  min-width: 0;
 }
+
+.job-row-summary > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.job-row-summary .job-row-title {
+  flex-shrink: 0;
+}
+
+/* Groups a bulk export's summary row with its (optional) expanded step
+   list into one visual unit, one gap smaller than the gap between rows. */
+.job-row-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Small square icon button — same footprint/interaction as .password-toggle,
+   reused here for the row-expand chevron. */
+.job-row-toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0;
+}
+
+.job-row-toggle:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-h);
+}
+
+.job-row-toggle svg {
+  transition: transform 0.12s ease;
+}
+
+.job-row-toggle.expanded svg {
+  transform: rotate(90deg);
+}
+
+/* ── Bulk (full Zoho) export progress ─────────────────────────────── */
 
 .bulk-export-steps {
   display: flex;
@@ -698,6 +754,22 @@ tbody tr.row-selected:hover {
   background: var(--surface-sunken);
   padding: 6px 10px;
   font-size: 13px;
+}
+
+/* The per-step breakdown nested under an expanded bulk-export history row —
+   same list styling, indented so it visually reads as "inside" that row. */
+.job-row-substeps {
+  margin-left: 34px;
+}
+
+.job-row-substeps li > span:first-child {
+  flex-shrink: 0;
+}
+
+.job-row-substeps li > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Advanced/power-user disclosure ────────────────────────────────── */

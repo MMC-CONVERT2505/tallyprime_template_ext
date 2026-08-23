@@ -13,6 +13,7 @@ import { MasterExtractionService } from '../tally/extraction/master-extraction.s
 import { TransactionExtractionService } from '../tally/extraction/transaction-extraction.service';
 import { TallyDiagnosticsService } from '../tally/tally-diagnostics.service';
 import { dispatchExtraction } from '../tally/extraction-dispatch';
+import { estimateVouchersTimeoutMs } from '../tally/voucher-timeout-estimate';
 import { ExtractableType, toTunnelAction } from './extraction-action.map';
 import { ExtractionJobData } from './extraction-job-data.interface';
 import {
@@ -20,6 +21,7 @@ import {
   BATCH_TIMEOUT_SAFETY_FACTOR,
   EXTRACTION_QUEUE,
   extractionResultKey,
+  resolveExtractionWorkerOptions,
 } from './extractions.constants';
 
 /**
@@ -36,9 +38,28 @@ import {
  * sharing this same queue/worker/result-caching machinery rather than a
  * second parallel implementation of it.
  */
-@Processor(EXTRACTION_QUEUE)
+@Processor(EXTRACTION_QUEUE, resolveExtractionWorkerOptions())
 export class ExtractionsProcessor extends WorkerHost {
   private readonly logger = new Logger(ExtractionsProcessor.name);
+
+  /**
+   * Serializes agent-mode dispatch per connectionId — defense-in-depth on
+   * top of the worker concurrency raised above. Each agent already
+   * serializes its OWN Tally HTTP calls internally (TallyHttpClient's
+   * `queue`), so this doesn't protect Tally from a literal double-hit; it
+   * keeps this process from piling multiple simultaneous in-flight WS
+   * commands (independent timeout clocks, independent cancel-grace windows)
+   * onto one connector purely because BullMQ happened to schedule two of
+   * its jobs at once. Modeled directly on TallyHttpClient's own `queue`
+   * field/pattern: a plain promise chain that just waits its turn, cheaply
+   * (in-memory handoff, no network round trip — this app is explicitly
+   * single-process for v1, so a Redis-backed lock here would add latency
+   * and a new failure mode without protecting anything more). Deliberately
+   * NOT a bounded-wait-then-throw lock — that would burn a real BullMQ
+   * retry attempt purely because two jobs happened to share a connector,
+   * which is not a failure.
+   */
+  private readonly connectorQueues = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -162,12 +183,14 @@ export class ExtractionsProcessor extends WorkerHost {
         data.type,
         data.payload,
       );
-      return this.tunnel.sendCommand(
-        data.connectionId,
-        action,
-        data.payload,
-        timeoutMs,
-        data.extractionJobId,
+      return this.runSerializedPerConnector(data.connectionId, () =>
+        this.tunnel.sendCommand(
+          data.connectionId,
+          action,
+          data.payload,
+          timeoutMs,
+          data.extractionJobId,
+        ),
       );
     }
     // externalJobId: this job's own row (already PENDING, created before
@@ -212,11 +235,39 @@ export class ExtractionsProcessor extends WorkerHost {
    * for a legitimately-in-progress fetch, so the gateway cancels it
    * mid-flight rather than the batch itself ever failing.
    */
+  /** Runs `fn` only after every prior call for the same `connectionId` has
+   *  settled — see `connectorQueues`'s doc comment. */
+  private runSerializedPerConnector<T>(connectionId: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.connectorQueues.get(connectionId) ?? Promise.resolve();
+    const run = prior.then(() => fn());
+    this.connectorQueues.set(
+      connectionId,
+      run.catch(() => undefined),
+    );
+    return run;
+  }
+
   private async estimateBatchedTimeoutMs(
     connectionId: string,
     type: ExtractableType,
     payload: Record<string, unknown>,
   ): Promise<number | undefined> {
+    // VOUCHERS' chunk count is fully determined by the requested date range
+    // and TallyConfig.voucherChunkDays alone (see date-range-chunker.ts) —
+    // unlike LEDGERS/STOCK_ITEMS, no historical record-count estimate is
+    // needed or possible (a Day Book export's size scales with days
+    // requested, not a stable record count). See voucher-timeout-estimate.ts
+    // — this fixes a real incident where a multi-year VOUCHERS range blew
+    // the static commandTimeoutMs floor on its very first dispatch attempt.
+    if (type === ExtractionType.VOUCHERS) {
+      const from = typeof payload.from === 'string' ? payload.from : undefined;
+      const to = typeof payload.to === 'string' ? payload.to : undefined;
+      if (!from || !to) return undefined;
+      const tally = this.config.getOrThrow<TallyConfig>('tally');
+      const staticFloor = this.config.getOrThrow<ExtractionConfig>('extraction').commandTimeoutMs;
+      return Math.max(estimateVouchersTimeoutMs(from, to, tally), staticFloor);
+    }
+
     if (type !== ExtractionType.LEDGERS && type !== ExtractionType.STOCK_ITEMS) return undefined;
 
     const last = await this.prisma.extractionJob.findFirst({

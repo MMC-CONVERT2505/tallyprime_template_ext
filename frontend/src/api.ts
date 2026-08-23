@@ -312,6 +312,9 @@ export const extractionsApi = {
     const query = qs(opts ?? {});
     return request<Blob>('GET', `/extractions/${id}/excel${query ? `?${query}` : ''}`, { raw: true });
   },
+  /** Removes a single job from history. The backend refuses this while the
+   *  job is still PENDING. */
+  remove: (id: string) => request<{ deleted: true }>('DELETE', `/extractions/${id}`),
 };
 
 /**
@@ -329,6 +332,22 @@ export const bulkExportApi = {
   status: (id: string) => request<BulkExportRecord>('GET', `/extractions/bulk-export/${id}`),
   download: (id: string) =>
     request<Blob>('GET', `/extractions/bulk-export/${id}/download`, { raw: true }),
+  /**
+   * "Retry Failed Functions" — re-runs only the still-broken part of a
+   * FAILED export (failed steps, plus anything left stuck PENDING from an
+   * older run) without redoing already-successful steps. `steps` is
+   * optional; the backend always computes the real retryable set itself and
+   * intersects it with whatever's passed here, so the common case (the
+   * button, no args) just means "retry everything that's actually still
+   * broken."
+   */
+  retry: (id: string, steps?: BulkExportStepKey[]) =>
+    request<{ id: string; status: string }>('POST', `/extractions/bulk-export/${id}/retry`, {
+      body: steps ? { steps } : {},
+    }),
+  /** Removes an export from history (record + its .zip on disk). The
+   *  backend refuses this while the export is still PENDING/RUNNING. */
+  remove: (id: string) => request<{ deleted: true }>('DELETE', `/extractions/bulk-export/${id}`),
 };
 
 export const healthApi = {

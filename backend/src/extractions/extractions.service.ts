@@ -24,6 +24,7 @@ import {
   zohoEntityForVoucherType,
 } from '../mapping/zoho-entity.map';
 import { REDIS_CLIENT } from '../redis/redis.module';
+import { withLock } from '../redis/lock.util';
 import {
   TallyCostCentre,
   TallyGroup,
@@ -34,8 +35,14 @@ import {
 import { CreateExtractionDto } from './dto/create-extraction.dto';
 import { FetchMasterDto } from './dto/fetch-master.dto';
 import { ExtractableType } from './extraction-action.map';
+import { ExtractionReuseService } from './extraction-reuse.service';
 import { ExtractionJobData } from './extraction-job-data.interface';
-import { EXTRACTION_QUEUE, extractionResultKey } from './extractions.constants';
+import {
+  DISPATCH_LOCK_TTL_MS,
+  EXTRACTION_QUEUE,
+  extractionDispatchLockKey,
+  extractionResultKey,
+} from './extractions.constants';
 
 export interface ExcelExportResult {
   buffer: Buffer;
@@ -50,6 +57,7 @@ export class ExtractionsService {
     private readonly tunnel: TallyTunnelGateway,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly excel: ExcelGeneratorService,
+    private readonly reuse: ExtractionReuseService,
   ) {}
 
   /**
@@ -77,7 +85,7 @@ export class ExtractionsService {
     // defaultCompany fallback (caught live: see git history for this line).
     const payload = company ? { ...dto.payload, company } : (dto.payload ?? {});
 
-    return this.enqueue(orgId, connection, dto.type, payload, notifyEmail);
+    return this.enqueue(orgId, connection, dto.type, payload, notifyEmail, dto.forceRefresh);
   }
 
   /**
@@ -104,7 +112,7 @@ export class ExtractionsService {
     if (dto.fromDate) payload.fromDate = dto.fromDate;
     if (dto.toDate) payload.toDate = dto.toDate;
 
-    return this.enqueue(orgId, connection, dto.masterType, payload, notifyEmail);
+    return this.enqueue(orgId, connection, dto.masterType, payload, notifyEmail, dto.forceRefresh);
   }
 
   /**
@@ -118,12 +126,18 @@ export class ExtractionsService {
     type: ExtractableType,
     payload: Record<string, unknown>,
     notifyEmail: string,
+    forceRefresh = false,
   ): Promise<{ id: string; status: string }> {
     if (!connection.isActive) {
       throw new BadRequestException('This connection has been revoked.');
     }
     if (!this.tunnel.listConnectedAgents().includes(connection.id)) {
       throw new BadRequestException('This connector is not currently online.');
+    }
+
+    if (!forceRefresh) {
+      const reused = await this.tryReuse(orgId, connection.id, type, payload);
+      if (reused) return { id: reused.id, status: reused.status };
     }
 
     const job = await this.prisma.extractionJob.create({
@@ -147,6 +161,57 @@ export class ExtractionsService {
     });
 
     return { id: job.id, status: job.status };
+  }
+
+  /**
+   * Guards ExtractionReuseService's lookup against a race with a concurrent
+   * identical request: without this, two callers dispatching the same
+   * request at nearly the same instant could both miss the reuse check
+   * (nothing to find yet) and both create a job / hit Tally. The lock is
+   * held only for the check itself, not the whole dispatch — deliberately
+   * short (DISPATCH_LOCK_TTL_MS) and best-effort: on contention this just
+   * falls through to a normal fresh dispatch rather than blocking, which is
+   * always safe (every extraction is a Tally READ — see
+   * extractions.module.ts's own doc comment — so the worst case of losing
+   * this race is one harmless duplicate fetch, not a correctness bug).
+   */
+  private async tryReuse(
+    orgId: string,
+    connectionId: string,
+    type: ExtractableType,
+    payload: Record<string, unknown>,
+  ): Promise<ExtractionJob | null> {
+    const lockKey = extractionDispatchLockKey(
+      orgId,
+      connectionId,
+      type,
+      (payload.company as string | undefined) ?? '',
+      this.reuseVariant(type, payload),
+    );
+
+    // `withLock` returns null both when the lock was contended AND when fn()
+    // itself legitimately found nothing reusable — either way, falling
+    // through to a fresh dispatch is exactly the right behavior.
+    return withLock(this.redis, lockKey, DISPATCH_LOCK_TTL_MS, () =>
+      this.reuse.findReusable(orgId, connectionId, type, payload),
+    );
+  }
+
+  /** The part of `payload` that distinguishes otherwise-identical requests
+   *  for the SAME company — must mirror ExtractionReuseService's own
+   *  per-type matching rules exactly, or the lock and the reuse check could
+   *  disagree about what counts as "the same request." */
+  private reuseVariant(
+    type: ExtractableType,
+    payload: Record<string, unknown>,
+  ): string | undefined {
+    if (type === ExtractionType.VOUCHERS) {
+      return `${payload.voucherType ?? ''}:${payload.from ?? ''}:${payload.to ?? ''}`;
+    }
+    if (type === ExtractionType.LEDGERS || type === ExtractionType.STOCK_ITEMS) {
+      return `${payload.fromDate ?? ''}:${payload.toDate ?? ''}`;
+    }
+    return undefined;
   }
 
   /**
@@ -232,6 +297,28 @@ export class ExtractionsService {
       throw new NotFoundException('Job not found.');
     }
     return job;
+  }
+
+  /**
+   * Removes a single extraction job from history: its Postgres row and its
+   * cached Redis result (best-effort — an already-expired result is not an
+   * error). Refuses while still PENDING, same reasoning as
+   * BulkExportService.remove — deleting a row the queue worker is about to
+   * `update()` on completion would surface as a harmless-but-noisy Prisma
+   * "record not found" in the logs for no real benefit. A job that's part of
+   * a bulk export's step list is never exposed for individual deletion by
+   * the frontend (it's rendered nested under that export's own row instead),
+   * so this only ever needs to handle the standalone case.
+   */
+  async remove(orgId: string, id: string): Promise<void> {
+    const job = await this.getStatus(orgId, id);
+    if (job.status === 'PENDING') {
+      throw new BadRequestException(
+        `Job ${id} is still pending — wait for it to finish before deleting it.`,
+      );
+    }
+    await this.redis.del(extractionResultKey(id)).catch(() => undefined);
+    await this.prisma.extractionJob.deleteMany({ where: { id, orgId } });
   }
 
   /** Recent jobs for the org, newest first — what the UI's job list/download

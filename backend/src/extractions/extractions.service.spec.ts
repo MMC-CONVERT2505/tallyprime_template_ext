@@ -9,6 +9,7 @@ describe('ExtractionsService', () => {
       connection?: any;
       tunnel?: Partial<Record<'listConnectedAgents', jest.Mock>>;
       redisGet?: jest.Mock;
+      findReusable?: jest.Mock;
     } = {},
   ) {
     const prisma = {
@@ -23,6 +24,7 @@ describe('ExtractionsService', () => {
           .mockImplementation(({ data }) => ({ id: 'job-1', status: 'PENDING', ...data })),
         findFirst: jest.fn(),
         findMany: jest.fn().mockResolvedValue([]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
     const queue = { add: jest.fn().mockResolvedValue({}) };
@@ -30,8 +32,20 @@ describe('ExtractionsService', () => {
       listConnectedAgents:
         overrides.tunnel?.listConnectedAgents ?? jest.fn().mockReturnValue(['conn-1']),
     };
-    const redis = { get: overrides.redisGet ?? jest.fn().mockResolvedValue(null) };
+    // set/eval back the dispatch-race lock (lock.util's SET NX / compare-and-
+    // delete) — always "acquired, then released cleanly" by default so
+    // enqueue's lock-then-reuse-check path runs fn() rather than short-
+    // circuiting on contention, matching every existing test's expectations.
+    const redis = {
+      get: overrides.redisGet ?? jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue('OK'),
+      eval: jest.fn().mockResolvedValue(1),
+      del: jest.fn().mockResolvedValue(1),
+    };
     const excel = { writeIntoTemplate: jest.fn().mockResolvedValue(Buffer.from('fake-xlsx')) };
+    // No reuse hit by default — every pre-existing test exercises the
+    // "nothing cached yet" fresh-dispatch path unchanged.
+    const reuse = { findReusable: overrides.findReusable ?? jest.fn().mockResolvedValue(null) };
 
     const service = new ExtractionsService(
       prisma as any,
@@ -39,8 +53,9 @@ describe('ExtractionsService', () => {
       tunnel as any,
       redis as any,
       excel as any,
+      reuse as any,
     );
-    return { service, prisma, queue, tunnel, redis, excel };
+    return { service, prisma, queue, tunnel, redis, excel, reuse };
   }
 
   describe('create', () => {
@@ -161,7 +176,9 @@ describe('ExtractionsService', () => {
   });
 
   describe('fetchMaster', () => {
-    function makeFetchMasterDeps(overrides: { findMany?: jest.Mock; tunnel?: jest.Mock } = {}) {
+    function makeFetchMasterDeps(
+      overrides: { findMany?: jest.Mock; tunnel?: jest.Mock; findReusable?: jest.Mock } = {},
+    ) {
       const prisma = {
         tallyConnection: {
           findMany: overrides.findMany ?? jest.fn().mockResolvedValue([CONNECTION]),
@@ -176,16 +193,22 @@ describe('ExtractionsService', () => {
       const tunnel = {
         listConnectedAgents: overrides.tunnel ?? jest.fn().mockReturnValue(['conn-1']),
       };
-      const redis = { get: jest.fn() };
+      const redis = {
+        get: jest.fn(),
+        set: jest.fn().mockResolvedValue('OK'),
+        eval: jest.fn().mockResolvedValue(1),
+      };
       const excel = { writeIntoTemplate: jest.fn() };
+      const reuse = { findReusable: overrides.findReusable ?? jest.fn().mockResolvedValue(null) };
       const service = new ExtractionsService(
         prisma as any,
         queue as any,
         tunnel as any,
         redis as any,
         excel as any,
+        reuse as any,
       );
-      return { service, prisma, queue, tunnel };
+      return { service, prisma, queue, tunnel, reuse };
     }
 
     it('resolves the connector by companyName and enqueues a job, converting ISO dates to YYYYMMDD', async () => {
@@ -285,6 +308,95 @@ describe('ExtractionsService', () => {
     });
   });
 
+  describe('enqueue reuse (ExtractionReuseService integration)', () => {
+    it('returns an existing reusable job unchanged, WITHOUT creating a new ExtractionJob row or enqueueing anything', async () => {
+      const findReusable = jest.fn().mockResolvedValue({ id: 'reused-job', status: 'SUCCESS' });
+      const { service, prisma, queue, reuse } = makeDeps({ findReusable });
+
+      const result = await service.create('org-1', 'user@example.com', {
+        connectionId: 'conn-1',
+        type: 'GROUPS' as any,
+      });
+
+      expect(result).toEqual({ id: 'reused-job', status: 'SUCCESS' });
+      expect(prisma.extractionJob.create).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+      expect(reuse.findReusable).toHaveBeenCalledWith('org-1', 'conn-1', 'GROUPS', {
+        company: 'ABC Ltd',
+      });
+    });
+
+    it('forceRefresh bypasses the reuse check entirely, even when a reusable job exists', async () => {
+      const findReusable = jest.fn().mockResolvedValue({ id: 'reused-job', status: 'SUCCESS' });
+      const { service, prisma, queue, reuse } = makeDeps({ findReusable });
+
+      const result = await service.create('org-1', 'user@example.com', {
+        connectionId: 'conn-1',
+        type: 'GROUPS' as any,
+        forceRefresh: true,
+      });
+
+      expect(result).toEqual({ id: 'job-1', status: 'PENDING' });
+      expect(reuse.findReusable).not.toHaveBeenCalled();
+      expect(prisma.extractionJob.create).toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalled();
+    });
+
+    it('falls through to a fresh dispatch when the dispatch-race lock is already held (contended, not a failure)', async () => {
+      const findReusable = jest.fn().mockResolvedValue({ id: 'reused-job', status: 'SUCCESS' });
+      const { service, prisma, queue, redis, reuse } = makeDeps({ findReusable });
+      // Simulate someone else already holding this exact dispatch lock.
+      (redis.set as jest.Mock).mockResolvedValueOnce(null);
+
+      const result = await service.create('org-1', 'user@example.com', {
+        connectionId: 'conn-1',
+        type: 'GROUPS' as any,
+      });
+
+      // The reuse lookup never even ran (lock not acquired) — dispatch
+      // proceeds fresh rather than blocking or erroring, since losing this
+      // race is always safe (every extraction is a Tally read).
+      expect(reuse.findReusable).not.toHaveBeenCalled();
+      expect(result).toEqual({ id: 'job-1', status: 'PENDING' });
+      expect(prisma.extractionJob.create).toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalled();
+    });
+
+    it('fetchMaster also goes through the same reuse check', async () => {
+      const findReusable = jest.fn().mockResolvedValue({ id: 'reused-job', status: 'SUCCESS' });
+      const prisma = {
+        tallyConnection: { findMany: jest.fn().mockResolvedValue([CONNECTION]) },
+        extractionJob: { create: jest.fn() },
+      };
+      const queue = { add: jest.fn().mockResolvedValue({}) };
+      const tunnel = { listConnectedAgents: jest.fn().mockReturnValue(['conn-1']) };
+      const redis = {
+        get: jest.fn(),
+        set: jest.fn().mockResolvedValue('OK'),
+        eval: jest.fn().mockResolvedValue(1),
+      };
+      const excel = { writeIntoTemplate: jest.fn() };
+      const reuse = { findReusable };
+      const service = new ExtractionsService(
+        prisma as any,
+        queue as any,
+        tunnel as any,
+        redis as any,
+        excel as any,
+        reuse as any,
+      );
+
+      const result = await service.fetchMaster('org-1', 'user@example.com', {
+        companyName: 'ABC Ltd',
+        masterType: 'LEDGERS' as any,
+      });
+
+      expect(result).toEqual({ id: 'reused-job', status: 'SUCCESS' });
+      expect(prisma.extractionJob.create).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getStatus', () => {
     it('scopes the lookup to the org and 404s otherwise', async () => {
       const { service, prisma } = makeDeps();
@@ -294,6 +406,45 @@ describe('ExtractionsService', () => {
       expect(prisma.extractionJob.findFirst).toHaveBeenCalledWith({
         where: { id: 'job-1', orgId: 'org-1' },
       });
+    });
+  });
+
+  describe('remove', () => {
+    it('deletes a SUCCESS job and its cached Redis result', async () => {
+      const { service, prisma, redis } = makeDeps();
+      prisma.extractionJob.findFirst.mockResolvedValue({ id: 'job-1', status: 'SUCCESS' });
+
+      await service.remove('org-1', 'job-1');
+
+      expect(redis.del).toHaveBeenCalledWith('extraction-result:job-1');
+      expect(prisma.extractionJob.deleteMany).toHaveBeenCalledWith({
+        where: { id: 'job-1', orgId: 'org-1' },
+      });
+    });
+
+    it('deletes a FAILED job too', async () => {
+      const { service, prisma } = makeDeps();
+      prisma.extractionJob.findFirst.mockResolvedValue({ id: 'job-1', status: 'FAILED' });
+
+      await service.remove('org-1', 'job-1');
+
+      expect(prisma.extractionJob.deleteMany).toHaveBeenCalled();
+    });
+
+    it('refuses to delete a still-PENDING job', async () => {
+      const { service, prisma } = makeDeps();
+      prisma.extractionJob.findFirst.mockResolvedValue({ id: 'job-1', status: 'PENDING' });
+
+      await expect(service.remove('org-1', 'job-1')).rejects.toThrow('still pending');
+      expect(prisma.extractionJob.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it("404s when a different org tries to delete another org's job", async () => {
+      const { service, prisma } = makeDeps();
+      prisma.extractionJob.findFirst.mockResolvedValue(null);
+
+      await expect(service.remove('org-2', 'job-1')).rejects.toThrow(NotFoundException);
+      expect(prisma.extractionJob.deleteMany).not.toHaveBeenCalled();
     });
   });
 

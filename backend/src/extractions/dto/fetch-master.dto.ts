@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 import { MASTER_EXTRACTABLE_TYPES, MasterExtractableType } from '../extraction-action.map';
 
 const trim = ({ value }: { value: unknown }): unknown =>
@@ -36,4 +36,9 @@ export class FetchMasterDto {
   @Transform(toTallyDate)
   @Matches(/^\d{8}$/, { message: 'toDate must be a valid date (YYYY-MM-DD)' })
   toDate?: string;
+
+  /** Bypasses ExtractionReuseService — see CreateExtractionDto.forceRefresh. */
+  @IsOptional()
+  @IsBoolean()
+  forceRefresh?: boolean;
 }

@@ -14,8 +14,49 @@ import {
 import { useSelectedCompany } from '../SelectedCompanyContext';
 import { ErrorBanner, JsonView } from './JsonView';
 import { ResultView } from './ResultView';
-import { IconExtract } from './Icons';
+import { IconChevronRight, IconExtract } from './Icons';
 import { EmptyState, Spinner } from './ui';
+
+type BulkRowAction = 'download' | 'retry' | 'delete';
+
+/** A cluster of standalone (non-bulk-export) single-type jobs that share a
+ *  company and the same requested date range — e.g. GROUPS/LEDGERS/
+ *  STOCK_ITEMS/COST_CENTRES/VOUCHERS fetched one at a time for the same org
+ *  and period instead of via "Run full export". Shown as one expandable row,
+ *  same as a formal bulk export, so History reads as one group per real
+ *  extraction effort instead of N disconnected rows. */
+interface JobGroup {
+  key: string;
+  company: string;
+  from?: string;
+  to?: string;
+  jobs: ExtractionJob[];
+  latestCreatedAt: string;
+}
+
+/** One entry in the unified History list below — a full bulk export, a
+ *  cluster of related standalone jobs, or (when a "cluster" would only ever
+ *  have one member) a single plain job row — merged and sorted by recency. */
+type HistoryEntry =
+  | { kind: 'bulk'; record: BulkExportRecord }
+  | { kind: 'jobGroup'; group: JobGroup }
+  | { kind: 'job'; job: ExtractionJob };
+
+/** LEDGERS/STOCK_ITEMS use fromDate/toDate; VOUCHERS uses from/to; GROUPS/
+ *  COST_CENTRES/COMPANIES carry no date scope at all — see each type's
+ *  params shape in MasterExtractionService/TransactionExtractionService. */
+function dateRangeOf(job: ExtractionJob): { from?: string; to?: string } {
+  const params = job.params as Record<string, unknown> | null;
+  if (!params) return {};
+  const from = (params.fromDate ?? params.from) as string | undefined;
+  const to = (params.toDate ?? params.to) as string | undefined;
+  return { from: from || undefined, to: to || undefined };
+}
+
+function groupKeyOf(job: ExtractionJob): string {
+  const { from, to } = dateRangeOf(job);
+  return `${job.company ?? '—'}::${from ?? ''}::${to ?? ''}`;
+}
 
 const EXTRACTABLE_TYPES: ExtractableType[] = [
   'COMPANIES',
@@ -53,6 +94,8 @@ export function ExtractionsPanel() {
   const [resultBusy, setResultBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [jobRowBusy, setJobRowBusy] = useState<Partial<Record<string, 'delete'>>>({});
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(new Set());
   const pollTimer = useRef<number | null>(null);
 
   // Paired companies, for the primary flow's picker — no connectionId ever
@@ -85,15 +128,28 @@ export function ExtractionsPanel() {
   // excel
   const [excelBusy, setExcelBusy] = useState(false);
 
-  // Full Zoho export (all 9 "Master and Invoice or Bill" templates, zipped)
+  // Full Zoho export (all 9 "Master and Invoice or Bill" templates, zipped).
+  // Its own live progress lives in the unified History list below, not a
+  // separate status block here — starting one just adds/refreshes a row
+  // there (expanded automatically) and the History poll picks it up.
   const [bulkFromDate, setBulkFromDate] = useState('');
   const [bulkToDate, setBulkToDate] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkExportId, setBulkExportId] = useState<string | null>(null);
-  const [bulkStatus, setBulkStatus] = useState<BulkExportRecord | null>(null);
-  const [bulkDownloading, setBulkDownloading] = useState(false);
-  const bulkPollTimer = useRef<number | null>(null);
   const bulkInFlight = useRef(false);
+
+  // Bulk-export history — separate list from `jobs` (single-type extraction
+  // jobs) because they're fetched from a different endpoint, but merged with
+  // it for display (see historyEntries below) so "History" reads as one
+  // unified, chronological list rather than two disconnected ones.
+  const [bulkExports, setBulkExports] = useState<BulkExportRecord[]>([]);
+  const [bulkExportsLoading, setBulkExportsLoading] = useState(true);
+  const [expandedBulkIds, setExpandedBulkIds] = useState<Set<string>>(new Set());
+  const [bulkRowBusy, setBulkRowBusy] = useState<Partial<Record<string, BulkRowAction>>>({});
+  // Mirrors `bulkExports` for the polling interval below, which needs the
+  // latest list without re-subscribing/restarting a timer every time it
+  // changes (a plain closure over `bulkExports` would only ever see its
+  // value from whenever the interval was created).
+  const bulkExportsRef = useRef<BulkExportRecord[]>([]);
 
   const refreshJobs = async () => {
     try {
@@ -109,6 +165,43 @@ export function ExtractionsPanel() {
   useEffect(() => {
     void refreshJobs();
   }, []);
+
+  const refreshBulkExports = async () => {
+    try {
+      const list = await bulkExportApi.list(20);
+      setBulkExports(list);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setBulkExportsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshBulkExports();
+  }, []);
+
+  useEffect(() => {
+    bulkExportsRef.current = bulkExports;
+  }, [bulkExports]);
+
+  // One persistent interval for the component's lifetime rather than
+  // starting/stopping a timer per in-flight export — each tick only
+  // actually hits the network when the latest list has something still
+  // PENDING/RUNNING, so an idle history costs nothing.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const hasInFlight = bulkExportsRef.current.some(
+        (b) => b.status === 'PENDING' || b.status === 'RUNNING',
+      );
+      if (hasInFlight) void refreshBulkExports();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const refreshHistory = async () => {
+    await Promise.all([refreshJobs(), refreshBulkExports()]);
+  };
 
   useEffect(() => {
     connectionsApi
@@ -196,7 +289,9 @@ export function ExtractionsPanel() {
 
   /** Kicks off the full "every Zoho template for this company, in one zip"
    *  export — see backend BulkExportService's doc comment for the exact
-   *  8-fetch + generate + zip step sequence this then polls through. */
+   *  8-fetch + generate + zip step sequence. Its progress shows up as a row
+   *  in the History list below (auto-expanded), kept fresh by the polling
+   *  effect above — no separate per-export status view to manage here. */
   const startBulkExport = async () => {
     if (bulkInFlight.current || !companyName || !bulkFromDate || !bulkToDate) return;
     bulkInFlight.current = true;
@@ -208,7 +303,8 @@ export function ExtractionsPanel() {
         fromDate: bulkFromDate,
         toDate: bulkToDate,
       });
-      setBulkExportId(res.id);
+      await refreshBulkExports();
+      setExpandedBulkIds((prev) => new Set(prev).add(res.id));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -217,47 +313,56 @@ export function ExtractionsPanel() {
     }
   };
 
-  // Poll the running bulk export's status every 2s until it settles —
-  // same pattern as the single-job poll below, separate timer/id since both
-  // can be in flight at once.
-  useEffect(() => {
-    if (bulkPollTimer.current) window.clearInterval(bulkPollTimer.current);
-    setBulkStatus(null);
-    if (!bulkExportId) return;
+  const toggleBulkExpanded = (id: string) => {
+    setExpandedBulkIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
-    const poll = async () => {
-      try {
-        const status = await bulkExportApi.status(bulkExportId);
-        setBulkStatus(status);
-        if (status.status !== 'PENDING' && status.status !== 'RUNNING' && bulkPollTimer.current) {
-          window.clearInterval(bulkPollTimer.current);
-        }
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : String(err));
-        if (bulkPollTimer.current) window.clearInterval(bulkPollTimer.current);
-      }
-    };
-
-    void poll();
-    bulkPollTimer.current = window.setInterval(() => void poll(), 2000);
-    return () => {
-      if (bulkPollTimer.current) window.clearInterval(bulkPollTimer.current);
-    };
-  }, [bulkExportId]);
-
-  const downloadBulkExport = async () => {
-    if (!bulkExportId) return;
-    setBulkDownloading(true);
+  const downloadBulkExportRow = async (record: BulkExportRecord) => {
+    setBulkRowBusy((prev) => ({ ...prev, [record.id]: 'download' }));
     setError(null);
     try {
-      saveBlob(
-        await bulkExportApi.download(bulkExportId),
-        bulkStatus?.filename ?? `zoho-export-${bulkExportId}.zip`,
-      );
+      saveBlob(await bulkExportApi.download(record.id), record.filename ?? `zoho-export-${record.id}.zip`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
-      setBulkDownloading(false);
+      setBulkRowBusy((prev) => ({ ...prev, [record.id]: undefined }));
+    }
+  };
+
+  /** "Retry Failed Functions" — the server computes what's actually still
+   *  broken (see bulkExportApi.retry's doc comment); refreshing the list
+   *  picks the row back up as PENDING/RUNNING, and the poll effect keeps it
+   *  live from there. */
+  const retryBulkExportRow = async (id: string) => {
+    setBulkRowBusy((prev) => ({ ...prev, [id]: 'retry' }));
+    setError(null);
+    try {
+      await bulkExportApi.retry(id);
+      await refreshBulkExports();
+      setExpandedBulkIds((prev) => new Set(prev).add(id));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setBulkRowBusy((prev) => ({ ...prev, [id]: undefined }));
+    }
+  };
+
+  const deleteBulkExportRow = async (id: string) => {
+    if (!window.confirm('Delete this export from history? This cannot be undone.')) return;
+    setBulkRowBusy((prev) => ({ ...prev, [id]: 'delete' }));
+    setError(null);
+    try {
+      await bulkExportApi.remove(id);
+      setBulkExports((prev) => prev.filter((b) => b.id !== id));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setBulkRowBusy((prev) => ({ ...prev, [id]: undefined }));
     }
   };
 
@@ -340,11 +445,148 @@ export function ExtractionsPanel() {
     }
   };
 
+  const deleteJobRow = async (id: string) => {
+    if (!window.confirm('Delete this extraction from history? This cannot be undone.')) return;
+    setJobRowBusy((prev) => ({ ...prev, [id]: 'delete' }));
+    setError(null);
+    try {
+      await extractionsApi.remove(id);
+      setJobs((prev) => prev.filter((j) => j.id !== id));
+      if (activeJobId === id) {
+        setActiveJobId(null);
+        setResult(null);
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setJobRowBusy((prev) => ({ ...prev, [id]: undefined }));
+    }
+  };
+
+  const toggleGroupExpanded = (key: string) => {
+    setExpandedGroupKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   const statusPillClass = (status: ExtractionJob['status']) =>
     status === 'SUCCESS' ? 'pill pill-ok' : status === 'FAILED' ? 'pill pill-off' : 'pill';
 
   const bulkStatusPillClass = (status: string) =>
     status === 'SUCCESS' ? 'pill pill-ok' : status === 'FAILED' ? 'pill pill-off' : 'pill';
+
+  // A bulk export's own 8 function jobs + generate/zip already show up
+  // nested under its History row (see the expand toggle below) — surfacing
+  // them AGAIN as flat standalone rows would just be duplicate, disconnected
+  // noise, so they're filtered out of the plain job list here.
+  const bulkJobIds = useMemo(
+    () =>
+      new Set(
+        bulkExports.flatMap((b) =>
+          b.steps.map((s) => s.jobId).filter((jobId): jobId is string => Boolean(jobId)),
+        ),
+      ),
+    [bulkExports],
+  );
+  const standaloneJobs = useMemo(() => jobs.filter((j) => !bulkJobIds.has(j.id)), [jobs, bulkJobIds]);
+
+  // Clusters standalone jobs fetched one function at a time (GROUPS,
+  // LEDGERS, STOCK_ITEMS, COST_CENTRES, VOUCHERS, ...) into one group per
+  // (company, date range) — the same real-world "extraction effort" a
+  // formal bulk export represents, just assembled organically instead of
+  // through "Run full export". A group of exactly one job renders as a
+  // plain row further down (see historyEntries) rather than an unnecessary
+  // one-item expandable wrapper.
+  const jobGroups = useMemo<JobGroup[]>(() => {
+    const byKey = new Map<string, JobGroup>();
+    for (const job of standaloneJobs) {
+      const key = groupKeyOf(job);
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.jobs.push(job);
+        if (job.createdAt > existing.latestCreatedAt) existing.latestCreatedAt = job.createdAt;
+      } else {
+        const { from, to } = dateRangeOf(job);
+        byKey.set(key, {
+          key,
+          company: job.company ?? '—',
+          from,
+          to,
+          jobs: [job],
+          latestCreatedAt: job.createdAt,
+        });
+      }
+    }
+    return Array.from(byKey.values());
+  }, [standaloneJobs]);
+
+  const historyEntries = useMemo<HistoryEntry[]>(() => {
+    const entries: HistoryEntry[] = [
+      ...bulkExports.map((record) => ({ kind: 'bulk' as const, record })),
+      ...jobGroups.map((group): HistoryEntry =>
+        group.jobs.length > 1 ? { kind: 'jobGroup', group } : { kind: 'job', job: group.jobs[0] },
+      ),
+    ];
+    // ISO 8601 timestamps sort correctly as plain strings — newest first.
+    const timestampOf = (entry: HistoryEntry): string => {
+      if (entry.kind === 'bulk') return entry.record.createdAt;
+      if (entry.kind === 'jobGroup') return entry.group.latestCreatedAt;
+      return entry.job.createdAt;
+    };
+    entries.sort((a, b) => timestampOf(b).localeCompare(timestampOf(a)));
+    return entries;
+  }, [bulkExports, jobGroups]);
+
+  const historyLoading = jobsLoading || bulkExportsLoading;
+
+  const jobGroupStatusSummary = (jobs: ExtractionJob[]): { text: string; cls: string } => {
+    const failed = jobs.filter((j) => j.status === 'FAILED').length;
+    const pending = jobs.filter((j) => j.status === 'PENDING').length;
+    if (failed > 0) return { text: `${failed} failed`, cls: 'pill pill-off' };
+    if (pending > 0) return { text: `${pending} pending`, cls: 'pill' };
+    return { text: 'All succeeded', cls: 'pill pill-ok' };
+  };
+
+  /** Shared by a standalone single-job row and each member of an expanded
+   *  job group — status/type/company/timestamp plus Download (when
+   *  applicable) and Delete (once it's left PENDING). */
+  const renderJobRow = (j: ExtractionJob) => (
+    <div key={j.id} className={j.id === activeJobId ? 'job-row active' : 'job-row'}>
+      <button type="button" className="job-row-main" onClick={() => selectJob(j.id)}>
+        <span className={statusPillClass(j.status)}>{j.status}</span>
+        <span>{j.type}</span>
+        <span className="muted">{j.company ?? '—'}</span>
+        <span className="muted small">{new Date(j.createdAt).toLocaleString()}</span>
+      </button>
+      <div className="actions">
+        {j.status === 'SUCCESS' && EXCEL_EXPORTABLE_TYPES.includes(j.type) && (
+          <button
+            type="button"
+            className="ghost small"
+            onClick={() => void quickDownload(j)}
+            disabled={downloadingId === j.id}
+            title="Download Zoho-import-ready Excel"
+          >
+            {downloadingId === j.id ? <Spinner /> : 'Download'}
+          </button>
+        )}
+        {j.status !== 'PENDING' && (
+          <button
+            type="button"
+            className="danger small"
+            onClick={() => void deleteJobRow(j.id)}
+            disabled={jobRowBusy[j.id] === 'delete'}
+            title="Delete this extraction from history"
+          >
+            {jobRowBusy[j.id] === 'delete' ? <Spinner /> : 'Delete'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="panel">
@@ -462,77 +704,155 @@ export function ExtractionsPanel() {
             {bulkBusy ? 'Starting…' : 'Run full export (.zip)'}
           </button>
         </div>
-
-        {bulkStatus && (
-          <div className="bulk-export-status">
-            <div className="card-header">
-              <span className={bulkStatusPillClass(bulkStatus.status)}>{bulkStatus.status}</span>
-              <span className="muted small">{bulkStatus.company}</span>
-              {bulkStatus.status === 'SUCCESS' && (
-                <button
-                  onClick={() => void downloadBulkExport()}
-                  disabled={bulkDownloading}
-                  type="button"
-                  className="ghost"
-                >
-                  {bulkDownloading ? <Spinner /> : 'Download .zip'}
-                </button>
-              )}
-            </div>
-            {bulkStatus.error && <ErrorBanner message={bulkStatus.error} />}
-            <ul className="bulk-export-steps">
-              {bulkStatus.steps.map((step) => (
-                <li key={step.key}>
-                  <span className={bulkStatusPillClass(step.status)}>{step.status}</span>
-                  <span>{step.label}</span>
-                  {step.recordCount !== undefined && (
-                    <span className="muted small">{step.recordCount} record(s)</span>
-                  )}
-                  {step.error && <span className="muted small">{step.error}</span>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <p className="muted small" style={{ marginTop: 8 }}>
+          Progress shows up in History below as one row per run — expand it to see each of its 8
+          function jobs.
+        </p>
       </div>
 
       <ErrorBanner message={error} />
 
       <div className="card">
         <div className="card-header">
-          <h3>Jobs</h3>
-          <button onClick={() => void refreshJobs()} disabled={jobsLoading} type="button" className="ghost">
-            {jobsLoading && <Spinner />}
+          <h3>History</h3>
+          <button onClick={() => void refreshHistory()} disabled={historyLoading} type="button" className="ghost">
+            {historyLoading && <Spinner />}
             Refresh
           </button>
         </div>
-        {jobsLoading && jobs.length === 0 ? (
+        {historyLoading && historyEntries.length === 0 ? (
           <p className="muted">Loading…</p>
-        ) : jobs.length === 0 ? (
+        ) : historyEntries.length === 0 ? (
           <EmptyState message="No extractions yet — fetch some data above to see it here." />
         ) : (
           <div className="job-list">
-            {jobs.map((j) => (
-              <div key={j.id} className={j.id === activeJobId ? 'job-row active' : 'job-row'}>
-                <button type="button" className="job-row-main" onClick={() => selectJob(j.id)}>
-                  <span className={statusPillClass(j.status)}>{j.status}</span>
-                  <span>{j.type}</span>
-                  <span className="muted">{j.company ?? '—'}</span>
-                  <span className="muted small">{new Date(j.createdAt).toLocaleString()}</span>
-                </button>
-                {j.status === 'SUCCESS' && EXCEL_EXPORTABLE_TYPES.includes(j.type) && (
-                  <button
-                    type="button"
-                    className="ghost small"
-                    onClick={() => void quickDownload(j)}
-                    disabled={downloadingId === j.id}
-                    title="Download Zoho-import-ready Excel"
-                  >
-                    {downloadingId === j.id ? <Spinner /> : 'Download'}
-                  </button>
-                )}
-              </div>
-            ))}
+            {historyEntries.map((entry) => {
+              if (entry.kind === 'job') {
+                return renderJobRow(entry.job);
+              }
+
+              if (entry.kind === 'jobGroup') {
+                const { group } = entry;
+                const expanded = expandedGroupKeys.has(group.key);
+                const summary = jobGroupStatusSummary(group.jobs);
+                const rangeLabel = group.from && group.to ? `${group.from} → ${group.to}` : 'No date range';
+                const sortedMembers = [...group.jobs].sort((a, b) =>
+                  b.createdAt.localeCompare(a.createdAt),
+                );
+                return (
+                  <div key={group.key} className="job-row-group">
+                    <div className="job-row">
+                      <button
+                        type="button"
+                        className={expanded ? 'job-row-toggle expanded' : 'job-row-toggle'}
+                        onClick={() => toggleGroupExpanded(group.key)}
+                        aria-expanded={expanded}
+                        aria-label={expanded ? 'Collapse extraction group' : 'Expand extraction group'}
+                      >
+                        <IconChevronRight />
+                      </button>
+                      <div className="job-row-summary">
+                        <span className={summary.cls}>{summary.text}</span>
+                        <span className="job-row-title">Extraction group ({group.jobs.length})</span>
+                        <span className="muted">{group.company}</span>
+                        <span className="muted small">{rangeLabel}</span>
+                        <span className="muted small">
+                          {new Date(group.latestCreatedAt).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                    {expanded && (
+                      <div className="job-list job-row-substeps">
+                        {sortedMembers.map((j) => renderJobRow(j))}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              // A full "run full export" job: one row for the whole run,
+              // expandable to reveal its 8 individual function jobs (plus
+              // the generate/zip finishing steps) instead of scattering
+              // those across the flat list as 10 disconnected entries.
+              const record = entry.record;
+              const expanded = expandedBulkIds.has(record.id);
+              const busy = bulkRowBusy[record.id];
+              const inFlight = record.status === 'PENDING' || record.status === 'RUNNING';
+              return (
+                <div key={record.id} className="job-row-group">
+                  <div className="job-row">
+                    <button
+                      type="button"
+                      className={expanded ? 'job-row-toggle expanded' : 'job-row-toggle'}
+                      onClick={() => toggleBulkExpanded(record.id)}
+                      aria-expanded={expanded}
+                      aria-label={expanded ? 'Collapse function jobs' : 'Expand function jobs'}
+                    >
+                      <IconChevronRight />
+                    </button>
+                    <div className="job-row-summary">
+                      <span className={bulkStatusPillClass(record.status)}>{record.status}</span>
+                      <span className="job-row-title">Full export</span>
+                      <span className="muted">{record.company}</span>
+                      <span className="muted small">
+                        {record.fromDate} → {record.toDate}
+                      </span>
+                      <span className="muted small">{new Date(record.createdAt).toLocaleString()}</span>
+                    </div>
+                    <div className="actions">
+                      {record.status === 'SUCCESS' && (
+                        <button
+                          type="button"
+                          className="ghost small"
+                          onClick={() => void downloadBulkExportRow(record)}
+                          disabled={busy === 'download'}
+                        >
+                          {busy === 'download' ? <Spinner /> : 'Download .zip'}
+                        </button>
+                      )}
+                      {record.status === 'FAILED' && (
+                        <button
+                          type="button"
+                          className="ghost small"
+                          onClick={() => void retryBulkExportRow(record.id)}
+                          disabled={busy === 'retry'}
+                        >
+                          {busy === 'retry' ? <Spinner /> : 'Retry Failed Functions'}
+                        </button>
+                      )}
+                      {!inFlight && (
+                        <button
+                          type="button"
+                          className="danger small"
+                          onClick={() => void deleteBulkExportRow(record.id)}
+                          disabled={busy === 'delete'}
+                          title="Delete this export from history"
+                        >
+                          {busy === 'delete' ? <Spinner /> : 'Delete'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {expanded && (
+                    <>
+                      {record.error && <ErrorBanner message={record.error} />}
+                      <ul className="bulk-export-steps job-row-substeps">
+                        {record.steps.map((step) => (
+                          <li key={step.key}>
+                            <span className={bulkStatusPillClass(step.status)}>{step.status}</span>
+                            <span>{step.label}</span>
+                            {step.recordCount !== undefined && (
+                              <span className="muted small">{step.recordCount} record(s)</span>
+                            )}
+                            {step.error && <span className="muted small">{step.error}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
