@@ -147,6 +147,7 @@ describe('BulkExportService', () => {
         status: 'SUCCESS',
         recordCount: 3,
         error: null,
+        updatedAt: new Date(),
       })),
       getExcelResult: jest.fn().mockImplementation(async (_orgId: string, jobId: string) => ({
         buffer: Buffer.from(`fake-${jobId}`),
@@ -292,6 +293,12 @@ describe('BulkExportService', () => {
     expect(record.steps.find((s) => s.key === 'GENERATE_EXCEL')?.status).toBe('PENDING');
     expect(record.steps.find((s) => s.key === 'ZIP')?.status).toBe('PENDING');
     expect(extractions.getExcelResult).not.toHaveBeenCalled();
+
+    // A failed step still carries the jobId it was dispatched with — recorded
+    // at dispatch time now, not only on success (see runFetchPhase) — this
+    // is what lets a boot-time reconciliation sweep trace an orphaned step
+    // back to its real underlying job instead of guessing blind.
+    expect(record.steps.find((s) => s.key === 'LEDGERS')?.jobId).toBe('job-2');
   });
 
   // Shared by both `retry` and `remove` tests below.
@@ -566,6 +573,112 @@ describe('BulkExportService', () => {
 
       const record = await service.getStatus('org-1', 'orphan-1');
       expect(record.status).toBe('FAILED');
+    });
+
+    it('recovers a RUNNING step as SUCCESS (not a false failure) when its underlying job actually completed successfully and its cached result is still valid', async () => {
+      const orphan = orphanRecord({
+        steps: [
+          { key: 'GROUPS', label: 'Groups', status: 'SUCCESS', jobId: 'job-1' },
+          { key: 'LEDGERS', label: 'Ledgers', status: 'RUNNING', jobId: 'job-2' },
+          { key: 'STOCK_ITEMS', label: 'Stock Items', status: 'PENDING' },
+          { key: 'COST_CENTRES', label: 'Cost Centres', status: 'PENDING' },
+        ],
+      });
+      await redis.set(`bulk-export:${orphan.id}`, JSON.stringify(orphan));
+      extractions.getStatus.mockImplementation(async (_orgId: string, jobId: string) => ({
+        id: jobId,
+        status: 'SUCCESS',
+        recordCount: jobId === 'job-2' ? 42 : 3,
+        error: null,
+        updatedAt: new Date('2026-08-24T00:00:00.000Z'),
+      }));
+
+      await service.onApplicationBootstrap();
+
+      const record = await service.getStatus('org-1', 'orphan-1');
+      const ledgers = record.steps.find((s) => s.key === 'LEDGERS');
+      expect(ledgers?.status).toBe('SUCCESS');
+      expect(ledgers?.recordCount).toBe(42);
+      // Overall record is still FAILED — STOCK_ITEMS/COST_CENTRES never even
+      // dispatched, no ground truth to recover — but the falsely-at-risk
+      // LEDGERS step was correctly spared, not needlessly marked failed.
+      expect(record.status).toBe('FAILED');
+    });
+
+    it('does not trust a SUCCESS job whose cached result has since expired — falls back to failed, not a phantom success', async () => {
+      const orphan = orphanRecord({
+        steps: [
+          { key: 'GROUPS', label: 'Groups', status: 'SUCCESS', jobId: 'job-1' },
+          { key: 'LEDGERS', label: 'Ledgers', status: 'RUNNING', jobId: 'job-2' },
+          { key: 'STOCK_ITEMS', label: 'Stock Items', status: 'PENDING' },
+          { key: 'COST_CENTRES', label: 'Cost Centres', status: 'PENDING' },
+        ],
+      });
+      await redis.set(`bulk-export:${orphan.id}`, JSON.stringify(orphan));
+      reuse.isResultCached.mockResolvedValue(false);
+
+      await service.onApplicationBootstrap();
+
+      const record = await service.getStatus('org-1', 'orphan-1');
+      expect(record.steps.find((s) => s.key === 'LEDGERS')?.status).toBe('FAILED');
+    });
+
+    it("surfaces the underlying job's real, specific error instead of a generic restart message when it genuinely failed", async () => {
+      const orphan = orphanRecord({
+        steps: [
+          { key: 'GROUPS', label: 'Groups', status: 'SUCCESS', jobId: 'job-1' },
+          { key: 'LEDGERS', label: 'Ledgers', status: 'RUNNING', jobId: 'job-2' },
+          { key: 'STOCK_ITEMS', label: 'Stock Items', status: 'PENDING' },
+          { key: 'COST_CENTRES', label: 'Cost Centres', status: 'PENDING' },
+        ],
+      });
+      await redis.set(`bulk-export:${orphan.id}`, JSON.stringify(orphan));
+      extractions.getStatus.mockImplementation(async (_orgId: string, jobId: string) => {
+        if (jobId === 'job-2') {
+          return { id: jobId, status: 'FAILED', error: 'job stalled more than allowable limit' };
+        }
+        return { id: jobId, status: 'SUCCESS', recordCount: 3, updatedAt: new Date() };
+      });
+
+      await service.onApplicationBootstrap();
+
+      const record = await service.getStatus('org-1', 'orphan-1');
+      expect(record.steps.find((s) => s.key === 'LEDGERS')?.error).toBe(
+        'job stalled more than allowable limit',
+      );
+    });
+
+    it('when every fetch step turns out to have actually already succeeded, the record explains only generate/zip needs retrying — no re-fetch required', async () => {
+      const orphan = orphanRecord({
+        steps: [
+          { key: 'GROUPS', label: 'Groups', status: 'SUCCESS', jobId: 'job-1' },
+          { key: 'LEDGERS', label: 'Ledgers', status: 'SUCCESS', jobId: 'job-2' },
+          { key: 'STOCK_ITEMS', label: 'Stock Items', status: 'SUCCESS', jobId: 'job-3' },
+          { key: 'COST_CENTRES', label: 'Cost Centres', status: 'SUCCESS', jobId: 'job-4' },
+          { key: 'VOUCHERS_SALES', label: 'Sales', status: 'SUCCESS', jobId: 'job-5' },
+          { key: 'VOUCHERS_PURCHASE', label: 'Purchase', status: 'SUCCESS', jobId: 'job-6' },
+          { key: 'VOUCHERS_CREDIT_NOTE', label: 'Credit Note', status: 'SUCCESS', jobId: 'job-7' },
+          {
+            key: 'VOUCHERS_STOCK_JOURNAL',
+            label: 'Stock Journal',
+            status: 'SUCCESS',
+            jobId: 'job-8',
+          },
+          { key: 'GENERATE_EXCEL', label: 'Generate', status: 'RUNNING' },
+          { key: 'ZIP', label: 'Zip', status: 'PENDING' },
+        ],
+      });
+      await redis.set(`bulk-export:${orphan.id}`, JSON.stringify(orphan));
+      // Default extractions.getStatus mock already resolves SUCCESS for any jobId.
+
+      await service.onApplicationBootstrap();
+
+      const record = await service.getStatus('org-1', 'orphan-1');
+      expect(record.status).toBe('FAILED');
+      expect(record.error).toContain('no re-fetching needed');
+      expect(record.steps.filter((s) => s.status === 'SUCCESS')).toHaveLength(8);
+      expect(record.steps.find((s) => s.key === 'GENERATE_EXCEL')?.status).toBe('FAILED');
+      expect(record.steps.find((s) => s.key === 'ZIP')?.status).toBe('FAILED');
     });
 
     it('leaves already-terminal records (SUCCESS/FAILED) untouched', async () => {

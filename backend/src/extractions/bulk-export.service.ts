@@ -238,19 +238,7 @@ export class BulkExportService implements OnApplicationBootstrap {
         const record = await this.load(id);
         if (!record || (record.status !== 'PENDING' && record.status !== 'RUNNING')) continue;
 
-        await this.mutate(id, (r) => {
-          r.status = 'FAILED';
-          r.error =
-            'Interrupted by a server restart while this export was still running — use ' +
-            '"Retry Failed Functions" to resume (already-completed steps will not be re-fetched).';
-          r.completedAt = new Date().toISOString();
-          for (const step of r.steps) {
-            if (step.status === 'RUNNING' || step.status === 'PENDING') {
-              step.status = 'FAILED';
-              step.error = step.error ?? 'Interrupted by a server restart.';
-            }
-          }
-        });
+        await this.reconcileOrphanedRecord(id, record);
         await this.redis
           .del(bulkExportLockKey(record.orgId, record.company))
           .catch(() => undefined);
@@ -260,6 +248,63 @@ export class BulkExportService implements OnApplicationBootstrap {
     if (recovered > 0) {
       this.logger.warn(`Recovered ${recovered} bulk export(s) orphaned by a prior restart.`);
     }
+  }
+
+  /**
+   * Confirmed live 2026-08-24: a naive "mark every RUNNING/PENDING step
+   * FAILED" sweep can be WRONG, not just imprecise — BullMQ's own stalled-
+   * job recovery (see ExtractionsProcessor.onJobFailed) resolves the
+   * underlying ExtractionJob independently of this sweep, on its own
+   * ~30s+ cadence, and can land the job as genuinely SUCCESS (or with a
+   * specific, real failure reason) either just before or just after this
+   * sweep runs. Blindly failing a step whose data actually finished fetching
+   * fine would make a retry needlessly re-pull it (or, worse, made the
+   * record's error message read as a generic restart interruption instead
+   * of the real cause). So: for every FETCH_STEP_KEYS step that already has
+   * a `jobId` (recorded at dispatch time now, not only on success — see
+   * `runFetchPhase`), check that job's actual current Postgres status before
+   * deciding — only fall back to a generic "interrupted" failure when
+   * there's truly no ground truth to check (never dispatched, or the
+   * underlying job is itself still genuinely PENDING). GENERATE_EXCEL/ZIP
+   * have no such external ground truth (no Postgres job backs them) — they
+   * always just get queued for retry, which is cheap since both are fast,
+   * local, Tally-independent steps.
+   */
+  private async reconcileOrphanedRecord(id: string, record: BulkExportRecord): Promise<void> {
+    for (const step of record.steps) {
+      if (step.status !== 'RUNNING' && step.status !== 'PENDING') continue;
+
+      if (!FETCH_STEP_KEYS.includes(step.key) || !step.jobId) {
+        step.status = 'FAILED';
+        step.error = step.error ?? 'Interrupted by a server restart.';
+        continue;
+      }
+
+      const job = await this.extractions.getStatus(record.orgId, step.jobId).catch(() => null);
+      if (job?.status === 'SUCCESS' && (await this.reuse.isResultCached(step.jobId))) {
+        step.status = 'SUCCESS';
+        step.recordCount = job.recordCount ?? undefined;
+        step.finishedAt = job.updatedAt.toISOString();
+        continue;
+      }
+      step.status = 'FAILED';
+      step.error =
+        job?.status === 'FAILED'
+          ? (job.error ?? 'Extraction failed.')
+          : 'Interrupted by a server restart.';
+    }
+
+    const allFetchStepsSucceeded = FETCH_STEP_KEYS.every(
+      (key) => record.steps.find((s) => s.key === key)?.status === 'SUCCESS',
+    );
+    record.status = 'FAILED';
+    record.error = allFetchStepsSucceeded
+      ? 'Interrupted by a server restart after every fetch had already completed — use "Retry ' +
+        'Failed Functions" to finish generating the Excel templates and zip (no re-fetching needed).'
+      : 'Interrupted by a server restart while this export was still running — use "Retry Failed ' +
+        'Functions" to resume (already-completed steps will not be re-fetched).';
+    record.completedAt = new Date().toISOString();
+    await this.persist(record);
   }
 
   async start(
@@ -592,6 +637,13 @@ export class BulkExportService implements OnApplicationBootstrap {
       });
       try {
         const { id: jobId } = await this.dispatchStep(key, ctx);
+        // Recorded immediately, not only on success — this is what lets a
+        // boot-time reconciliation sweep (see reconcileOrphanedRecord) trace
+        // an orphaned RUNNING step back to the specific underlying job and
+        // check what ACTUALLY happened to it, instead of blindly assuming
+        // failure for a step that may have completed successfully via
+        // BullMQ's own independent recovery moments after this process died.
+        await this.updateStep(id, key, { jobId });
         const stepTimeoutMs = this.pollBudgetFor(key, ctx.fromDate, ctx.toDate, cfg.stepTimeoutMs);
         const finished = await this.awaitJob(ctx.orgId, jobId, stepTimeoutMs, cfg.pollIntervalMs);
         if (finished.status === 'FAILED') {
