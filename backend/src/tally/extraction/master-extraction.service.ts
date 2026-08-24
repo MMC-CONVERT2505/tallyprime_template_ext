@@ -248,9 +248,9 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       const progressMsg =
         `batch ${i / batchSize + 1}/${batchCount} ` +
         `(AlterID ${alterIdRange.from}-${alterIdRange.to}, ${batch.length} expected): ` +
-        `${parsed.length} record(s) in ${Date.now() - startedAt}ms`;
+        `${parsed.length} record(s) in ${Date.now() - startedAt}ms, ${results.length}/${totalCount} total so far`;
       this.logger.log(`  ${progressMsg}`);
-      await this.reportProgress(job ?? null, progressMsg);
+      await this.reportProgress(job ?? null, progressMsg, results.length);
 
       const isLastBatch = i + batchSize >= batchable.length;
       if (!isLastBatch && this.tally.chunkDelayMs > 0) {
@@ -297,7 +297,8 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     // cost to summing a ledger's transactions; see
     // TallyConfig.periodBatchSizeStockItems's doc comment for the live
     // incident that disproved sharing the LEDGERS-bisected value here.
-    const batchSize = fromDate && toDate ? this.tally.periodBatchSizeStockItems : this.tally.masterBatchSize;
+    const batchSize =
+      fromDate && toDate ? this.tally.periodBatchSizeStockItems : this.tally.masterBatchSize;
 
     if (totalCount <= batchSize) {
       const xml = this.builder.buildStockItemsRequest(company, fromDate, toDate);
@@ -324,9 +325,9 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
       const progressMsg =
         `batch ${i / batchSize + 1}/${batchCount} ` +
         `(AlterID ${alterIdRange.from}-${alterIdRange.to}, ${batch.length} expected): ` +
-        `${parsed.length} record(s) in ${Date.now() - startedAt}ms`;
+        `${parsed.length} record(s) in ${Date.now() - startedAt}ms, ${results.length}/${totalCount} total so far`;
       this.logger.log(`  ${progressMsg}`);
-      await this.reportProgress(job ?? null, progressMsg);
+      await this.reportProgress(job ?? null, progressMsg, results.length);
 
       const isLastBatch = i + batchSize >= batchable.length;
       if (!isLastBatch && this.tally.chunkDelayMs > 0) {

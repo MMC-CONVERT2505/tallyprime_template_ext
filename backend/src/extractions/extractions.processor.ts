@@ -95,6 +95,11 @@ export class ExtractionsProcessor extends WorkerHost {
         status: 'SUCCESS',
         recordCount,
         durationMs,
+        // Mirrors TallyExtractionServiceBase.finishJob's own clearing —
+        // without it, an agent-mode job's last "batch N/M" progress string
+        // lingers on the row forever after it's actually done, stale.
+        progress: null,
+        recordsSoFar: null,
       });
       if (updated && job.data.mode === 'agent') {
         await this.notifications.sendExtractionComplete(job.data.notifyEmail, {
@@ -161,6 +166,8 @@ export class ExtractionsProcessor extends WorkerHost {
       status: 'FAILED',
       error: message,
       durationMs,
+      progress: null,
+      recordsSoFar: null,
     });
     if (!updated) return; // already reconciled by an earlier event — no duplicate notification.
 

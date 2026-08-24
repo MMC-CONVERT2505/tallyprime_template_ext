@@ -55,6 +55,11 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
    * timeout-prone one. Below the chunk threshold this is exactly the single
    * request it always was — no behavior change for the common case.
    *
+   * Above the chunk threshold, one unrestricted whole-range request is tried
+   * FIRST — see tryWholeRangeFetch's doc comment for why this is a pure
+   * optimization, never a correctness risk. Only on its failure/timeout does
+   * this fall through to the proven-safe chunked loop below.
+   *
    * Each chunk uses `retries: 0`: chunking already trades "one big risky call"
    * for "several small reliable ones," so a chunk that times out anyway is
    * more likely a genuinely stuck Tally than a transient blip — nested
@@ -75,6 +80,9 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
       return this.filterByVoucherType(this.parser.mapVouchers(raw), dto.voucherType);
     }
 
+    const wholeRangeResult = await this.tryWholeRangeFetch(company, dto, signal, job);
+    if (wholeRangeResult !== null) return wholeRangeResult;
+
     this.logger.log(
       `VOUCHERS ${dto.from}-${dto.to} spans more than ${this.tally.voucherChunkDays} day(s) — ` +
         `splitting into ${chunks.length} request(s).`,
@@ -90,9 +98,15 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
       results.push(...parsed);
       const progressMsg =
         `chunk ${index + 1}/${chunks.length} (${chunk.from}-${chunk.to}): ` +
-        `${parsed.length} record(s) in ${Date.now() - startedAt}ms`;
+        `${parsed.length} record(s) in ${Date.now() - startedAt}ms, ` +
+        `${results.length} total so far`;
       this.logger.log(`  ${progressMsg}`);
-      await this.reportProgress(job ?? null, progressMsg);
+      // Cumulative across every chunk fetched so far, not just this one —
+      // pre-dedup/pre-filter (those only run once, on the full set, after
+      // the loop ends), so it can only ever overstate the final count
+      // slightly (a leaked duplicate — see dedupeVouchers — counted more
+      // than once mid-flight), never understate it.
+      await this.reportProgress(job ?? null, progressMsg, results.length);
 
       // Pace requests rather than firing the next chunk the instant this one
       // lands — Tally serves one request at a time on hardware that's often
@@ -104,6 +118,67 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
       }
     }
     return this.filterByVoucherType(this.dedupeVouchers(results), dto.voucherType);
+  }
+
+  /**
+   * Confirmed live 2026-08-24: a wide-range company with little or no data
+   * for the requested voucher type still paid the FULL chunked cost —
+   * hundreds of sequential requests, each paced by TallyConfig.chunkDelayMs,
+   * adding up to 45+ minutes across a bulk export's 4 voucher types — purely
+   * to discover there was nothing to find. A single unrestricted request
+   * across the whole range answers just as correctly, and empirically just
+   * as fast, for a sparse company (confirmed: a live probe spanning
+   * 2000-01-01..2026-08-22 for this same company answered in 42ms) —
+   * chunking exists only to keep a request from timing out when there's
+   * genuinely a lot to fetch (see this class's own doc comment), so trying
+   * the cheap path first and falling back to the proven-safe chunked path on
+   * failure is a pure optimization, never a correctness risk: on failure or
+   * timeout, behavior past this point is byte-for-byte identical to before
+   * this method existed — no data is ever silently skipped, only the (still
+   * fully retried via the chunked loop) discovery of it is reordered.
+   *
+   * Deliberately reuses the standard TallyConfig.timeoutMs budget (via
+   * `retries: 0`, no `timeoutMs` override) rather than a new, shorter
+   * tunable — that's exactly the ceiling a single unchunked (in-range)
+   * VOUCHERS request already tolerates today, so a moderately-sized company
+   * that would genuinely finish in, say, 20s isn't wrongly abandoned early
+   * just to save a few seconds on the companies this targets.
+   *
+   * Returns `null` (never an empty array) to signal "no answer — fall back
+   * to chunking," so a genuine zero-record result from a successful
+   * whole-range fetch is never confused with a failed one.
+   */
+  private async tryWholeRangeFetch(
+    company: string,
+    dto: ExtractVouchersDto,
+    signal: AbortSignal | undefined,
+    job: ExtractionJob | null | undefined,
+  ): Promise<TallyVoucher[] | null> {
+    const startedAt = Date.now();
+    let raw: string;
+    try {
+      const xml = this.builder.buildVouchersRequest(company, dto.from, dto.to, dto.voucherType);
+      raw = await this.connector.post(xml, { retries: 0, signal });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.log(
+        `VOUCHERS ${dto.from}-${dto.to}: whole-range attempt failed after ` +
+          `${Date.now() - startedAt}ms (${message}) — falling back to chunked requests.`,
+      );
+      return null;
+    }
+
+    const result = this.filterByVoucherType(
+      this.dedupeVouchers(this.parser.mapVouchers(raw)),
+      dto.voucherType,
+    );
+    const progressMsg =
+      `VOUCHERS ${dto.from}-${dto.to}: whole-range request answered in ` +
+      `${Date.now() - startedAt}ms (${result.length} record(s)) — chunking skipped entirely.`;
+    this.logger.log(`  ${progressMsg}`);
+    await this.reportProgress(job ?? null, progressMsg, result.length);
+    return result;
   }
 
   /**

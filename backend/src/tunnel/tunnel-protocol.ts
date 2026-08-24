@@ -38,6 +38,28 @@ export interface AgentResultMessage {
 }
 
 /**
+ * Live "batch N/M" status for a command still in flight — the agent-side
+ * counterpart of TallyExtractionServiceBase.reportProgress. Sent zero or more
+ * times per requestId, always strictly before that same requestId's terminal
+ * 'result' (both travel over the same ordered WebSocket connection, and the
+ * agent only sends 'result' after the extraction call that emits these has
+ * already resolved) — so the gateway never needs to reconcile the two racing.
+ * Without this, a batched LEDGERS/STOCK_ITEMS fetch or a chunked VOUCHERS
+ * fetch dispatched through the agent tunnel (the normal, real deployment
+ * path — see AgentTunnelClient) had no way to surface progress at all: the
+ * agent process has no Postgres of its own (see TallyExtractionServiceBase's
+ * doc comment), so reportProgress's usual `this.jobs.update(...)` silently
+ * no-ops there. This message is what AgentModule's EXTRACTION_JOB_REPOSITORY
+ * stub relays instead — see AgentProgressRelay.
+ */
+export interface AgentProgressMessage {
+  type: 'progress';
+  requestId: string;
+  progress: string;
+  recordsSoFar?: number;
+}
+
+/**
  * Sent on its own periodic timer (see AgentTunnelClient), independent of any
  * queued extraction command — a self-check that the agent's own configured
  * Tally is actually reachable right now, not just that the WebSocket tunnel
@@ -53,7 +75,11 @@ export interface AgentHeartbeatMessage {
   probeDurationMs?: number;
 }
 
-export type AgentToGatewayMessage = AgentHelloMessage | AgentResultMessage | AgentHeartbeatMessage;
+export type AgentToGatewayMessage =
+  | AgentHelloMessage
+  | AgentResultMessage
+  | AgentProgressMessage
+  | AgentHeartbeatMessage;
 
 export interface GatewayHelloAckMessage {
   type: 'hello-ack';

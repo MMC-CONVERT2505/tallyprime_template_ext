@@ -48,6 +48,16 @@ export interface BulkExportStep {
   status: BulkExportStepStatus;
   jobId?: string;
   recordCount?: number;
+  /** Cumulative record count fetched so far, while this step is still
+   *  RUNNING — live progress on a batched/chunked fetch (see
+   *  TallyExtractionServiceBase.reportProgress), copied in on every poll
+   *  tick by awaitJob below. Cleared once the step reaches a terminal
+   *  status — `recordCount` is the authoritative final total from then on. */
+  recordsSoFar?: number;
+  /** Human-readable detail behind `recordsSoFar` (e.g. "batch 3/12 (...): 40
+   *  record(s) in 210ms, 120/430 total so far") — same live copy, same
+   *  lifetime as recordsSoFar. */
+  progress?: string;
   error?: string;
   startedAt?: string;
   finishedAt?: string;
@@ -645,7 +655,14 @@ export class BulkExportService implements OnApplicationBootstrap {
         // BullMQ's own independent recovery moments after this process died.
         await this.updateStep(id, key, { jobId });
         const stepTimeoutMs = this.pollBudgetFor(key, ctx.fromDate, ctx.toDate, cfg.stepTimeoutMs);
-        const finished = await this.awaitJob(ctx.orgId, jobId, stepTimeoutMs, cfg.pollIntervalMs);
+        const finished = await this.awaitJob(
+          id,
+          key,
+          ctx.orgId,
+          jobId,
+          stepTimeoutMs,
+          cfg.pollIntervalMs,
+        );
         if (finished.status === 'FAILED') {
           throw new Error(finished.error ?? `${STEP_LABELS[key]} extraction failed.`);
         }
@@ -654,6 +671,8 @@ export class BulkExportService implements OnApplicationBootstrap {
           status: 'SUCCESS',
           jobId,
           recordCount: finished.recordCount ?? undefined,
+          recordsSoFar: undefined,
+          progress: undefined,
           finishedAt: new Date().toISOString(),
         });
       } catch (err) {
@@ -662,6 +681,8 @@ export class BulkExportService implements OnApplicationBootstrap {
         await this.updateStep(id, key, {
           status: 'FAILED',
           error: message,
+          recordsSoFar: undefined,
+          progress: undefined,
           finishedAt: new Date().toISOString(),
         });
         this.logger.warn(
@@ -874,8 +895,17 @@ export class BulkExportService implements OnApplicationBootstrap {
   }
 
   /** Polls GET-status equivalent until the job leaves PENDING or the step
-   *  budget runs out — see BulkExportConfig.stepTimeoutMs's doc comment. */
+   *  budget runs out — see BulkExportConfig.stepTimeoutMs's doc comment.
+   *  Copies the underlying job's live `recordsSoFar`/`progress` (see
+   *  TallyExtractionServiceBase.reportProgress) onto this bulk export's own
+   *  step record on every tick, so a caller polling GET
+   *  /extractions/bulk-export/:id sees "N records extracted so far" for
+   *  whichever function is currently running, not just a bare RUNNING with
+   *  no detail — the same underlying data was always being written, this
+   *  just surfaces it up one more level to where a caller can actually see it. */
   private async awaitJob(
+    bulkExportId: string,
+    stepKey: BulkExportStepKey,
     orgId: string,
     jobId: string,
     stepTimeoutMs: number,
@@ -885,6 +915,12 @@ export class BulkExportService implements OnApplicationBootstrap {
     for (;;) {
       const job = await this.extractions.getStatus(orgId, jobId);
       if (job.status !== 'PENDING') return job;
+      if (job.recordsSoFar !== null || job.progress !== null) {
+        await this.updateStep(bulkExportId, stepKey, {
+          recordsSoFar: job.recordsSoFar ?? undefined,
+          progress: job.progress ?? undefined,
+        });
+      }
       if (Date.now() >= deadline) {
         throw new Error(
           `Timed out after ${stepTimeoutMs}ms waiting on job ${jobId} — the connector may be ` +

@@ -22,7 +22,10 @@ interface ExtractionJobRepository {
   update(
     id: string,
     data: Partial<
-      Pick<ExtractionJob, 'status' | 'recordCount' | 'durationMs' | 'error' | 'progress'>
+      Pick<
+        ExtractionJob,
+        'status' | 'recordCount' | 'durationMs' | 'error' | 'progress' | 'recordsSoFar'
+      >
     >,
   ): Promise<ExtractionJob>;
 }
@@ -206,10 +209,15 @@ export abstract class TallyExtractionServiceBase {
   ): Promise<void> {
     if (!job || !this.jobs) return;
     try {
-      // Clear any leftover "batch N/M" progress string now that the job has
-      // reached a terminal status — it would otherwise linger stale on the
-      // row forever once nothing is updating it anymore.
-      await this.jobs.update(job.id, { status, progress: null, ...patch });
+      // Clear any leftover "batch N/M" progress string/count now that the
+      // job has reached a terminal status — it would otherwise linger stale
+      // on the row forever once nothing is updating it anymore.
+      await this.jobs.update(job.id, {
+        status,
+        progress: null,
+        recordsSoFar: null,
+        ...patch,
+      });
     } catch (err) {
       this.logger.warn(`Could not update extraction job ${job.id}: ${String(err)}`);
     }
@@ -221,11 +229,25 @@ export abstract class TallyExtractionServiceBase {
    * AlterID batching, TransactionExtractionService's date chunking) isn't a
    * silent black box while PENDING. Never the source of truth for anything —
    * same fire-and-forget, log-and-continue style as createJob/finishJob.
+   *
+   * `recordsSoFar`, when supplied, is the CUMULATIVE count across every
+   * batch/chunk fetched so far this run — not the count from just the latest
+   * one (that's already inside the `progress` message text). This is what
+   * lets a caller show a live, growing "N records extracted so far" instead
+   * of just a bare RUNNING status — see BulkExportService.awaitJob, which
+   * copies this onto the step a caller polls.
    */
-  protected async reportProgress(job: ExtractionJob | null, progress: string): Promise<void> {
+  protected async reportProgress(
+    job: ExtractionJob | null,
+    progress: string,
+    recordsSoFar?: number,
+  ): Promise<void> {
     if (!job || !this.jobs) return;
     try {
-      await this.jobs.update(job.id, { progress });
+      await this.jobs.update(job.id, {
+        progress,
+        ...(recordsSoFar !== undefined ? { recordsSoFar } : {}),
+      });
     } catch (err) {
       this.logger.debug(
         `Could not persist progress for job ${job.id} (continuing): ${String(err)}`,

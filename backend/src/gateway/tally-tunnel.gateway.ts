@@ -10,6 +10,7 @@ import { parseConnectionToken } from '../connections/token.util';
 import {
   AgentHeartbeatMessage,
   AgentHelloMessage,
+  AgentProgressMessage,
   AgentResultMessage,
   AgentToGatewayMessage,
   GatewayToAgentMessage,
@@ -109,6 +110,11 @@ export class TallyTunnelGateway implements OnGatewayConnection, OnGatewayDisconn
 
         if (message.type === 'result') {
           this.handleResult(message);
+          return;
+        }
+
+        if (message.type === 'progress') {
+          this.handleProgress(message);
           return;
         }
 
@@ -323,6 +329,35 @@ export class TallyTunnelGateway implements OnGatewayConnection, OnGatewayDisconn
     } else {
       pending.reject(new Error(message.error?.message ?? 'Agent command failed.'));
     }
+  }
+
+  /**
+   * Live "batch N/M" status arriving mid-command, before its terminal
+   * 'result' — see AgentProgressMessage's doc comment for why this exists.
+   * `requestOwner` (populated by sendCommand's dedupeKey, which
+   * ExtractionsProcessor always passes as the real ExtractionJob id for
+   * agent-mode dispatch) is the same map handleResult/clearDedupeFor use to
+   * correlate a requestId back to the Postgres row a caller is actually
+   * polling — reused here rather than threading a second id through the
+   * whole dispatch chain. No entry (e.g. a one-shot action that never
+   * batches, or a caller that didn't pass a dedupeKey) is a silent no-op:
+   * there's nothing to update. `updateMany`'s `status: 'PENDING'` guard
+   * mirrors ExtractionsProcessor.markJobDone's own idempotency pattern — a
+   * late progress message can never overwrite an already-terminal row.
+   */
+  private handleProgress(message: AgentProgressMessage): void {
+    const extractionJobId = this.requestOwner.get(message.requestId);
+    if (!extractionJobId) return;
+    this.prisma.extractionJob
+      .updateMany({
+        where: { id: extractionJobId, status: 'PENDING' },
+        data: { progress: message.progress, recordsSoFar: message.recordsSoFar ?? null },
+      })
+      .catch((err) =>
+        this.logger.debug(
+          `Could not persist progress for job ${extractionJobId} (continuing): ${String(err)}`,
+        ),
+      );
   }
 
   /** Updates from the agent's own periodic Tally self-probe (see

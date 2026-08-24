@@ -158,10 +158,13 @@ describe('TransactionExtractionService', () => {
     });
 
     it('also filters the chunked path, after dedup', async () => {
-      const { service } = makeService({
-        connectorPost: jest.fn().mockResolvedValue(mixedTypesXml()),
-        voucherChunkDays: 7,
-      });
+      const connectorPost = jest
+        .fn()
+        // First call is the whole-range pre-check — forced to fail so this
+        // genuinely exercises the chunked fallback path, not the shortcut.
+        .mockRejectedValueOnce(new Error('whole-range unavailable'))
+        .mockResolvedValue(mixedTypesXml());
+      const { service } = makeService({ connectorPost, voucherChunkDays: 7 });
 
       const result = await service.getVouchers({
         company: 'ABC Ltd',
@@ -175,12 +178,164 @@ describe('TransactionExtractionService', () => {
     });
   });
 
+  describe('whole-range fetch before committing to chunking', () => {
+    // Regression coverage for a live incident (2026-08-24): a bulk export
+    // against a company with effectively zero vouchers of the requested type
+    // still paid the full chunked cost — 300+ sequential requests across a
+    // 6+ year range, each paced by chunkDelayMs — purely to discover there
+    // was nothing to find. A single unrestricted request answers just as
+    // correctly (and, for a sparse company, dramatically faster) — see
+    // tryWholeRangeFetch's doc comment.
+    function voucherXml(voucherNumber: string): string {
+      return (
+        '<ENVELOPE><BODY><DATA><TALLYMESSAGE><VOUCHER VCHTYPE="Sales"><DATE>20260401</DATE>' +
+        `<VOUCHERNUMBER>${voucherNumber}</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE></DATA></BODY></ENVELOPE>`
+      );
+    }
+
+    it('answers directly from one whole-range request and never chunks at all when Tally can serve it fast', async () => {
+      const connectorPost = jest.fn().mockResolvedValue(voucherXml('1'));
+      const { service, buildVouchersRequest, connector } = makeService({
+        connectorPost,
+        voucherChunkDays: 7,
+      });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20200101',
+        to: '20260822', // wide range -> would be hundreds of chunks
+        voucherType: 'Sales',
+      });
+
+      expect(connector.post).toHaveBeenCalledTimes(1);
+      expect(buildVouchersRequest).toHaveBeenCalledTimes(1);
+      // The ORIGINAL full range, not a chunk-scoped sub-range.
+      expect(buildVouchersRequest).toHaveBeenCalledWith('ABC Ltd', '20200101', '20260822', 'Sales');
+      expect(connector.post).toHaveBeenCalledWith(expect.any(String), {
+        retries: 0,
+        signal: undefined,
+      });
+      expect(result).toHaveLength(1);
+    });
+
+    it('correctly reports zero records from a successful whole-range fetch, not confused with a failure', async () => {
+      const connectorPost = jest.fn().mockResolvedValue('<ENVELOPE></ENVELOPE>');
+      const { service, connector } = makeService({ connectorPost, voucherChunkDays: 7 });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20200101',
+        to: '20260822',
+        voucherType: 'Sales',
+      });
+
+      expect(result).toEqual([]);
+      // Confirms it did NOT fall back to chunking after a genuine zero-record answer.
+      expect(connector.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies dedup and the voucher-type filter to the whole-range result too', async () => {
+      const mixedXml =
+        '<ENVELOPE><BODY><DATA>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Journal"><DATE>20260401</DATE>' +
+        '<VOUCHERNUMBER>J-1</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Sales"><DATE>20260401</DATE>' +
+        '<VOUCHERNUMBER>S-1</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE>' +
+        '</DATA></BODY></ENVELOPE>';
+      const { service } = makeService({
+        connectorPost: jest.fn().mockResolvedValue(mixedXml),
+        voucherChunkDays: 7,
+      });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20200101',
+        to: '20260822',
+        voucherType: 'Sales',
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ voucherNumber: 'S-1' });
+    });
+
+    it('falls back to the full chunked loop when the whole-range request fails', async () => {
+      const connectorPost = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Tally did not respond within 60000ms.'))
+        .mockResolvedValueOnce(voucherXml('1'))
+        .mockResolvedValueOnce(voucherXml('2'))
+        .mockResolvedValueOnce(voucherXml('3'));
+      const { service, buildVouchersRequest, connector } = makeService({
+        connectorPost,
+        voucherChunkDays: 7,
+      });
+
+      const result = await service.getVouchers({
+        company: 'ABC Ltd',
+        from: '20260401',
+        to: '20260415', // 15 days -> 3 chunks
+        voucherType: 'Sales',
+      });
+
+      expect(connector.post).toHaveBeenCalledTimes(4); // 1 whole-range + 3 chunks
+      expect(buildVouchersRequest).toHaveBeenNthCalledWith(
+        1,
+        'ABC Ltd',
+        '20260401',
+        '20260415',
+        'Sales',
+      );
+      expect(buildVouchersRequest).toHaveBeenNthCalledWith(
+        2,
+        'ABC Ltd',
+        '20260401',
+        '20260407',
+        'Sales',
+      );
+      expect(result.map((v) => v.voucherNumber)).toEqual(['1', '2', '3']);
+    });
+
+    it('does not attempt a whole-range request at all when the range already fits in one chunk', async () => {
+      const { service, buildVouchersRequest, connector } = makeService({ voucherChunkDays: 7 });
+
+      await service.getVouchers({ company: 'ABC Ltd', from: '20260401', to: '20260407' });
+
+      expect(connector.post).toHaveBeenCalledTimes(1);
+      expect(buildVouchersRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates a genuine cancellation from the whole-range attempt instead of falling back to chunking', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const connectorPost = jest.fn().mockRejectedValue(new Error('aborted'));
+      const { service, connector } = makeService({ connectorPost, voucherChunkDays: 7 });
+
+      await expect(
+        service.getVouchers(
+          { company: 'ABC Ltd', from: '20260401', to: '20260415' },
+          controller.signal,
+        ),
+      ).rejects.toThrow();
+
+      // Never silently retried as if it were an ordinary failure.
+      expect(connector.post).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('chunking a wide date range', () => {
     function voucherXml(voucherNumber: string): string {
       return (
         '<ENVELOPE><BODY><DATA><TALLYMESSAGE><VOUCHER VCHTYPE="Sales"><DATE>20260401</DATE>' +
         `<VOUCHERNUMBER>${voucherNumber}</VOUCHERNUMBER></VOUCHER></TALLYMESSAGE></DATA></BODY></ENVELOPE>`
       );
+    }
+
+    /** Every test below exercises the fallback (chunked) path specifically —
+     *  prepend a failed whole-range attempt so the new pre-check (see
+     *  'whole-range fetch before committing to chunking' above) doesn't
+     *  short-circuit before the chunking behavior under test ever runs. */
+    function wholeRangeUnavailable() {
+      return jest.fn().mockRejectedValueOnce(new Error('whole-range unavailable'));
     }
 
     it('stays a single request when the range fits within voucherChunkDays (no behavior change)', async () => {
@@ -200,60 +355,13 @@ describe('TransactionExtractionService', () => {
       expect(connector.post).toHaveBeenCalledWith(expect.any(String), { signal: undefined });
     });
 
-    it('splits a range wider than voucherChunkDays into multiple requests and concatenates the results', async () => {
-      const connectorPost = jest
-        .fn()
-        .mockResolvedValueOnce(voucherXml('1'))
-        .mockResolvedValueOnce(voucherXml('2'))
-        .mockResolvedValueOnce(voucherXml('3'));
-      const { service, buildVouchersRequest, connector } = makeService({
-        connectorPost,
-        voucherChunkDays: 7,
-      });
-
-      const result = await service.getVouchers({
-        company: 'ABC Ltd',
-        from: '20260401',
-        to: '20260415', // 15 days -> 3 chunks of <=7 days each
-        voucherType: 'Sales',
-      });
-
-      expect(buildVouchersRequest).toHaveBeenCalledTimes(3);
-      expect(buildVouchersRequest).toHaveBeenNthCalledWith(
-        1,
-        'ABC Ltd',
-        '20260401',
-        '20260407',
-        'Sales',
-      );
-      expect(buildVouchersRequest).toHaveBeenNthCalledWith(
-        2,
-        'ABC Ltd',
-        '20260408',
-        '20260414',
-        'Sales',
-      );
-      expect(buildVouchersRequest).toHaveBeenNthCalledWith(
-        3,
-        'ABC Ltd',
-        '20260415',
-        '20260415',
-        'Sales',
-      );
-      expect(result.map((v) => v.voucherNumber)).toEqual(['1', '2', '3']);
-
-      // Chunked calls disable per-call retries — nested retry-of-retries
-      // would multiply the worst case across every chunk.
-      expect(connector.post).toHaveBeenCalledWith(expect.any(String), { retries: 0 });
-    });
-
     it('dedupes a voucher that Tally leaks into every chunk response, by AlterID', async () => {
       const leakedVoucherXml =
         '<ENVELOPE><BODY><DATA><TALLYMESSAGE><VOUCHER VCHTYPE="Journal"><DATE>20260401</DATE>' +
         '<VOUCHERNUMBER>TI2627-158</VOUCHERNUMBER><ALTERID>26137</ALTERID></VOUCHER></TALLYMESSAGE></DATA></BODY></ENVELOPE>';
       // Same voucher (same AlterID) comes back from all 3 chunks — this is
       // the real leak observed against a live TallyPrime instance.
-      const connectorPost = jest.fn().mockResolvedValue(leakedVoucherXml);
+      const connectorPost = wholeRangeUnavailable().mockResolvedValue(leakedVoucherXml);
       const { service } = makeService({ connectorPost, voucherChunkDays: 7 });
 
       const result = await service.getVouchers({
@@ -262,14 +370,13 @@ describe('TransactionExtractionService', () => {
         to: '20260415', // 15 days -> 3 chunks
       });
 
-      expect(connectorPost).toHaveBeenCalledTimes(3);
+      expect(connectorPost).toHaveBeenCalledTimes(4); // 1 whole-range (failed) + 3 chunks
       expect(result).toHaveLength(1);
       expect(result[0]).toMatchObject({ voucherNumber: 'TI2627-158', alterId: 26137 });
     });
 
     it('propagates a single chunk failure rather than returning partial data', async () => {
-      const connectorPost = jest
-        .fn()
+      const connectorPost = wholeRangeUnavailable()
         .mockResolvedValueOnce(voucherXml('1'))
         .mockRejectedValueOnce(new Error('Tally unreachable'));
       const { service } = makeService({ connectorPost, voucherChunkDays: 7 });
@@ -280,7 +387,7 @@ describe('TransactionExtractionService', () => {
     });
 
     it('pauses chunkDelayMs between chunks, but not after the final one', async () => {
-      const connectorPost = jest.fn().mockResolvedValue(voucherXml('1'));
+      const connectorPost = wholeRangeUnavailable().mockResolvedValue(voucherXml('1'));
       const { service } = makeService({ connectorPost, voucherChunkDays: 7, chunkDelayMs: 2000 });
       const sleepSpy = jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
 
@@ -292,7 +399,7 @@ describe('TransactionExtractionService', () => {
     });
 
     it('does not sleep at all when chunkDelayMs is 0', async () => {
-      const connectorPost = jest.fn().mockResolvedValue(voucherXml('1'));
+      const connectorPost = wholeRangeUnavailable().mockResolvedValue(voucherXml('1'));
       const { service } = makeService({ connectorPost, voucherChunkDays: 7, chunkDelayMs: 0 });
       const sleepSpy = jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
 
@@ -313,7 +420,7 @@ describe('TransactionExtractionService', () => {
 
     it('stops the chunk loop early when the signal is aborted between chunks', async () => {
       const controller = new AbortController();
-      const connectorPost = jest.fn().mockImplementationOnce(async () => {
+      const connectorPost = wholeRangeUnavailable().mockImplementationOnce(async () => {
         controller.abort(); // abort right after chunk 1 lands, before chunk 2 starts
         return voucherXml('1');
       });
@@ -326,12 +433,12 @@ describe('TransactionExtractionService', () => {
         ),
       ).rejects.toThrow('cancelled');
 
-      expect(connector.post).toHaveBeenCalledTimes(1); // chunk 2 and 3 never started
+      expect(connector.post).toHaveBeenCalledTimes(2); // 1 whole-range (failed) + chunk 1; chunk 2/3 never started
     });
 
     it('passes the signal through to each chunk request', async () => {
       const controller = new AbortController();
-      const connectorPost = jest.fn().mockResolvedValue(voucherXml('1'));
+      const connectorPost = wholeRangeUnavailable().mockResolvedValue(voucherXml('1'));
       const { service, connector } = makeService({ connectorPost, voucherChunkDays: 7 });
 
       await service.getVouchers(
@@ -346,21 +453,23 @@ describe('TransactionExtractionService', () => {
     });
 
     it('reports progress once per chunk via the job repository, then clears it on completion', async () => {
-      const connectorPost = jest.fn().mockResolvedValue(voucherXml('1'));
+      const connectorPost = wholeRangeUnavailable().mockResolvedValue(voucherXml('1'));
       const jobs = makeJobsRepo();
       const { service } = makeService({ connectorPost, voucherChunkDays: 7, jobs });
 
       await service.getVouchers({ company: 'ABC Ltd', from: '20260401', to: '20260415' }); // 3 chunks
 
       // 3 in-progress updates (one per chunk) + 1 final update from finishJob.
+      // The failed whole-range attempt reports nothing (it only logs, since
+      // the caller can't tell yet whether chunking will even happen).
       expect(jobs.update).toHaveBeenCalledTimes(4);
       expect(jobs.update.mock.calls[0]).toEqual([
         'job-1',
-        { progress: expect.stringContaining('chunk 1/3') },
+        { progress: expect.stringContaining('chunk 1/3'), recordsSoFar: expect.any(Number) },
       ]);
       expect(jobs.update.mock.calls[3]).toEqual([
         'job-1',
-        expect.objectContaining({ progress: null, status: 'SUCCESS' }),
+        expect.objectContaining({ progress: null, recordsSoFar: null, status: 'SUCCESS' }),
       ]);
     });
   });

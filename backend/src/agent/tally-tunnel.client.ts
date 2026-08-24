@@ -11,6 +11,7 @@ import {
   TunnelAction,
 } from '../tunnel/tunnel-protocol';
 import { AgentPairingService } from './agent-pairing.service';
+import { AgentProgressRelay } from './agent-progress-relay.service';
 import { clearBridgeState, DEFAULT_BRIDGE_STATE_PATH, readBridgeState } from './bridge-state.util';
 
 const MIN_BACKOFF_MS = 1_000;
@@ -60,7 +61,16 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
     private readonly masters: MasterExtractionService,
     private readonly transactions: TransactionExtractionService,
     private readonly diagnostics: TallyDiagnosticsService,
-  ) {}
+    private readonly progressRelay: AgentProgressRelay,
+  ) {
+    // Registered once, up front — by the time any 'command' can possibly
+    // arrive (only after a completed WS handshake), this is already wired.
+    // See AgentProgressRelay's doc comment for why this indirection exists
+    // instead of the job repository holding the socket directly.
+    this.progressRelay.setSender((requestId, progress, recordsSoFar) =>
+      this.sendMessage({ type: 'progress', requestId, progress, recordsSoFar }),
+    );
+  }
 
   onModuleInit(): void {
     const state = readBridgeState(DEFAULT_BRIDGE_STATE_PATH);
@@ -201,6 +211,13 @@ export class AgentTunnelClient implements OnModuleInit, OnModuleDestroy {
         payload,
         { masters: this.masters, transactions: this.transactions, diagnostics: this.diagnostics },
         signal,
+        // requestId doubles as this dispatch's externalJobId: the gateway
+        // already correlates it 1:1 back to the real ExtractionJob id (see
+        // TallyTunnelGateway's requestOwner map, populated by sendCommand's
+        // dedupeKey) for the 'progress' messages AgentProgressRelay emits
+        // below. Ignored by actions that don't accept it (groups/companies/
+        // etc. — see dispatchExtraction's switch).
+        requestId,
       );
       this.sendMessage({ type: 'result', requestId, ok: true, data });
     } catch (err) {

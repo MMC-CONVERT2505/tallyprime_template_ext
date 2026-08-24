@@ -50,6 +50,9 @@ function makePrisma(overrides: { findUnique?: jest.Mock; update?: jest.Mock } = 
         }),
       update: overrides.update ?? jest.fn().mockResolvedValue({}),
     },
+    extractionJob: {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
   };
 }
 
@@ -269,6 +272,73 @@ describe('TallyTunnelGateway', () => {
 
       const cancelMessage = JSON.parse(socket.send.mock.calls[2][0]);
       expect(cancelMessage).toEqual({ type: 'cancel', requestId: sentCommand.requestId });
+    });
+
+    describe('live progress messages', () => {
+      it("persists a mid-command 'progress' message onto the dedupeKey's ExtractionJob row", async () => {
+        const { socket } = await connectedAgent();
+
+        const promise = gateway.sendCommand(CONNECTION_ID, 'ledgers', {}, 30_000, 'job-1');
+        const sentCommand = JSON.parse(socket.send.mock.calls[1][0]);
+
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'progress',
+              requestId: sentCommand.requestId,
+              progress: 'batch 2/5 (...): 10 record(s), 20 total so far',
+              recordsSoFar: 20,
+            }),
+          ),
+        );
+        await flush();
+
+        expect(prisma.extractionJob.updateMany).toHaveBeenCalledWith({
+          where: { id: 'job-1', status: 'PENDING' },
+          data: {
+            progress: 'batch 2/5 (...): 10 record(s), 20 total so far',
+            recordsSoFar: 20,
+          },
+        });
+
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({ type: 'result', requestId: sentCommand.requestId, ok: true, data: [] }),
+          ),
+        );
+        await expect(promise).resolves.toEqual([]);
+      });
+
+      it('ignores a progress message whose requestId has no tracked dedupeKey (no-dedupeKey dispatch)', async () => {
+        const { socket } = await connectedAgent();
+
+        const promise = gateway.sendCommand(CONNECTION_ID, 'probe', {}); // no dedupeKey
+        const sentCommand = JSON.parse(socket.send.mock.calls[1][0]);
+
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'progress',
+              requestId: sentCommand.requestId,
+              progress: 'irrelevant',
+            }),
+          ),
+        );
+        await flush();
+
+        expect(prisma.extractionJob.updateMany).not.toHaveBeenCalled();
+
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({ type: 'result', requestId: sentCommand.requestId, ok: true, data: {} }),
+          ),
+        );
+        await promise;
+      });
     });
 
     describe('duplicate-dispatch prevention (dedupeKey)', () => {

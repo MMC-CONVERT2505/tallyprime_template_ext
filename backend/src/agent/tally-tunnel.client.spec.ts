@@ -69,14 +69,16 @@ describe('AgentTunnelClient — credential handling', () => {
           : Promise.resolve(pairResult.resolve ?? 'paired-token'),
       ),
     };
+    const progressRelay = { setSender: jest.fn() };
     const client = new AgentTunnelClient(
       config as any,
       pairing as any,
       {} as any,
       {} as any,
       {} as any,
+      progressRelay as any,
     );
-    return { client, pairing };
+    return { client, pairing, progressRelay };
   }
 
   beforeEach(() => {
@@ -168,6 +170,24 @@ describe('AgentTunnelClient — credential handling', () => {
 
     expect(pairing.pair).toHaveBeenCalledTimes(1); // did NOT just retry the same dead token
     expect(clearBridgeState).toHaveBeenCalledWith('/mock/.tally-bridge-state.json'); // and not left on disk to be reloaded on restart
+    client.onModuleDestroy();
+  });
+
+  it('registers itself as the progress relay sender, forwarding to a "progress" tunnel message', () => {
+    const { client, progressRelay } = makeClient('existing-token');
+    client.onModuleInit();
+
+    expect(progressRelay.setSender).toHaveBeenCalledTimes(1);
+    const sender = progressRelay.setSender.mock.calls[0][0];
+    sender('req-1', 'batch 2/5 (...): 10 record(s), 20 total so far', 20);
+
+    const sent = JSON.parse(instances[0].send.mock.calls.at(-1)![0]);
+    expect(sent).toEqual({
+      type: 'progress',
+      requestId: 'req-1',
+      progress: 'batch 2/5 (...): 10 record(s), 20 total so far',
+      recordsSoFar: 20,
+    });
     client.onModuleDestroy();
   });
 });

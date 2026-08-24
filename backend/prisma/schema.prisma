@@ -56,6 +56,14 @@ model ExtractionJob {
   /// a source of truth, just a nicety for a still-PENDING job. Cleared to
   /// null once the job reaches a terminal status.
   progress     String?
+  /// Cumulative record count across every batch/chunk fetched SO FAR, for a
+  /// still-PENDING job — distinct from `recordCount`, which is only ever set
+  /// once, on the terminal row, as the FINAL total. Lets a caller watching a
+  /// long-running batched/chunked fetch (e.g. a bulk export's live status
+  /// view) show "N records extracted so far" while it's still in progress,
+  /// not just a bare "RUNNING" with no detail. Cleared to null alongside
+  /// `progress` once the job reaches a terminal status.
+  recordsSoFar Int?
   org          Org?              @relation(fields: [orgId], references: [id])
   orgId        String?
   connection   TallyConnection?  @relation(fields: [connectionId], references: [id])

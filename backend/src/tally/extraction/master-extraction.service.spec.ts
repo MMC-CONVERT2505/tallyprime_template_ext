@@ -439,11 +439,11 @@ describe('MasterExtractionService', () => {
       expect(jobs.update).toHaveBeenCalledTimes(4);
       expect(jobs.update.mock.calls[0]).toEqual([
         'job-1',
-        { progress: expect.stringContaining('batch 1/3') },
+        { progress: expect.stringContaining('batch 1/3'), recordsSoFar: expect.any(Number) },
       ]);
       expect(jobs.update.mock.calls[3]).toEqual([
         'job-1',
-        expect.objectContaining({ progress: null, status: 'SUCCESS' }),
+        expect.objectContaining({ progress: null, recordsSoFar: null, status: 'SUCCESS' }),
       ]);
     });
 

@@ -494,6 +494,56 @@ describe('BulkExportService', () => {
       await settle('org-1', id);
     });
 
+    it("copies the underlying job's live recordsSoFar/progress onto the running step on every poll tick", async () => {
+      // Regression coverage for "show how many records are extracted so far
+      // for the in-progress function" — the underlying ExtractionJob was
+      // already tracking this (TallyExtractionServiceBase.reportProgress);
+      // this proves awaitJob actually surfaces it onto the BulkExportStep a
+      // caller polls, not just onto a row nothing else ever reads.
+      let pollCount = 0;
+      extractions.getStatus.mockImplementation(async (_orgId: string, jobId: string) => {
+        if (jobId !== 'job-1') return { id: jobId, status: 'SUCCESS', recordCount: 1 };
+        pollCount++;
+        if (pollCount < 3) {
+          return {
+            id: jobId,
+            status: 'PENDING',
+            recordsSoFar: pollCount * 10,
+            progress: `batch ${pollCount}/5 (...): 10 record(s), ${pollCount * 10} total so far`,
+          };
+        }
+        return { id: jobId, status: 'SUCCESS', recordCount: 30 };
+      });
+
+      const { id } = await service.start(
+        'org-1',
+        'user@example.com',
+        'ABC Ltd',
+        '20260401',
+        '20260430',
+      );
+
+      await waitFor(async () => {
+        const record = await service.getStatus('org-1', id);
+        const groups = record.steps.find((s) => s.key === 'GROUPS');
+        return groups?.recordsSoFar !== undefined;
+      });
+      const midFlight = await service.getStatus('org-1', id);
+      const groupsStep = midFlight.steps.find((s) => s.key === 'GROUPS');
+      expect(groupsStep?.recordsSoFar).toBeGreaterThan(0);
+      expect(groupsStep?.progress).toContain('total so far');
+      expect(groupsStep?.status).toBe('RUNNING');
+
+      const record = await settle('org-1', id);
+      const finishedGroupsStep = record.steps.find((s) => s.key === 'GROUPS');
+      // Cleared once the step reaches a terminal status — recordCount (the
+      // real final total) is the authoritative number from then on, not a
+      // stale "N so far" left over from mid-flight.
+      expect(finishedGroupsStep?.recordsSoFar).toBeUndefined();
+      expect(finishedGroupsStep?.progress).toBeUndefined();
+      expect(finishedGroupsStep?.recordCount).toBe(30);
+    });
+
     it("404s when a different org tries to delete another org's bulk export", async () => {
       const { id } = await service.start(
         'org-1',
