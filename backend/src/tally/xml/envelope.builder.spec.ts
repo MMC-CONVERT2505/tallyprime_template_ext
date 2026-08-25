@@ -166,4 +166,51 @@ describe('EnvelopeBuilder', () => {
     expect(xml).not.toContain('<FILTER>');
     expect(xml).not.toContain('SYSTEM TYPE="Formulae"');
   });
+
+  describe('buildVouchersRequest', () => {
+    // Collection-style (TYPE=Collection, TYPE=Voucher), NOT a report export —
+    // live-verified 2026-08-25 that REPORTNAME="Day Book" never resolves
+    // against a real TallyPrime instance and silently returns an unrelated
+    // fallback (same 1 voucher regardless of date range or company). See
+    // this method's doc comment for the full incident writeup.
+    it('builds a Voucher collection request, not a Day Book report export', () => {
+      const xml = builder.buildVouchersRequest('ABC Ltd', '20250101', '20250131');
+      expect(xml).toContain('<TYPE>Collection</TYPE>');
+      expect(xml).toContain('<TYPE>Voucher</TYPE>');
+      expect(xml).not.toContain('<REPORTNAME>Day Book</REPORTNAME>');
+      expect(xml).not.toContain('Export Data');
+    });
+
+    it('scopes to the company and requests the fields TallyResponseParser.mapVoucher reads', () => {
+      const xml = builder.buildVouchersRequest('ABC Ltd', '20250101', '20250131');
+      expect(xml).toContain('<SVCURRENTCOMPANY>ABC Ltd</SVCURRENTCOMPANY>');
+      expect(xml).toContain('<NATIVEMETHOD>Date</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>VoucherTypeName</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>VoucherNumber</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>PartyLedgerName</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>AllLedgerEntries.List</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>AllInventoryEntries.List</NATIVEMETHOD>');
+    });
+
+    it('filters by date range via a self-contained $$Date literal FILTER/formula, not ##SVFROMDATE/##SVTODATE', () => {
+      const xml = builder.buildVouchersRequest('ABC Ltd', '20250101', '20250131');
+      expect(xml).toContain('<FILTER>VoucherDateRangeFilter</FILTER>');
+      expect(xml).toContain(
+        '<SYSTEM TYPE="Formulae" NAME="VoucherDateRangeFilter">$Date &gt;= $$Date:&quot;1-Jan-2025&quot; ' +
+          'AND $Date &lt;= $$Date:&quot;31-Jan-2025&quot;</SYSTEM>',
+      );
+      // Live-verified 2026-08-25: referencing ##SVFROMDATE/##SVTODATE inside
+      // this formula silently ignored the caller's dates and returned
+      // Tally's own current-financial-year vouchers instead — see this
+      // method's doc comment. Regression guard against reintroducing that.
+      expect(xml).not.toContain('##SVFROMDATE');
+      expect(xml).not.toContain('##SVTODATE');
+    });
+
+    it('formats a single-digit day/month without zero-padding, matching $$Date literal convention', () => {
+      const xml = builder.buildVouchersRequest('ABC Ltd', '20260405', '20260409');
+      expect(xml).toContain('$$Date:&quot;5-Apr-2026&quot;');
+      expect(xml).toContain('$$Date:&quot;9-Apr-2026&quot;');
+    });
+  });
 });

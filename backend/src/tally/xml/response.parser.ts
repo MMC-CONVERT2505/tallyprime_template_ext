@@ -236,16 +236,27 @@ export class TallyResponseParser {
     const { envelope, meta } = this.parse(rawXml);
     if (meta.isEmpty) return [];
 
-    // Day Book / Voucher Register exports (REQUESTDESC-style report requests)
-    // come back wrapped as if they were an importable payload — Tally reuses
-    // its "Import Data" XML schema for this export, so records land under
-    // BODY.IMPORTDATA.REQUESTDATA.TALLYMESSAGE, not BODY.DATA.TALLYMESSAGE
-    // (that shape is what Collection-style requests return — see
-    // collectionItems below). Checked first since it's what a live TallyPrime
-    // instance actually sends; BODY.DATA kept as a fallback in case an older
-    // Tally.ERP9 build or a differently-configured report answers the other
-    // way. A message may also carry a master (not a voucher), so we only keep
-    // the ones that actually contain a <VOUCHER>.
+    // EnvelopeBuilder.buildVouchersRequest is Collection-style (TYPE=Voucher)
+    // — same BODY.DATA.COLLECTION.VOUCHER shape as every other collection
+    // request, via the same collectionItems() helper every master mapper
+    // uses. Individual field names (DATE, VOUCHERTYPENAME, ALLLEDGERENTRIES.LIST,
+    // ...) are identical either way — Tally's internal Voucher object shape
+    // doesn't change based on how it's exported — so mapVoucher() below is
+    // unchanged from when this read a report-export response.
+    //
+    // The IMPORTDATA/REQUESTDATA/TALLYMESSAGE path below is kept as a
+    // fallback for RawReportDto-driven ad-hoc report-export probes (see
+    // TallyDiagnosticsService.getRaw) — NOT for the typed VOUCHERS path
+    // above it, which live-verified 2026-08-25 to never actually resolve a
+    // requested report and answer with an unrelated fallback payload
+    // instead (see buildVouchersRequest's doc comment for the full
+    // incident). A message may also carry a master (not a voucher), so only
+    // the ones that actually contain a <VOUCHER> are kept.
+    const collectionVouchers = this.collectionItems(envelope, 'VOUCHER');
+    if (collectionVouchers.length > 0) {
+      return collectionVouchers.map((v) => this.mapVoucher(v));
+    }
+
     const data =
       this.get(envelope, ['BODY', 'IMPORTDATA', 'REQUESTDATA']) ??
       this.get(envelope, ['BODY', 'DATA']);

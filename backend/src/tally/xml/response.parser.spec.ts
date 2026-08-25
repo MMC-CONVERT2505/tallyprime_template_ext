@@ -355,5 +355,33 @@ describe('TallyResponseParser', () => {
       const [voucher] = parser.mapVouchers(xml);
       expect(voucher).toMatchObject({ voucherNumber: 'J-1', voucherType: 'Journal' });
     });
+
+    // EnvelopeBuilder.buildVouchersRequest's real shape — Collection-style
+    // (TYPE=Voucher), same BODY.DATA.COLLECTION.VOUCHER wrapper every master
+    // collection uses (see mapLedgers/mapGroups fixtures above), not the
+    // IMPORTDATA/REQUESTDATA shape used by the fixtures above (which model
+    // report-export responses — kept only as a fallback for ad-hoc RAW probes,
+    // see mapVouchers' doc comment).
+    it('reads a Collection-style Voucher response — the shape the real VOUCHERS request now sends', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<VOUCHER><DATE>20250116</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>' +
+        '<VOUCHERNUMBER>Coredge/24-25/29</VOUCHERNUMBER><PARTYLEDGERNAME>Rakuten Mobile Inc</PARTYLEDGERNAME>' +
+        '<ALLLEDGERENTRIES.LIST><LEDGERNAME>Rakuten Mobile Inc</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-236798.23</AMOUNT></ALLLEDGERENTRIES.LIST>' +
+        '<ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales Account</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>236798.23</AMOUNT></ALLLEDGERENTRIES.LIST>' +
+        '</VOUCHER>' +
+        '<VOUCHER><DATE>20250117</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME><VOUCHERNUMBER>Coredge/24-25/30</VOUCHERNUMBER></VOUCHER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      const vouchers = parser.mapVouchers(xml);
+      expect(vouchers).toHaveLength(2);
+      expect(vouchers[0]).toMatchObject({
+        date: '20250116',
+        voucherType: 'Sales',
+        voucherNumber: 'Coredge/24-25/29',
+        partyLedgerName: 'Rakuten Mobile Inc',
+      });
+      expect(vouchers[0].ledgerEntries).toHaveLength(2);
+      expect(vouchers[1]).toMatchObject({ voucherNumber: 'Coredge/24-25/30' });
+    });
   });
 });
