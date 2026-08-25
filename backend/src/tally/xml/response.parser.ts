@@ -236,16 +236,25 @@ export class TallyResponseParser {
     const { envelope, meta } = this.parse(rawXml);
     if (meta.isEmpty) return [];
 
-    // Day Book / Voucher Register exports (REQUESTDESC-style report requests)
-    // come back wrapped as if they were an importable payload — Tally reuses
-    // its "Import Data" XML schema for this export, so records land under
-    // BODY.IMPORTDATA.REQUESTDATA.TALLYMESSAGE, not BODY.DATA.TALLYMESSAGE
-    // (that shape is what Collection-style requests return — see
-    // collectionItems below). Checked first since it's what a live TallyPrime
-    // instance actually sends; BODY.DATA kept as a fallback in case an older
-    // Tally.ERP9 build or a differently-configured report answers the other
-    // way. A message may also carry a master (not a voucher), so we only keep
-    // the ones that actually contain a <VOUCHER>.
+    // Two possible response shapes, mutually exclusive in practice (each
+    // branch finds nothing under the other's path, so running both never
+    // double-counts):
+    //
+    // 1. Report-export shape (a REQUESTDESC-style request, e.g. the old Day
+    //    Book export, or the /tally/raw escape hatch aimed at a report) comes
+    //    back wrapped as if it were an importable payload — Tally reuses its
+    //    "Import Data" XML schema, so records land under
+    //    BODY.IMPORTDATA.REQUESTDATA.TALLYMESSAGE.VOUCHER (BODY.DATA.
+    //    TALLYMESSAGE kept as a fallback for an older Tally.ERP9 build/
+    //    differently-configured report that answers the other way — see this
+    //    method's tests). A message may also carry a master (not a voucher),
+    //    so only ones that actually contain a <VOUCHER> are kept.
+    // 2. Collection-export shape — what EnvelopeBuilder.buildVouchersRequest
+    //    actually sends today (a TYPE=Voucher Collection, not a report — see
+    //    its doc comment for why). <VOUCHER> sits directly under
+    //    BODY.DATA.COLLECTION, no TALLYMESSAGE wrapper at all — the same
+    //    shape every other Collection-based master fetch (mapLedgers/
+    //    mapGroups/...) already reads via collectionItems.
     const data =
       this.get(envelope, ['BODY', 'IMPORTDATA', 'REQUESTDATA']) ??
       this.get(envelope, ['BODY', 'DATA']);
@@ -256,6 +265,9 @@ export class TallyResponseParser {
       for (const v of toArray<any>(msg?.VOUCHER)) {
         vouchers.push(this.mapVoucher(v));
       }
+    }
+    for (const v of this.collectionItems(envelope, 'VOUCHER')) {
+      vouchers.push(this.mapVoucher(v));
     }
     return vouchers;
   }

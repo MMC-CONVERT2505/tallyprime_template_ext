@@ -305,27 +305,112 @@ export class EnvelopeBuilder {
   }
 
   /**
-   * Day Book vouchers for a date range, optionally filtered by voucher type.
-   * A report-export request (see buildReportRequest) — you don't pick fields
-   * here, Tally decides the shape, and a real GST-enabled voucher already
-   * includes PARTYGSTIN/PLACEOFSUPPLY (and much more) in its export XML,
-   * unrequested. TallyResponseParser.mapVoucher reads them straight off the
-   * parsed tree; if a live capture later shows either tag isn't actually
-   * present, that's a parser-side name fix, not a change to this method.
+   * Vouchers for a date range. A `TYPE=Voucher` Collection request — NOT the
+   * "Day Book" report export this used to be. Confirmed live 2026-08-25
+   * against a real TallyPrime instance (COREDGE.IO INDIA PRIVATE LIMITED):
+   * the Day Book report export ignores SVFROMDATE/SVTODATE outright on this
+   * build — three requests with different, non-overlapping date ranges (one
+   * spanning 2000-2026, one narrowed to the exact 2-month window the data
+   * actually lived in) all came back with the exact same single stale
+   * voucher, byte-for-byte identical response every time. This matches (and
+   * explains) the "Tally's report engine doesn't appear to fully reset
+   * internal state between back-to-back Export Data requests" behavior
+   * TransactionExtractionService.dedupeVouchers already documented for the
+   * chunked path — the whole-range/single-request path was hitting the same
+   * underlying issue, just badly enough to return ~1 record instead of a few
+   * leaked duplicates.
+   *
+   * A Collection evaluates its own request independently instead of sharing
+   * that report-engine session state, and its `$Date` range is enforced via
+   * an explicit <FILTER> formula (dateRangeFormula) rather than a static
+   * variable — verified live against the same data: an unfiltered Collection
+   * correctly returned all 601 real vouchers in range, and the same
+   * Collection with this date FILTER correctly narrowed to exactly the
+   * subset whose dates fall inside it (confirmed with a 10-day window: only
+   * those 10 days' vouchers came back, nothing outside it).
+   *
+   * `voucherType` is accepted but NOT sent as a request-side filter —
+   * VOUCHERTYPENAME never actually narrowed the old Day Book export either
+   * (see TransactionExtractionService's class doc comment); the real filter
+   * is client-side (TransactionExtractionService.filterByVoucherType),
+   * unchanged by this method.
+   *
+   * Explicit <FETCH> list, NOT omitted — unlike a Report export (Day Book
+   * always fully expanded every voucher regardless), a Collection only
+   * returns what's asked for, and its *default* field set turned out to
+   * depend on the voucher's own view: confirmed live, an "Invoice Voucher
+   * View" Sales voucher fetched with no FETCH list at all came back with
+   * only ~20 bare scalar fields — no PARTYLEDGERNAME, no ALTERID, no
+   * ALLLEDGERENTRIES.LIST/ALLINVENTORYENTRIES.LIST at all — while an
+   * "Accounting Voucher View" Journal voucher in the same unfiltered
+   * response came back fully expanded. Explicitly fetching each field
+   * TallyResponseParser.mapVoucher reads gets the full data back
+   * consistently across every voucher type (verified live: the same Sales
+   * voucher then included NARRATION/PARTYLEDGERNAME/ALTERID and two
+   * populated ALLLEDGERENTRIES.LIST entries).
    */
   buildVouchersRequest(
     company: string,
     fromDate: string,
     toDate: string,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for
+    // call-site/signature stability; see doc comment above for why it's not
+    // threaded into the request itself.
     voucherType?: string,
   ): string {
-    return this.buildReportRequest({
-      reportName: TALLY_REPORTS.DAY_BOOK,
-      company,
-      fromDate,
-      toDate,
-      voucherType,
-    });
+    const collection = `
+      <COLLECTION NAME="Vouchers In Range" ISINITIALIZE="Yes">
+        <TYPE>Voucher</TYPE>
+        <FETCH>Date</FETCH>
+        <FETCH>VoucherTypeName</FETCH>
+        <FETCH>VoucherNumber</FETCH>
+        <FETCH>PartyLedgerName</FETCH>
+        <FETCH>Narration</FETCH>
+        <FETCH>Reference</FETCH>
+        <FETCH>AlterID</FETCH>
+        <FETCH>PartyGSTIN</FETCH>
+        <FETCH>PlaceOfSupply</FETCH>
+        <FETCH>AllLedgerEntries.List</FETCH>
+        <FETCH>AllInventoryEntries.List</FETCH>
+        <FILTER>VoucherDateRangeFilter</FILTER>
+      </COLLECTION>${this.dateRangeFormula(fromDate, toDate)}`;
+    return this.buildCollectionRequest('Vouchers In Range', collection, company);
+  }
+
+  /**
+   * The named TDL formula buildVouchersRequest's <FILTER> resolves against —
+   * inclusive both ends. `$$Date:"D-Mon-YYYY"` is the one literal-construction
+   * syntax confirmed live to actually produce a comparable Date value on this
+   * TallyPrime build: `$$Date:<yyyymmdd-as-number>` and
+   * `$$YYYYMMDD:$Date >= "<yyyymmdd>"` (a plain string compared against a
+   * formatter's output) both silently matched zero rows — no LINEERROR, the
+   * FILTER just evaluated false for everything. A bare quoted string with no
+   * `$$Date:` conversion at all (`$Date >= "1-Apr-2026"`) went the opposite
+   * wrong way: a Date-vs-String type mismatch that Tally silently drops
+   * instead of erroring on, so the FILTER has no effect and every row comes
+   * back — the most dangerous failure mode of the three, since it looks
+   * identical to "no filter requested" rather than failing loudly.
+   */
+  private dateRangeFormula(fromDate: string, toDate: string): string {
+    const formula =
+      `$Date >= $$Date:"${this.toTallyDateLiteral(fromDate)}" AND ` +
+      `$Date <= $$Date:"${this.toTallyDateLiteral(toDate)}"`;
+    return `
+      <SYSTEM TYPE="Formulae" NAME="VoucherDateRangeFilter">${escapeXml(formula)}</SYSTEM>`;
+  }
+
+  /** YYYYMMDD -> Tally's own `$$Date:"D-Mon-YYYY"` literal syntax (English
+   *  3-letter month abbreviations — confirmed live independent of Tally's
+   *  configured display locale/date format). */
+  private toTallyDateLiteral(yyyymmdd: string): string {
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    const year = yyyymmdd.slice(0, 4);
+    const month = Number(yyyymmdd.slice(4, 6));
+    const day = Number(yyyymmdd.slice(6, 8));
+    return `${day}-${months[month - 1]}-${year}`;
   }
 
   /** SVFROMDATE/SVTODATE as an extraStaticVariables map, omitting whichever side is unset. */

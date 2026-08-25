@@ -58,6 +58,19 @@ export function toArray<T>(value: T | T[] | undefined | null): T[] {
 /**
  * Parse a Tally amount string into a number, preserving sign.
  * Handles: "-11800.00", "1,18,000.00" (Indian grouping), " 500 ", "", undefined.
+ *
+ * Also handles Tally's bill-quantity/rate annotation, e.g.
+ * `-₹638667.00 @ ₹ 25/? = -₹ 15966675.00` (confirmed live 2026-08-25 on a
+ * real GST-registered ledger entry — the ₹ glyph itself can arrive mangled
+ * to "?" depending on TALLY_RESPONSE_ENCODING, unrelated to this format).
+ * Only the portion before " @ " is the entry's own amount; what follows is a
+ * rate/multiplier breakdown (here, 638667 × 25 = 15966675) that plain
+ * balance/quantity fields (ledger OPENINGBALANCE, stock item quantities,
+ * ...) never carry — so stripping at " @ " is safe for every caller, not
+ * just voucher ledger entries, and previously left the whole string's digits
+ * concatenated across both halves, producing an unparseable NaN (silently
+ * returned as null, discarding a real amount).
+ *
  * Returns null when there is genuinely no parseable number.
  */
 export function parseTallyAmount(value: unknown): number | null {
@@ -65,9 +78,11 @@ export function parseTallyAmount(value: unknown): number | null {
   const raw = String(value).trim();
   if (raw === '') return null;
 
+  const beforeRateBreakdown = raw.split(' @ ')[0];
+
   // Remove thousands separators (commas) and any stray currency symbols/spaces,
   // keep digits, sign and decimal point.
-  const cleaned = raw.replace(/[,\s]/g, '').replace(/[^0-9.\-+]/g, '');
+  const cleaned = beforeRateBreakdown.replace(/[,\s]/g, '').replace(/[^0-9.\-+]/g, '');
   if (cleaned === '' || cleaned === '-' || cleaned === '+') return null;
 
   const n = Number(cleaned);
