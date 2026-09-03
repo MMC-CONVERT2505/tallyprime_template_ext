@@ -349,11 +349,18 @@ export class EnvelopeBuilder {
     toDate: string,
     _voucherType?: string,
   ): string {
+    // TEMP DIAGNOSTIC (2026-09-03): unique collection/filter/id names per
+    // request (was a fixed "Vouchers"/"VoucherDateRangeFilter") — testing
+    // whether Tally is caching/reusing the named Collection object across
+    // separate HTTP requests instead of re-evaluating it fresh each time,
+    // which would explain results staying byte-identical across a live
+    // Current Date/Period change on the connected Tally session.
+    const nonce = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const formula =
       `$Date >= $$Date:"${this.toTallyDateLiteral(fromDate)}" AND ` +
       `$Date <= $$Date:"${this.toTallyDateLiteral(toDate)}"`;
     const collection = `
-      <COLLECTION NAME="Vouchers" ISINITIALIZE="Yes">
+      <COLLECTION NAME="Vouchers_${nonce}" ISINITIALIZE="Yes">
         <TYPE>Voucher</TYPE>
         <NATIVEMETHOD>Date</NATIVEMETHOD>
         <NATIVEMETHOD>VoucherTypeName</NATIVEMETHOD>
@@ -367,10 +374,10 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>PlaceOfSupply</NATIVEMETHOD>
         <NATIVEMETHOD>AllLedgerEntries.List</NATIVEMETHOD>
         <NATIVEMETHOD>AllInventoryEntries.List</NATIVEMETHOD>
-        <FILTER>VoucherDateRangeFilter</FILTER>
+        <FILTER>VoucherDateRangeFilter_${nonce}</FILTER>
       </COLLECTION>
-      <SYSTEM TYPE="Formulae" NAME="VoucherDateRangeFilter">${escapeXml(formula)}</SYSTEM>`;
-    return this.buildCollectionRequest('Vouchers', collection, company);
+      <SYSTEM TYPE="Formulae" NAME="VoucherDateRangeFilter_${nonce}">${escapeXml(formula)}</SYSTEM>`;
+    return this.buildCollectionRequest(`Vouchers_${nonce}`, collection, company);
   }
 
   /** YYYYMMDD -> Tally's `$$Date:"D-Mon-YYYY"` literal format, e.g. "20250101" -> "1-Jan-2025". */

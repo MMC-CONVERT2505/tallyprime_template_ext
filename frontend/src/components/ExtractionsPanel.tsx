@@ -87,6 +87,7 @@ export function ExtractionsPanel() {
   // the user had to already know). Refreshed on mount, after creating a job,
   // and whenever the actively-polled job settles.
   const [jobs, setJobs] = useState<ExtractionJob[]>([]);
+  const jobsRef = useRef<ExtractionJob[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<ExtractionJob | null>(null);
@@ -164,6 +165,22 @@ export function ExtractionsPanel() {
 
   useEffect(() => {
     void refreshJobs();
+  }, []);
+
+  // Same "only poll while something's still PENDING" pattern as the bulk
+  // export interval below — without this, a PENDING job's live
+  // recordsSoFar/progress (see renderJobRow) would only ever show the single
+  // snapshot from the initial load, never actually update while running.
+  useEffect(() => {
+    jobsRef.current = jobs;
+  }, [jobs]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const hasPending = jobsRef.current.some((j) => j.status === 'PENDING');
+      if (hasPending) void refreshJobs();
+    }, 2000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const refreshBulkExports = async () => {
@@ -559,6 +576,11 @@ export function ExtractionsPanel() {
         <span className={statusPillClass(j.status)}>{j.status}</span>
         <span>{j.type}</span>
         <span className="muted">{j.company ?? '—'}</span>
+        {j.status === 'PENDING' && j.recordsSoFar !== null && (
+          <span className="muted small step-progress" title={j.progress ?? undefined}>
+            {j.recordsSoFar.toLocaleString()} record(s) so far…
+          </span>
+        )}
         <span className="muted small">{new Date(j.createdAt).toLocaleString()}</span>
       </button>
       <div className="actions">
@@ -841,8 +863,18 @@ export function ExtractionsPanel() {
                           <li key={step.key}>
                             <span className={bulkStatusPillClass(step.status)}>{step.status}</span>
                             <span>{step.label}</span>
+                            {step.status === 'RUNNING' && step.recordsSoFar !== undefined && (
+                              <span
+                                className="muted small step-progress"
+                                title={step.progress ?? undefined}
+                              >
+                                {step.recordsSoFar.toLocaleString()} record(s) extracted so far…
+                              </span>
+                            )}
                             {step.recordCount !== undefined && (
-                              <span className="muted small">{step.recordCount} record(s)</span>
+                              <span className="muted small">
+                                {step.recordCount.toLocaleString()} record(s)
+                              </span>
                             )}
                             {step.error && <span className="muted small">{step.error}</span>}
                           </li>

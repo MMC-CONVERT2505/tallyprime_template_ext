@@ -163,6 +163,14 @@ export interface ExtractionJob {
   recordCount: number | null;
   durationMs: number | null;
   error: string | null;
+  /** Cumulative record count across every batch/chunk fetched so far, while
+   *  still PENDING — null once terminal (recordCount is the final total
+   *  from then on). See ExtractionJob.recordsSoFar's doc comment in the
+   *  backend Prisma schema for the full "extracted so far" story. */
+  recordsSoFar: number | null;
+  /** Human-readable detail behind recordsSoFar, e.g. "batch 3/12 (...): 40
+   *  record(s) in 210ms, 120/430 total so far". Null once terminal. */
+  progress: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -191,6 +199,14 @@ export interface BulkExportStep {
   status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED';
   jobId?: string;
   recordCount?: number;
+  /** Cumulative record count fetched so far, while this step is RUNNING —
+   *  undefined once it reaches a terminal status (recordCount is the final
+   *  total from then on). Lets the UI show "N records extracted so far"
+   *  instead of a bare RUNNING pill with no detail. */
+  recordsSoFar?: number;
+  /** Human-readable detail behind recordsSoFar, e.g. "batch 3/12 (...): 40
+   *  record(s) in 210ms, 120/430 total so far". */
+  progress?: string;
   error?: string;
   startedAt?: string;
   finishedAt?: string;

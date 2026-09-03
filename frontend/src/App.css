@@ -762,6 +762,16 @@ tbody tr.row-selected:hover {
   margin-left: 34px;
 }
 
+/* Live "N records extracted so far" for a RUNNING step/job — a subtle accent
+   (not a full color change) marks it as actively updating, distinct from the
+   plain muted text used for a settled step's final record count. */
+.step-progress {
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .job-row-substeps li > span:first-child {
   flex-shrink: 0;
 }
