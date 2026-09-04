@@ -30,6 +30,8 @@ describe('buildStockItemIndex', () => {
         alias: 'WGT-A',
         hsnCode: '392321',
         gstRate: 18,
+        gstTaxability: 'Taxable',
+        itcIneligible: false,
       },
     ]);
     expect(index.get('Widget A')?.alias).toBe('WGT-A');

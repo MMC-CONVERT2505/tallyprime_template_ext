@@ -55,4 +55,17 @@ describe('VendorMapper', () => {
     const [row] = mapper.toVendorRows([{ ...baseLedger, openingBalance: 2500 }]);
     expect(row['Opening Balance']).toBe(2500);
   });
+
+  it('maps ledger.description onto Notes and splits a multi-line billing address across Billing Address/Street2', () => {
+    const [row] = mapper.toVendorRows([
+      {
+        ...baseLedger,
+        description: 'Preferred hardware supplier',
+        billingAddress: 'Plot 12, Industrial Area\nPhase 2',
+      },
+    ]);
+    expect(row.Notes).toBe('Preferred hardware supplier');
+    expect(row['Billing Address']).toBe('Plot 12, Industrial Area');
+    expect(row['Billing Street2']).toBe('Phase 2');
+  });
 });

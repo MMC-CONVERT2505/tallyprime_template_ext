@@ -7,9 +7,12 @@ import { deriveInterStateTax, deriveIntraStateTax } from './gst-rate.shared';
  * sheet "Item"), which has 67 columns total; only the subset Tally's
  * currently-extracted StockItem fields can genuinely supply is listed here.
  * Everything else (SKU, Rate, Account, Purchase Rate/Account — Tally doesn't
- * expose a selling-rate or sales-ledger per stock item, see the price-list
- * gap this project has always deferred) is left blank at write time rather
- * than guessed.
+ * expose a selling-rate or sales-ledger per stock item on this project's
+ * test company; Tally DOES have a Price List feature that could supply Rate/
+ * Purchase Rate, confirmed live 2026-09-05 to genuinely be unconfigured
+ * — STANDARDPRICELIST.LIST/STANDARDCOSTLIST.LIST came back empty for every
+ * item, a real field with no data rather than a wrong one) is left blank at
+ * write time rather than guessed.
  */
 export interface ZohoItemRow {
   'Item Name': string;
@@ -29,6 +32,15 @@ export interface ZohoItemRow {
    *  in current use, so 'Active' is a reasonable default rather than an
    *  invented fact — same reasoning as ledger.mapper.ts's Currency default. */
   Status: string;
+  /** Added 2026-09-05 — TallyStockItem.gstTaxability ("Taxable"/"Exempt"),
+   *  VERIFIED live: 10 of 35 real items were explicitly Exempt, not merely
+   *  unclassified — a plain boolean, distinct from the Intra/Inter State Tax
+   *  columns below (which correctly stay blank for an Exempt item; no rate
+   *  exists to report). */
+  Taxable: boolean | '';
+  /** Tally's own taxability value, passed through as-is rather than mapped
+   *  to a guessed Zoho enum — see gstTaxability's doc comment. */
+  'Taxability Type': string;
   'Intra State Tax Name': string;
   'Intra State Tax Rate': number | '';
   'Intra State Tax Type': string;
@@ -61,6 +73,8 @@ export class StockItemMapper {
       'Stock On Hand': item.closingBalance ?? '',
       'Item Type': 'goods',
       Status: 'Active',
+      Taxable: item.gstTaxability ? item.gstTaxability.toLowerCase() === 'taxable' : '',
+      'Taxability Type': item.gstTaxability ?? '',
       'Intra State Tax Name': intra.name,
       'Intra State Tax Rate': intra.rate,
       'Intra State Tax Type': intra.type,

@@ -126,34 +126,65 @@ export class TallyResponseParser {
     if (meta.isEmpty) return [];
 
     const items = this.collectionItems(envelope, 'LEDGER');
-    return items.map((l) => ({
-      name: readText(l?.NAME) ?? readText(l?.['@_NAME']) ?? '',
-      parent: readText(l?.PARENT),
-      description: readText(l?.DESCRIPTION),
-      openingBalance: parseTallyAmount(readText(l?.OPENINGBALANCE)),
-      closingBalance: parseTallyAmount(readText(l?.CLOSINGBALANCE)),
-      alterId: readInt(l?.ALTERID),
-      // Tally always emits this as an XML attribute on <LEDGER>, empty for
-      // ordinary ledgers — see TallyLedger.reservedName's doc comment.
-      reservedName: readText(l?.['@_RESERVEDNAME']) || null,
-      // Field names verified live 2026-08-22 against a real Tally instance
-      // — see EnvelopeBuilder.buildLedgersRequest's doc comment for exactly
-      // what was wrong (GSTIN, BankDetails) vs. confirmed correct.
-      gstin: this.readLatestGstin(l?.['LEDGSTREGDETAILS.LIST']),
-      panNumber: readText(l?.INCOMETAXNUMBER),
-      email: readText(l?.EMAIL),
-      phone: readText(l?.LEDGERPHONE),
-      mobile: readText(l?.LEDGERMOBILE),
-      billingAddress: this.readAddressList(l?.['ADDRESS.LIST']),
-      billingState: readText(l?.LEDSTATENAME),
-      billingCountry: readText(l?.COUNTRYNAME),
-      billingPincode: readText(l?.PINCODE),
-      // No separate "bank name" field exists in Tally for a ledger — only
-      // the account number (BANKDETAILS, a flat scalar, not a list) —
-      // confirmed live; bankName has no source and always stays null.
-      bankName: null,
-      bankAccountNumber: readText(l?.BANKDETAILS),
-    }));
+    return items.map((l) => {
+      const payment = this.readPaymentDetails(l?.['PAYMENTDETAILS.LIST']);
+      return {
+        name: readText(l?.NAME) ?? readText(l?.['@_NAME']) ?? '',
+        parent: readText(l?.PARENT),
+        description: readText(l?.DESCRIPTION),
+        openingBalance: parseTallyAmount(readText(l?.OPENINGBALANCE)),
+        closingBalance: parseTallyAmount(readText(l?.CLOSINGBALANCE)),
+        alterId: readInt(l?.ALTERID),
+        // Tally always emits this as an XML attribute on <LEDGER>, empty for
+        // ordinary ledgers — see TallyLedger.reservedName's doc comment.
+        reservedName: readText(l?.['@_RESERVEDNAME']) || null,
+        // Field names verified live 2026-08-22 against a real Tally instance
+        // — see EnvelopeBuilder.buildLedgersRequest's doc comment for exactly
+        // what was wrong (GSTIN, BankDetails) vs. confirmed correct.
+        gstin: this.readLatestGstin(l?.['LEDGSTREGDETAILS.LIST']),
+        panNumber: readText(l?.INCOMETAXNUMBER),
+        email: readText(l?.EMAIL),
+        phone: readText(l?.LEDGERPHONE),
+        mobile: readText(l?.LEDGERMOBILE),
+        billingAddress: this.readAddressList(l?.['ADDRESS.LIST']),
+        billingState: readText(l?.LEDSTATENAME),
+        billingCountry: readText(l?.COUNTRYNAME),
+        billingPincode: readText(l?.PINCODE),
+        // VERIFIED live 2026-09-05 (452 real Sundry Creditor ledgers) — see
+        // EnvelopeBuilder.buildLedgersRequest's doc comment: a vendor's real
+        // payment bank details live in PAYMENTDETAILS.LIST, not the legacy
+        // flat BANKDETAILS field (dead on this Tally version). Falls back to
+        // BANKDETAILS for the account number when the list is empty, in case
+        // an older Tally build or a company that never adopted e-payment
+        // setup still only has the legacy field.
+        bankName: payment.bankName,
+        bankAccountNumber: payment.accountNumber ?? readText(l?.BANKDETAILS),
+      };
+    });
+  }
+
+  /**
+   * PAYMENTDETAILS.LIST is a REPEATING list — a vendor can have more than
+   * one bank account on file. Each entry carries BANKNAME/ACCOUNTNUMBER/
+   * IFSCODE/PAYMENTFAVOURING/TRANSACTIONNAME; TRANSACTIONNAME "Primary"
+   * marks the one Tally itself treats as the default for that ledger
+   * (confirmed against real data), so that entry wins when present —
+   * falling back to the first entry otherwise, never fabricating a
+   * preference among equals.
+   */
+  private readPaymentDetails(paymentDetailsList: unknown): {
+    bankName: string | null;
+    accountNumber: string | null;
+  } {
+    const entries = toArray<any>(paymentDetailsList);
+    if (entries.length === 0) return { bankName: null, accountNumber: null };
+    const primary =
+      entries.find((e) => (readText(e?.TRANSACTIONNAME) ?? '').toLowerCase() === 'primary') ??
+      entries[0];
+    return {
+      bankName: readText(primary?.BANKNAME),
+      accountNumber: readText(primary?.ACCOUNTNUMBER),
+    };
   }
 
   /** ADDRESS.LIST is a single wrapper tag whose ADDRESS child repeats one
@@ -225,11 +256,79 @@ export class TallyResponseParser {
       closingBalance: parseTallyAmount(readText(s?.CLOSINGBALANCE)),
       closingValue: parseTallyAmount(readText(s?.CLOSINGVALUE)),
       alterId: readInt(s?.ALTERID),
-      // Best-effort field names — see TallyStockItem's doc comment.
+      // ALIAS is still a best-effort flat field name — see TallyStockItem's
+      // doc comment; HSN/GST fields below are VERIFIED (see
+      // EnvelopeBuilder.buildStockItemsRequest's doc comment for the full
+      // live-verification evidence).
       alias: readText(s?.ALIAS),
-      hsnCode: readText(s?.HSNCODE),
-      gstRate: parseTallyAmount(readText(s?.GSTRATE)),
+      hsnCode: this.readLatestHsn(s?.['HSNDETAILS.LIST']),
+      ...this.readLatestGstDetails(s?.['GSTDETAILS.LIST']),
     }));
+  }
+
+  /**
+   * HSNDETAILS.LIST is a REPEATING, date-effective list — same shape/
+   * reasoning as LEDGSTREGDETAILS.LIST (readLatestGstin below): an item's
+   * HSN classification can change over time (APPLICABLEFROM), so the
+   * correct current value is the HSNCODE on the LAST entry that actually
+   * has one, not just whichever entry happens to be last in the list.
+   */
+  private readLatestHsn(hsnDetailsList: unknown): string | null {
+    const entries = toArray<any>(hsnDetailsList);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const code = readText(entries[i]?.HSNCODE);
+      if (code) return code;
+    }
+    return null;
+  }
+
+  /**
+   * GSTDETAILS.LIST mirrors HSNDETAILS.LIST's date-effective-list shape one
+   * level deeper: each entry holds a STATEWISEDETAILS.LIST (a generic "Any"
+   * entry plus optional per-state rate overrides), each of THOSE holding a
+   * RATEDETAILS.LIST (one row per duty head — CGST/SGST-UTGST/IGST/Cess/
+   * State Cess). This project only needs a single combined percentage (see
+   * TallyStockItem.gstRate's doc comment: GST law keeps IGST equal to
+   * CGST+SGST for the same HSN, confirmed against real data — a live item
+   * carried CGST 9 + SGST/UTGST 9 alongside IGST 18), so IGST is read
+   * directly rather than summing the other two. The generic "Any" state
+   * entry is preferred over a state-specific override — this project has
+   * no single "seller's home state" concept to pick the right override with
+   * (same documented limitation as bill.mapper.ts/invoice.mapper.ts's
+   * Intra/Inter State simplification) — falling back to whichever state
+   * entry IS present for the rare item configured with only a
+   * state-specific rate and no generic default.
+   */
+  private readLatestGstDetails(gstDetailsList: unknown): {
+    gstRate: number | null;
+    gstTaxability: string | null;
+    itcIneligible: boolean | null;
+  } {
+    const entries = toArray<any>(gstDetailsList);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      // TAXABILITY is present on every real GSTDETAILS.LIST entry (Taxable
+      // or Exempt, confirmed live 2026-09-05 across 35 real items) — used as
+      // this entry's "is this the real, current one" signal, since an
+      // Exempt item correctly has no rate at all (a rate-only check would
+      // wrongly skip past it looking for a nonzero value elsewhere).
+      const taxability = readText(entry?.TAXABILITY);
+      if (!taxability) continue;
+      const stateWiseEntries = toArray<any>(entry?.['STATEWISEDETAILS.LIST']);
+      const stateWise =
+        stateWiseEntries.find((sw) => readText(sw?.STATENAME) === 'Any') ?? stateWiseEntries[0];
+      const rateDetails = toArray<any>(stateWise?.['RATEDETAILS.LIST']);
+      const igst = rateDetails.find((r) => readText(r?.GSTRATEDUTYHEAD) === 'IGST');
+      return {
+        gstRate: parseTallyAmount(readText(igst?.GSTRATE)),
+        gstTaxability: taxability,
+        // GSTINELIGIBLEITC — Tally flags ITC-INeligible; confirmed live on a
+        // real Exempt item (Yes). Powers Bill.xlsx's "ITC Eligibility"
+        // column, inverted by the mapper (see bill.mapper.ts).
+        itcIneligible: readYesNo(entry?.GSTINELIGIBLEITC),
+      };
+    }
+    return { gstRate: null, gstTaxability: null, itcIneligible: null };
   }
 
   mapVouchers(rawXml: string): TallyVoucher[] {

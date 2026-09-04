@@ -118,8 +118,9 @@ describe('TallyResponseParser', () => {
         '<LEDSTATENAME>Tamil Nadu</LEDSTATENAME>' +
         '<COUNTRYNAME>India</COUNTRYNAME>' +
         '<PINCODE>600040</PINCODE>' +
-        // A flat scalar, verified live — NOT a `.LIST`, and no separate
-        // "bank name" field exists at all (bankName always stays null).
+        // Legacy flat scalar — still read as a fallback when
+        // PAYMENTDETAILS.LIST is absent (see the tests below for the
+        // now-preferred source).
         '<BANKDETAILS>000123456789</BANKDETAILS>' +
         '</LEDGER>' +
         '</COLLECTION></DATA></BODY></ENVELOPE>';
@@ -133,8 +134,69 @@ describe('TallyResponseParser', () => {
       expect(ledger.billingState).toBe('Tamil Nadu');
       expect(ledger.billingCountry).toBe('India');
       expect(ledger.billingPincode).toBe('600040');
+      // No PAYMENTDETAILS.LIST on this ledger — bankName has no source,
+      // bankAccountNumber falls back to the legacy flat field.
       expect(ledger.bankName).toBeNull();
       expect(ledger.bankAccountNumber).toBe('000123456789');
+    });
+
+    it('prefers PAYMENTDETAILS.LIST over the legacy flat BANKDETAILS field for a vendors real payment bank details', () => {
+      // Real shape confirmed live 2026-09-05 against 452 real Sundry
+      // Creditor ledgers (COREDGE.IO INDIA PRIVATE LIMITED) — the flat
+      // BANKDETAILS field was dead (0/452 populated) while this list
+      // carried real bank name/account/IFSC for dozens of vendors.
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<LEDGER><NAME>Accelero Consultants</NAME>' +
+        '<BANKDETAILS>OLD-STALE-NUMBER</BANKDETAILS>' +
+        '<PAYMENTDETAILS.LIST>' +
+        '<IFSCODE>HDFC0000968</IFSCODE>' +
+        '<BANKNAME>HDFC Bank (India)</BANKNAME>' +
+        '<ACCOUNTNUMBER>50200048489591</ACCOUNTNUMBER>' +
+        '<PAYMENTFAVOURING>Accelero Consultants</PAYMENTFAVOURING>' +
+        '<TRANSACTIONNAME>Primary</TRANSACTIONNAME>' +
+        '</PAYMENTDETAILS.LIST>' +
+        '</LEDGER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+
+      const [ledger] = parser.mapLedgers(xml);
+      expect(ledger.bankName).toBe('HDFC Bank (India)');
+      expect(ledger.bankAccountNumber).toBe('50200048489591');
+    });
+
+    it('picks the entry marked Primary when a ledger has multiple PAYMENTDETAILS.LIST entries', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<LEDGER><NAME>Multi Bank Vendor</NAME>' +
+        '<PAYMENTDETAILS.LIST>' +
+        '<BANKNAME>Secondary Bank</BANKNAME><ACCOUNTNUMBER>111</ACCOUNTNUMBER>' +
+        '<TRANSACTIONNAME>Escrow</TRANSACTIONNAME>' +
+        '</PAYMENTDETAILS.LIST>' +
+        '<PAYMENTDETAILS.LIST>' +
+        '<BANKNAME>Primary Bank</BANKNAME><ACCOUNTNUMBER>222</ACCOUNTNUMBER>' +
+        '<TRANSACTIONNAME>Primary</TRANSACTIONNAME>' +
+        '</PAYMENTDETAILS.LIST>' +
+        '</LEDGER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+
+      const [ledger] = parser.mapLedgers(xml);
+      expect(ledger.bankName).toBe('Primary Bank');
+      expect(ledger.bankAccountNumber).toBe('222');
+    });
+
+    it('falls back to the first PAYMENTDETAILS.LIST entry when none is marked Primary', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<LEDGER><NAME>No Primary Flag Vendor</NAME>' +
+        '<PAYMENTDETAILS.LIST>' +
+        '<BANKNAME>First Bank</BANKNAME><ACCOUNTNUMBER>333</ACCOUNTNUMBER>' +
+        '</PAYMENTDETAILS.LIST>' +
+        '</LEDGER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+
+      const [ledger] = parser.mapLedgers(xml);
+      expect(ledger.bankName).toBe('First Bank');
+      expect(ledger.bankAccountNumber).toBe('333');
     });
 
     it('picks the GSTIN off the last LEDGSTREGDETAILS.LIST entry that actually has one, not just the last entry outright', () => {
@@ -238,6 +300,8 @@ describe('TallyResponseParser', () => {
         alias: null,
         hsnCode: null,
         gstRate: null,
+        gstTaxability: null,
+        itcIneligible: null,
       });
       expect(items[1]).toEqual({
         name: 'Widget B',
@@ -252,18 +316,93 @@ describe('TallyResponseParser', () => {
         alias: null,
         hsnCode: null,
         gstRate: null,
+        gstTaxability: null,
+        itcIneligible: null,
       });
     });
 
-    it('parses Alias/HSN/GSTRate', () => {
+    it('parses Alias/HSN/GST rate from the real nested date-effective lists (not flat HSNCODE/GSTRATE — confirmed live those return nothing)', () => {
+      // Real shape confirmed live 2026-09-04 against a real "HSN classified,
+      // GST applicable" stock item (COREDGE.IO INDIA PRIVATE LIMITED).
       const xml =
         '<ENVELOPE><BODY><DATA><COLLECTION>' +
-        '<STOCKITEM><NAME>Widget A</NAME><ALIAS>WGT-A</ALIAS><HSNCODE>392321</HSNCODE><GSTRATE>18</GSTRATE></STOCKITEM>' +
+        '<STOCKITEM><NAME>Widget A</NAME><ALIAS>WGT-A</ALIAS>' +
+        '<HSNDETAILS.LIST><APPLICABLEFROM>20200401</APPLICABLEFROM><HSNCODE>392321</HSNCODE><HSN>Plastics</HSN></HSNDETAILS.LIST>' +
+        '<GSTDETAILS.LIST>' +
+        '<APPLICABLEFROM>20200401</APPLICABLEFROM>' +
+        '<TAXABILITY>Taxable</TAXABILITY>' +
+        '<GSTINELIGIBLEITC>No</GSTINELIGIBLEITC>' +
+        '<STATEWISEDETAILS.LIST><STATENAME>Any</STATENAME>' +
+        '<RATEDETAILS.LIST><GSTRATEDUTYHEAD>CGST</GSTRATEDUTYHEAD><GSTRATE>9</GSTRATE></RATEDETAILS.LIST>' +
+        '<RATEDETAILS.LIST><GSTRATEDUTYHEAD>SGST/UTGST</GSTRATEDUTYHEAD><GSTRATE>9</GSTRATE></RATEDETAILS.LIST>' +
+        '<RATEDETAILS.LIST><GSTRATEDUTYHEAD>IGST</GSTRATEDUTYHEAD><GSTRATE>18</GSTRATE></RATEDETAILS.LIST>' +
+        '</STATEWISEDETAILS.LIST>' +
+        '</GSTDETAILS.LIST>' +
+        '</STOCKITEM>' +
         '</COLLECTION></DATA></BODY></ENVELOPE>';
       const [item] = parser.mapStockItems(xml);
       expect(item.alias).toBe('WGT-A');
       expect(item.hsnCode).toBe('392321');
       expect(item.gstRate).toBe(18);
+      expect(item.gstTaxability).toBe('Taxable');
+      expect(item.itcIneligible).toBe(false);
+    });
+
+    it('marks an Exempt item Taxable=false with no rate, rather than leaving it indistinguishable from "never GST-classified"', () => {
+      // Real shape confirmed live 2026-09-05: 10 of 35 real items were
+      // explicitly Exempt (correctly no GSTRATE at all), not merely absent.
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<STOCKITEM><NAME>Exempt Service</NAME>' +
+        '<GSTDETAILS.LIST>' +
+        '<APPLICABLEFROM>20200401</APPLICABLEFROM>' +
+        '<TAXABILITY>Exempt</TAXABILITY>' +
+        '<GSTINELIGIBLEITC>Yes</GSTINELIGIBLEITC>' +
+        '<STATEWISEDETAILS.LIST><STATENAME>Any</STATENAME>' +
+        '<RATEDETAILS.LIST><GSTRATEDUTYHEAD>CGST</GSTRATEDUTYHEAD></RATEDETAILS.LIST>' +
+        '</STATEWISEDETAILS.LIST>' +
+        '</GSTDETAILS.LIST>' +
+        '</STOCKITEM>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      const [item] = parser.mapStockItems(xml);
+      expect(item.gstTaxability).toBe('Exempt');
+      expect(item.gstRate).toBeNull();
+      expect(item.itcIneligible).toBe(true);
+    });
+
+    it('picks the LATEST HSN/GST entry when an item was reclassified, and prefers the generic "Any" state over a state-specific override', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<STOCKITEM><NAME>Widget A</NAME>' +
+        '<HSNDETAILS.LIST><APPLICABLEFROM>20200401</APPLICABLEFROM><HSNCODE>OLDCODE</HSNCODE></HSNDETAILS.LIST>' +
+        '<HSNDETAILS.LIST><APPLICABLEFROM>20240401</APPLICABLEFROM><HSNCODE>NEWCODE</HSNCODE></HSNDETAILS.LIST>' +
+        '<GSTDETAILS.LIST>' +
+        '<APPLICABLEFROM>20240401</APPLICABLEFROM>' +
+        '<TAXABILITY>Taxable</TAXABILITY>' +
+        '<STATEWISEDETAILS.LIST><STATENAME>Karnataka</STATENAME>' +
+        '<RATEDETAILS.LIST><GSTRATEDUTYHEAD>IGST</GSTRATEDUTYHEAD><GSTRATE>28</GSTRATE></RATEDETAILS.LIST>' +
+        '</STATEWISEDETAILS.LIST>' +
+        '<STATEWISEDETAILS.LIST><STATENAME>Any</STATENAME>' +
+        '<RATEDETAILS.LIST><GSTRATEDUTYHEAD>IGST</GSTRATEDUTYHEAD><GSTRATE>18</GSTRATE></RATEDETAILS.LIST>' +
+        '</STATEWISEDETAILS.LIST>' +
+        '</GSTDETAILS.LIST>' +
+        '</STOCKITEM>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      const [item] = parser.mapStockItems(xml);
+      expect(item.hsnCode).toBe('NEWCODE');
+      expect(item.gstRate).toBe(18); // generic "Any" entry, not the Karnataka-specific 28% override
+    });
+
+    it('returns null HSN/GST rate/taxability for an item with no GST/HSN classification at all (e.g. a service/subscription line item, not real inventory)', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<STOCKITEM><NAME>Cloud Subscription</NAME></STOCKITEM>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      const [item] = parser.mapStockItems(xml);
+      expect(item.hsnCode).toBeNull();
+      expect(item.gstRate).toBeNull();
+      expect(item.gstTaxability).toBeNull();
+      expect(item.itcIneligible).toBeNull();
     });
   });
 

@@ -67,9 +67,29 @@ export interface ZohoBillRow {
   'TCS Amount': number | '';
   'Vendor Notes': string;
   'HSN/SAC': string;
+  /**
+   * Added 2026-09-05 — via STOCK_ITEMS index, TallyStockItem.itcIneligible
+   * (GSTDETAILS.LIST → GSTINELIGIBLEITC), VERIFIED live. Written as plain
+   * English ("Eligible"/"Ineligible"), not a guessed Zoho enum code — this
+   * project has no confirmed real Bill.xlsx sample value for this column to
+   * match against (unlike e.g. "Item Tax Type"/"ItemAmount", which IS
+   * confirmed from the template's own demo rows), so the literal fact is
+   * written rather than a fabricated system value. Blank for a service-only
+   * line (no item to look up).
+   */
+  'ITC Eligibility': string;
 }
 
 const DEFAULT_CURRENCY_CODE = 'INR';
+
+/** See ZohoBillRow['ITC Eligibility']'s doc comment — plain English, not a
+ *  guessed Zoho enum. Blank (not "Eligible") when Tally has no GST
+ *  classification for the item at all, since "eligible" would be asserting
+ *  a fact this project cannot actually confirm. */
+function itcEligibilityLabel(itcIneligible: boolean | null | undefined): string {
+  if (itcIneligible === null || itcIneligible === undefined) return '';
+  return itcIneligible ? 'Ineligible' : 'Eligible';
+}
 
 export class BillMapper {
   constructor(private readonly itemIndex: StockItemIndex) {}
@@ -152,6 +172,7 @@ export class BillMapper {
         'TDS Percentage': percentageOf(summary.tdsAmount, subTotal),
         'TCS Percentage': percentageOf(summary.tcsAmount, subTotal),
         'HSN/SAC': item?.hsnCode ?? '',
+        'ITC Eligibility': itcEligibilityLabel(item?.itcIneligible),
       }));
     }
 
@@ -188,6 +209,8 @@ export class BillMapper {
         'TDS Percentage': percentageOf(summary.tdsAmount, subTotal),
         'TCS Percentage': percentageOf(summary.tcsAmount, subTotal),
         'HSN/SAC': '',
+        // No item to look up for a service-only row — no Tally source.
+        'ITC Eligibility': '',
       },
     ];
   }

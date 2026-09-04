@@ -1,6 +1,10 @@
 import { TallyLedger } from '../tally/interfaces/tally.interfaces';
 import { GroupHierarchyResolver } from './group-hierarchy.resolver';
-import { resolveGstTreatment, resolveOpeningBalanceMagnitude } from './ledger-contact.shared';
+import {
+  resolveGstTreatment,
+  resolveOpeningBalanceMagnitude,
+  splitBillingAddress,
+} from './ledger-contact.shared';
 
 /**
  * Zoho Books "Customer" import columns actually populated by this project —
@@ -21,11 +25,19 @@ export interface ZohoCustomerRow {
   'GST Identification Number (GSTIN)': string;
   'PAN Number': string;
   'Billing Address': string;
+  /** Added 2026-09-05 — Tally's ADDRESS.LIST is multi-line; the first line
+   *  goes to Billing Address, everything after it here instead of being
+   *  silently dropped — see splitBillingAddress's doc comment. */
+  'Billing Street2': string;
   'Billing State': string;
   'Billing Country': string;
   'Billing Code': string;
   'Opening Balance': number | '';
   Status: string;
+  /** Added 2026-09-05 — ledger.description was already fetched (it powers
+   *  COA.xlsx) but never written here; Customer.xlsx has no "Description"
+   *  column of its own, and Notes is the closest real Zoho equivalent. */
+  Notes: string;
 }
 
 const DEFAULT_CURRENCY_CODE = 'INR';
@@ -42,6 +54,7 @@ export class CustomerMapper {
   }
 
   private toCustomerRow(ledger: TallyLedger): ZohoCustomerRow {
+    const address = splitBillingAddress(ledger.billingAddress);
     return {
       'Display Name': ledger.name,
       'Currency Code': DEFAULT_CURRENCY_CODE,
@@ -51,7 +64,8 @@ export class CustomerMapper {
       'GST Treatment': resolveGstTreatment(ledger.gstin),
       'GST Identification Number (GSTIN)': ledger.gstin ?? '',
       'PAN Number': ledger.panNumber ?? '',
-      'Billing Address': ledger.billingAddress ?? '',
+      'Billing Address': address.line1,
+      'Billing Street2': address.line2,
       'Billing State': ledger.billingState ?? '',
       'Billing Country': ledger.billingCountry ?? '',
       'Billing Code': ledger.billingPincode ?? '',
@@ -59,6 +73,7 @@ export class CustomerMapper {
       // No per-ledger active/inactive flag exists in TallyLedger yet — see
       // stock-item.mapper.ts's identical reasoning for defaulting to Active.
       Status: 'Active',
+      Notes: ledger.description ?? '',
     };
   }
 }

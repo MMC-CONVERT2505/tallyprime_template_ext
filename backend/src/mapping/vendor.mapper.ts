@@ -1,6 +1,10 @@
 import { TallyLedger } from '../tally/interfaces/tally.interfaces';
 import { GroupHierarchyResolver } from './group-hierarchy.resolver';
-import { resolveGstTreatment, resolveOpeningBalanceMagnitude } from './ledger-contact.shared';
+import {
+  resolveGstTreatment,
+  resolveOpeningBalanceMagnitude,
+  splitBillingAddress,
+} from './ledger-contact.shared';
 
 /**
  * Zoho Books "Vendor" import columns actually populated by this project —
@@ -20,11 +24,17 @@ export interface ZohoVendorRow {
   'GST Identification Number (GSTIN)': string;
   'PAN Number': string;
   'Billing Address': string;
+  /** Added 2026-09-05 — see customer.mapper.ts's identical field / the
+   *  splitBillingAddress doc comment for why this is now its own column
+   *  instead of getting silently dropped from the joined address. */
+  'Billing Street2': string;
   'Billing State': string;
   'Billing Country': string;
   'Billing Code': string;
   'Opening Balance': number | '';
   Status: string;
+  /** Added 2026-09-05 — see customer.mapper.ts's identical field. */
+  Notes: string;
   'Bank Name': string;
   'Bank Account Number': string;
 }
@@ -43,6 +53,7 @@ export class VendorMapper {
   }
 
   private toVendorRow(ledger: TallyLedger): ZohoVendorRow {
+    const address = splitBillingAddress(ledger.billingAddress);
     return {
       'Display Name': ledger.name,
       'Currency Code': DEFAULT_CURRENCY_CODE,
@@ -52,12 +63,14 @@ export class VendorMapper {
       'GST Treatment': resolveGstTreatment(ledger.gstin),
       'GST Identification Number (GSTIN)': ledger.gstin ?? '',
       'PAN Number': ledger.panNumber ?? '',
-      'Billing Address': ledger.billingAddress ?? '',
+      'Billing Address': address.line1,
+      'Billing Street2': address.line2,
       'Billing State': ledger.billingState ?? '',
       'Billing Country': ledger.billingCountry ?? '',
       'Billing Code': ledger.billingPincode ?? '',
       'Opening Balance': resolveOpeningBalanceMagnitude(ledger.openingBalance),
       Status: 'Active',
+      Notes: ledger.description ?? '',
       'Bank Name': ledger.bankName ?? '',
       'Bank Account Number': ledger.bankAccountNumber ?? '',
     };

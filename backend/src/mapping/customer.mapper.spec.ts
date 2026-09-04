@@ -58,10 +58,27 @@ describe('CustomerMapper', () => {
     expect(row.EmailID).toBe('ap@abctraders.com');
     expect(row.Phone).toBe('044-12345678');
     expect(row.MobilePhone).toBe('9876543210');
-    expect(row['Billing Address']).toBe('50 Kovil Street\nAnna Nagar');
+    // Tally's multi-line ADDRESS.LIST splits across two Zoho columns instead
+    // of cramming everything into one — see splitBillingAddress's doc
+    // comment.
+    expect(row['Billing Address']).toBe('50 Kovil Street');
+    expect(row['Billing Street2']).toBe('Anna Nagar');
     expect(row['Billing State']).toBe('Tamil Nadu');
     expect(row['Billing Country']).toBe('India');
     expect(row['Billing Code']).toBe('600040');
+  });
+
+  it('maps ledger.description onto Notes — Customer.xlsx has no Description column of its own', () => {
+    const [row] = mapper.toCustomerRows([
+      { ...baseLedger, description: 'Key retail account, net-30 terms' },
+    ]);
+    expect(row.Notes).toBe('Key retail account, net-30 terms');
+  });
+
+  it('leaves Billing Street2 blank for a single-line address rather than fabricating a split', () => {
+    const [row] = mapper.toCustomerRows([{ ...baseLedger, billingAddress: '50 Kovil Street' }]);
+    expect(row['Billing Address']).toBe('50 Kovil Street');
+    expect(row['Billing Street2']).toBe('');
   });
 
   it('falls back to GST Treatment "consumer" when there is no GSTIN', () => {

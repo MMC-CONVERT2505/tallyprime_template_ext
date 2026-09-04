@@ -141,6 +141,8 @@ export const SAMPLE_STOCK_ITEMS: TallyStockItem[] = [
     alias: 'WID-A',
     hsnCode: '84819000',
     gstRate: 18,
+    gstTaxability: 'Taxable',
+    itcIneligible: false,
   },
   {
     name: 'Widget B',
@@ -155,6 +157,8 @@ export const SAMPLE_STOCK_ITEMS: TallyStockItem[] = [
     alias: 'WID-B',
     hsnCode: '84819000',
     gstRate: 12,
+    gstTaxability: 'Taxable',
+    itcIneligible: false,
   },
   {
     name: 'Raw Material X',
@@ -169,6 +173,8 @@ export const SAMPLE_STOCK_ITEMS: TallyStockItem[] = [
     alias: null,
     hsnCode: '39269099',
     gstRate: 5,
+    gstTaxability: 'Taxable',
+    itcIneligible: false,
   },
 ];
 

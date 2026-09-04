@@ -16,6 +16,8 @@ describe('StockJournalMapper', () => {
     alias: 'WGT-A',
     hsnCode: null,
     gstRate: null,
+    gstTaxability: null,
+    itcIneligible: null,
     ...overrides,
   });
 

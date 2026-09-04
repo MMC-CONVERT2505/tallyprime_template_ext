@@ -172,15 +172,26 @@ export class EnvelopeBuilder {
               have entries with no GSTIN at all (pre-GST history) mixed with
               ones that do — response.parser.ts picks the last entry that
               actually has one.
-            - BankDetails is a flat scalar (just the account number, e.g.
-              "50200054487488"), not a LIST field — and Tally has no
-              separate "bank name" field at all; Vendor.xlsx's Bank Name
-              column has no Tally source and stays blank.
+            - BankDetails is a flat scalar (just an account number) — this
+              claimed no separate bank-name field existed at all, which was
+              WRONG: corrected 2026-09-05, see PAYMENTDETAILS.LIST below.
           EMAIL/LEDGERPHONE/LEDGERMOBILE/ADDRESS.LIST/LEDSTATENAME/
           COUNTRYNAME/PINCODE/INCOMETAXNUMBER were all confirmed correct as
           originally written — real values observed for ledgers that had
           them filled in Tally (most don't; that's sparse real-world data,
           not a wrong field name).
+
+          PAYMENTDETAILS.LIST added 2026-09-05, VERIFIED live against 452
+          real Sundry Creditor ledgers: the flat BANKDETAILS field above is
+          effectively dead for vendor payment bank details on this Tally
+          version (0/452 populated) — a vendors real payment bank info
+          (used for NEFT/RTGS, entered via Tally is e-payment setup) lives
+          in this separate, REPEATING list instead (entered via Tally e-payment
+          setup), each entry carrying BANKNAME/ACCOUNTNUMBER/IFSCODE/
+          PAYMENTFAVOURING/TRANSACTIONNAME (dozens of real vendors confirmed
+          populated here). Kept alongside
+          the legacy BANKDETAILS field as a fallback, not a replacement —
+          see response.parser.ts's readPaymentDetails.
         -->
         <NATIVEMETHOD>LEDGSTREGDETAILS.LIST</NATIVEMETHOD>
         <NATIVEMETHOD>INCOMETAXNUMBER</NATIVEMETHOD>
@@ -192,6 +203,7 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>COUNTRYNAME</NATIVEMETHOD>
         <NATIVEMETHOD>PINCODE</NATIVEMETHOD>
         <NATIVEMETHOD>BANKDETAILS</NATIVEMETHOD>
+        <NATIVEMETHOD>PAYMENTDETAILS.LIST</NATIVEMETHOD>
         ${this.alterIdRangeFilterRef(alterIdRange)}
       </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(
@@ -244,6 +256,34 @@ export class EnvelopeBuilder {
    * fromDate/toDate: see buildLedgersRequest's doc comment — same
    * SVFROMDATE/SVTODATE period-scoping applies to stock quantities/values.
    * `alterIdRange`: see buildLedgersRequest's doc comment — same numeric batching mechanism.
+   *
+   * HSNDETAILS.LIST/GSTDETAILS.LIST — VERIFIED live (2026-09-04, COREDGE.IO
+   * INDIA PRIVATE LIMITED). The original best-effort flat HSNCODE/GSTRATE
+   * fields were WRONG — confirmed via a raw probe against a real
+   * HSN-classified, GST-applicable stock item: the flat GSTHSNCODE field
+   * itself came back as the literal string "Not Found", and HSNCODE/GSTRATE
+   * as requested here returned nothing for every one of a live company's 35
+   * stock items. Modern TallyPrime keeps both as REPEATING, date-effective
+   * lists instead (an item's HSN/rate can be reclassified over time) — the
+   * same shape LEDGSTREGDETAILS.LIST already uses for ledger GSTIN, just one
+   * level deeper for GST (STATEWISEDETAILS.LIST -> RATEDETAILS.LIST, one row
+   * per duty head: CGST/SGST-UTGST/IGST/Cess/State Cess). See
+   * TallyResponseParser.mapStockItems's readLatestHsn/readLatestGstRate for
+   * how these are read back down to the single flat hsnCode/gstRate
+   * TallyStockItem needs.
+   *
+   * IMPORTANT: this fields list must NOT carry an inline XML comment inside
+   * the <COLLECTION> body — confirmed live: a multi-line `<!-- ... -->`
+   * comment placed between two <NATIVEMETHOD> tags here (an earlier version
+   * of this exact fix) made Tally reject the ENTIRE request with a bare
+   * "Unknown Request, cannot be processed" RESPONSE (not even a proper
+   * ENVELOPE) — reproduced and isolated by removing only the comment (same
+   * NATIVEMETHOD list otherwise byte-identical), which then succeeded.
+   * Tally's TDL parser is not a fully-compliant XML parser (see this file's
+   * other doc comments on `$$Date:` literal syntax, unescaped `&`, etc.), so
+   * any explanation of a request's fields belongs in a TypeScript comment
+   * outside this template literal — like this one — never inside the wire
+   * payload itself.
    */
   buildStockItemsRequest(
     company: string,
@@ -263,10 +303,9 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>
         <NATIVEMETHOD>ClosingValue</NATIVEMETHOD>
         <NATIVEMETHOD>AlterID</NATIVEMETHOD>
-        <!-- TODO verify against live Tally — see TallyStockItem's doc comment. -->
         <NATIVEMETHOD>ALIAS</NATIVEMETHOD>
-        <NATIVEMETHOD>HSNCODE</NATIVEMETHOD>
-        <NATIVEMETHOD>GSTRATE</NATIVEMETHOD>
+        <NATIVEMETHOD>HSNDETAILS.LIST</NATIVEMETHOD>
+        <NATIVEMETHOD>GSTDETAILS.LIST</NATIVEMETHOD>
         ${this.alterIdRangeFilterRef(alterIdRange)}
       </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(

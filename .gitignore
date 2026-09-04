@@ -83,6 +83,12 @@ web_modules/
 # account numbers), never committed.
 backend/public/
 
+# scripts/live-extraction-audit.ts's output — real customer financial data
+# pulled straight from a live Tally instance (GSTIN/PAN/bank account
+# numbers/transaction amounts), same sensitivity tier as backend/public/
+# above, never committed.
+backend/audit-output/
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

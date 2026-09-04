@@ -17,6 +17,8 @@ describe('StockItemMapper', () => {
     alias: null,
     hsnCode: null,
     gstRate: null,
+    gstTaxability: null,
+    itcIneligible: null,
     ...overrides,
   });
 
@@ -43,6 +45,8 @@ describe('StockItemMapper', () => {
       'Stock On Hand': 80,
       'Item Type': 'goods',
       Status: 'Active',
+      Taxable: '',
+      'Taxability Type': '',
       'Intra State Tax Name': '',
       'Intra State Tax Rate': '',
       'Intra State Tax Type': '',
@@ -70,6 +74,8 @@ describe('StockItemMapper', () => {
       'Stock On Hand': '',
       'Item Type': 'goods',
       Status: 'Active',
+      Taxable: '',
+      'Taxability Type': '',
       'Intra State Tax Name': '',
       'Intra State Tax Rate': '',
       'Intra State Tax Type': '',
@@ -77,6 +83,18 @@ describe('StockItemMapper', () => {
       'Inter State Tax Rate': '',
       'Inter State Tax Type': '',
     });
+  });
+
+  it('marks Taxable true/false from Tally taxability, distinct from a never-classified item staying blank', () => {
+    const [taxable] = mapper.toItemRows([item({ name: 'A', gstTaxability: 'Taxable' })]);
+    const [exempt] = mapper.toItemRows([item({ name: 'B', gstTaxability: 'Exempt' })]);
+    const [unclassified] = mapper.toItemRows([item({ name: 'C' })]);
+    expect(taxable.Taxable).toBe(true);
+    expect(taxable['Taxability Type']).toBe('Taxable');
+    expect(exempt.Taxable).toBe(false);
+    expect(exempt['Taxability Type']).toBe('Exempt');
+    expect(unclassified.Taxable).toBe('');
+    expect(unclassified['Taxability Type']).toBe('');
   });
 
   it('always classifies a Stock Item as "goods" — Tally services live on ledgers, not stock items', () => {

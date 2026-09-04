@@ -62,6 +62,7 @@ describe('EnvelopeBuilder', () => {
     expect(xml).toContain('<NATIVEMETHOD>INCOMETAXNUMBER</NATIVEMETHOD>');
     expect(xml).toContain('<NATIVEMETHOD>ADDRESS.LIST</NATIVEMETHOD>');
     expect(xml).toContain('<NATIVEMETHOD>BANKDETAILS</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>PAYMENTDETAILS.LIST</NATIVEMETHOD>');
   });
 
   it('scopes ledger balances to a period via SVFROMDATE/SVTODATE when supplied', () => {
@@ -76,11 +77,13 @@ describe('EnvelopeBuilder', () => {
     expect(xml).not.toContain('<SVTODATE>');
   });
 
-  it('requests the Alias/HSN/GSTRate fields Item.xlsx needs', () => {
+  it('requests the Alias/HSN/GST-rate fields Item.xlsx needs (the real, nested-list field names, not the flat ones that were confirmed live to return nothing)', () => {
     const xml = builder.buildStockItemsRequest('ABC Ltd');
     expect(xml).toContain('<NATIVEMETHOD>ALIAS</NATIVEMETHOD>');
-    expect(xml).toContain('<NATIVEMETHOD>HSNCODE</NATIVEMETHOD>');
-    expect(xml).toContain('<NATIVEMETHOD>GSTRATE</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>HSNDETAILS.LIST</NATIVEMETHOD>');
+    expect(xml).toContain('<NATIVEMETHOD>GSTDETAILS.LIST</NATIVEMETHOD>');
+    expect(xml).not.toContain('<NATIVEMETHOD>HSNCODE</NATIVEMETHOD>');
+    expect(xml).not.toContain('<NATIVEMETHOD>GSTRATE</NATIVEMETHOD>');
   });
 
   it('scopes stock item balances to a period via SVFROMDATE/SVTODATE when supplied', () => {

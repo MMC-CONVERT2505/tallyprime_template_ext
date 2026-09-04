@@ -20,6 +20,8 @@ describe('CreditNoteMapper', () => {
     alias: null,
     hsnCode: null,
     gstRate: null,
+    gstTaxability: null,
+    itcIneligible: null,
     ...overrides,
   });
 
