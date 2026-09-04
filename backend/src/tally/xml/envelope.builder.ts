@@ -305,90 +305,129 @@ export class EnvelopeBuilder {
   }
 
   /**
-   * Vouchers for a date range, optionally filtered by voucher type.
+   * Vouchers for a date range. A `TYPE=Voucher` Collection request — NOT the
+   * "Day Book" report export this used to be. Confirmed live 2026-08-25
+   * against a real TallyPrime instance (COREDGE.IO INDIA PRIVATE LIMITED):
+   * the Day Book report export ignores SVFROMDATE/SVTODATE outright on this
+   * build — three requests with different, non-overlapping date ranges (one
+   * spanning 2000-2026, one narrowed to the exact 2-month window the data
+   * actually lived in) all came back with the exact same single stale
+   * voucher, byte-for-byte identical response every time. This matches (and
+   * explains) the "Tally's report engine doesn't appear to fully reset
+   * internal state between back-to-back Export Data requests" behavior
+   * TransactionExtractionService.dedupeVouchers already documented for the
+   * chunked path — the whole-range/single-request path was hitting the same
+   * underlying issue, just badly enough to return ~1 record instead of a few
+   * leaked duplicates.
    *
-   * NOT a report-export request (buildReportRequest, REPORTNAME="Day Book")
-   * despite that being the obvious approach and this project's original
-   * implementation — live-verified 2026-08-25 against a real TallyPrime
-   * instance (COREDGE.IO INDIA PRIVATE LIMITED) to silently NOT work: the
-   * "Day Book" REPORTNAME never resolves, and Tally falls back to some fixed
-   * internal default (its own "All Masters"-style export, containing only
-   * the single most-recently-altered voucher) — byte-for-byte IDENTICAL
-   * whether SVFROMDATE/SVTODATE are set or omitted entirely. Collection-style
-   * (TYPE=Voucher, like every other request in this file) sidesteps REPORTNAME
-   * resolution and DOES reach real records — confirmed live, hundreds of
-   * genuine vouchers with real party names/amounts came back once switched.
+   * A Collection evaluates its own request independently instead of sharing
+   * that report-engine session state, and its `$Date` range is enforced via
+   * an explicit <FILTER> formula (dateRangeFormula) rather than a static
+   * variable — verified live against the same data: an unfiltered Collection
+   * correctly returned all 601 real vouchers in range, and the same
+   * Collection with this date FILTER correctly narrowed to exactly the
+   * subset whose dates fall inside it (confirmed with a 10-day window: only
+   * those 10 days' vouchers came back, nothing outside it).
    *
-   * The remaining piece — actually scoping to the CALLER's fromDate/toDate —
-   * is NOT a formula-syntax problem: a self-contained `$Date >=
-   * $$Date:"D-Mon-YYYY"` FILTER (same pattern as the proven AlterID-range
-   * filter, just on dates) evaluates correctly and DOES narrow results when
-   * the requested range overlaps what Tally exposes. The actual constraint —
-   * live-verified 2026-08-25 — is that a raw Voucher-type Collection is
-   * bounded by whatever "Current Period" the connected Tally session has
-   * active (Gateway of Tally, F2), and NEITHER SVFROMDATE/SVTODATE
-   * STATICVARIABLES NOR any FILTER formula can widen that ceiling from the
-   * API side — they can only narrow further within it. Confirmed by
-   * requesting with no filter/type restriction at all: every one of 601
-   * returned vouchers fell inside the connected session's own current
-   * financial-year window (1-Apr-2026 – 5-Jun-2026 at the time), regardless
-   * of the fromDate/toDate this method was called with. A request for an
-   * out-of-window period (e.g. January 2025) is therefore expected to
-   * legitimately return zero until the connected Tally's own Current Period
-   * is widened to cover it — a live setting on the connector machine, not
-   * something this request can override. See docs/connector-bridge-setup-guide.md
-   * (or the equivalent operational runbook) for how to widen it.
+   * `voucherType` is accepted but NOT sent as a request-side filter —
+   * VOUCHERTYPENAME never actually narrowed the old Day Book export either
+   * (see TransactionExtractionService's class doc comment); the real filter
+   * is client-side (TransactionExtractionService.filterByVoucherType),
+   * unchanged by this method.
    *
-   * voucherType filtering stays app-side
-   * (TransactionExtractionService.filterByVoucherType, unchanged) rather than
-   * a second TDL filter.
+   * Explicit <FETCH> list, NOT omitted — unlike a Report export (Day Book
+   * always fully expanded every voucher regardless), a Collection only
+   * returns what's asked for, and its *default* field set turned out to
+   * depend on the voucher's own view: confirmed live, an "Invoice Voucher
+   * View" Sales voucher fetched with no FETCH list at all came back with
+   * only ~20 bare scalar fields — no PARTYLEDGERNAME, no ALTERID, no
+   * ALLLEDGERENTRIES.LIST/ALLINVENTORYENTRIES.LIST at all — while an
+   * "Accounting Voucher View" Journal voucher in the same unfiltered
+   * response came back fully expanded. Explicitly fetching each field
+   * TallyResponseParser.mapVoucher reads gets the full data back
+   * consistently across every voucher type (verified live: the same Sales
+   * voucher then included NARRATION/PARTYLEDGERNAME/ALTERID and two
+   * populated ALLLEDGERENTRIES.LIST entries).
+   *
+   * One more constraint, live-verified 2026-08-25/2026-09-03 and independent
+   * of everything above: a raw Voucher-type Collection is bounded by
+   * whatever "Current Period" the connected Tally session has active
+   * (Gateway of Tally, F2/Alt+F2) — NEITHER SVFROMDATE/SVTODATE
+   * STATICVARIABLES NOR this method's own $Date FILTER can widen that
+   * ceiling from the API side, only narrow further within it. Confirmed by
+   * requesting with no filter/type restriction at all: every returned
+   * voucher fell inside the connected session's own current period,
+   * regardless of the fromDate/toDate this method was called with (a request
+   * for e.g. January 2025 legitimately returned zero while the session's
+   * Current Period was fixed to an April-2026-onward window). Widening the
+   * connected Tally's Current Period to cover the desired range resolves
+   * this immediately — confirmed live: the identical request that returned
+   * ~601 vouchers before widening returned 13,312 (spanning back to Nov 2020)
+   * after — with no code change required. This is an operational/connector-
+   * machine setting, not something fixable from this request.
    */
   buildVouchersRequest(
     company: string,
     fromDate: string,
     toDate: string,
-    _voucherType?: string,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for
+    // call-site/signature stability; see doc comment above for why it's not
+    // threaded into the request itself.
+    voucherType?: string,
   ): string {
-    // TEMP DIAGNOSTIC (2026-09-03): unique collection/filter/id names per
-    // request (was a fixed "Vouchers"/"VoucherDateRangeFilter") — testing
-    // whether Tally is caching/reusing the named Collection object across
-    // separate HTTP requests instead of re-evaluating it fresh each time,
-    // which would explain results staying byte-identical across a live
-    // Current Date/Period change on the connected Tally session.
-    const nonce = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const collection = `
+      <COLLECTION NAME="Vouchers In Range" ISINITIALIZE="Yes">
+        <TYPE>Voucher</TYPE>
+        <FETCH>Date</FETCH>
+        <FETCH>VoucherTypeName</FETCH>
+        <FETCH>VoucherNumber</FETCH>
+        <FETCH>PartyLedgerName</FETCH>
+        <FETCH>Narration</FETCH>
+        <FETCH>Reference</FETCH>
+        <FETCH>AlterID</FETCH>
+        <FETCH>PartyGSTIN</FETCH>
+        <FETCH>PlaceOfSupply</FETCH>
+        <FETCH>AllLedgerEntries.List</FETCH>
+        <FETCH>AllInventoryEntries.List</FETCH>
+        <FILTER>VoucherDateRangeFilter</FILTER>
+      </COLLECTION>${this.dateRangeFormula(fromDate, toDate)}`;
+    return this.buildCollectionRequest('Vouchers In Range', collection, company);
+  }
+
+  /**
+   * The named TDL formula buildVouchersRequest's <FILTER> resolves against —
+   * inclusive both ends. `$$Date:"D-Mon-YYYY"` is the one literal-construction
+   * syntax confirmed live to actually produce a comparable Date value on this
+   * TallyPrime build: `$$Date:<yyyymmdd-as-number>` and
+   * `$$YYYYMMDD:$Date >= "<yyyymmdd>"` (a plain string compared against a
+   * formatter's output) both silently matched zero rows — no LINEERROR, the
+   * FILTER just evaluated false for everything. A bare quoted string with no
+   * `$$Date:` conversion at all (`$Date >= "1-Apr-2026"`) went the opposite
+   * wrong way: a Date-vs-String type mismatch that Tally silently drops
+   * instead of erroring on, so the FILTER has no effect and every row comes
+   * back — the most dangerous failure mode of the three, since it looks
+   * identical to "no filter requested" rather than failing loudly.
+   */
+  private dateRangeFormula(fromDate: string, toDate: string): string {
     const formula =
       `$Date >= $$Date:"${this.toTallyDateLiteral(fromDate)}" AND ` +
       `$Date <= $$Date:"${this.toTallyDateLiteral(toDate)}"`;
-    const collection = `
-      <COLLECTION NAME="Vouchers_${nonce}" ISINITIALIZE="Yes">
-        <TYPE>Voucher</TYPE>
-        <NATIVEMETHOD>Date</NATIVEMETHOD>
-        <NATIVEMETHOD>VoucherTypeName</NATIVEMETHOD>
-        <NATIVEMETHOD>VoucherNumber</NATIVEMETHOD>
-        <NATIVEMETHOD>PartyLedgerName</NATIVEMETHOD>
-        <NATIVEMETHOD>Narration</NATIVEMETHOD>
-        <NATIVEMETHOD>Reference</NATIVEMETHOD>
-        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
-        <!-- TODO verify against live Tally — see TallyVoucher's doc comment. -->
-        <NATIVEMETHOD>PartyGstin</NATIVEMETHOD>
-        <NATIVEMETHOD>PlaceOfSupply</NATIVEMETHOD>
-        <NATIVEMETHOD>AllLedgerEntries.List</NATIVEMETHOD>
-        <NATIVEMETHOD>AllInventoryEntries.List</NATIVEMETHOD>
-        <FILTER>VoucherDateRangeFilter_${nonce}</FILTER>
-      </COLLECTION>
-      <SYSTEM TYPE="Formulae" NAME="VoucherDateRangeFilter_${nonce}">${escapeXml(formula)}</SYSTEM>`;
-    return this.buildCollectionRequest(`Vouchers_${nonce}`, collection, company);
+    return `
+      <SYSTEM TYPE="Formulae" NAME="VoucherDateRangeFilter">${escapeXml(formula)}</SYSTEM>`;
   }
 
-  /** YYYYMMDD -> Tally's `$$Date:"D-Mon-YYYY"` literal format, e.g. "20250101" -> "1-Jan-2025". */
+  /** YYYYMMDD -> Tally's own `$$Date:"D-Mon-YYYY"` literal syntax (English
+   *  3-letter month abbreviations — confirmed live independent of Tally's
+   *  configured display locale/date format). */
   private toTallyDateLiteral(yyyymmdd: string): string {
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
     const year = yyyymmdd.slice(0, 4);
     const month = Number(yyyymmdd.slice(4, 6));
     const day = Number(yyyymmdd.slice(6, 8));
-    const MONTHS = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return `${day}-${MONTHS[month - 1]}-${year}`;
+    return `${day}-${months[month - 1]}-${year}`;
   }
 
   /** SVFROMDATE/SVTODATE as an extraStaticVariables map, omitting whichever side is unset. */

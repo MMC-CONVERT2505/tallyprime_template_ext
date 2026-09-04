@@ -184,12 +184,12 @@ describe('EnvelopeBuilder', () => {
     it('scopes to the company and requests the fields TallyResponseParser.mapVoucher reads', () => {
       const xml = builder.buildVouchersRequest('ABC Ltd', '20250101', '20250131');
       expect(xml).toContain('<SVCURRENTCOMPANY>ABC Ltd</SVCURRENTCOMPANY>');
-      expect(xml).toContain('<NATIVEMETHOD>Date</NATIVEMETHOD>');
-      expect(xml).toContain('<NATIVEMETHOD>VoucherTypeName</NATIVEMETHOD>');
-      expect(xml).toContain('<NATIVEMETHOD>VoucherNumber</NATIVEMETHOD>');
-      expect(xml).toContain('<NATIVEMETHOD>PartyLedgerName</NATIVEMETHOD>');
-      expect(xml).toContain('<NATIVEMETHOD>AllLedgerEntries.List</NATIVEMETHOD>');
-      expect(xml).toContain('<NATIVEMETHOD>AllInventoryEntries.List</NATIVEMETHOD>');
+      expect(xml).toContain('<FETCH>Date</FETCH>');
+      expect(xml).toContain('<FETCH>VoucherTypeName</FETCH>');
+      expect(xml).toContain('<FETCH>VoucherNumber</FETCH>');
+      expect(xml).toContain('<FETCH>PartyLedgerName</FETCH>');
+      expect(xml).toContain('<FETCH>AllLedgerEntries.List</FETCH>');
+      expect(xml).toContain('<FETCH>AllInventoryEntries.List</FETCH>');
     });
 
     it('filters by date range via a self-contained $$Date literal FILTER/formula, not ##SVFROMDATE/##SVTODATE', () => {

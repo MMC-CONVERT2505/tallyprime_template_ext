@@ -13,21 +13,27 @@ import { ExtractionType, TallyExtractionServiceBase } from './tally-extraction.b
  * different concern with a different request shape (always date-ranged,
  * never cached, optionally filtered by voucher type).
  *
- * Today this covers the Day Book export (all voucher types, or one filtered
- * type via `voucherType`) — the actual requirement per
+ * Today this covers all voucher types (or one filtered type via
+ * `voucherType`) for a date range — the actual requirement per
  * docs/tally-zoho-function-mapping.md's Transactions table (#14-24, #30-33).
  * A dedicated per-voucher-type method (fetchSales/fetchPurchases/...) isn't
  * needed on top of this: "fetch only Sales vouchers" is a parameter, not a
  * different code path.
  *
- * The `VOUCHERTYPENAME` static variable sent with the request (see
- * envelope.builder.ts's buildVouchersRequest) does NOT actually narrow
- * Tally's Day Book export — confirmed live 2026-08-22: four bulk-export
- * requests for four different voucher types each returned the exact same
- * unfiltered result set. filterByVoucherType below is the real filter; the
- * static variable is left in place as a harmless best-effort hint (it costs
- * nothing and may narrow the export on some Tally versions/reports) but is
- * never trusted alone.
+ * Fetched via a `TYPE=Voucher` Collection request (EnvelopeBuilder.
+ * buildVouchersRequest), NOT the "Day Book" report export this used to be —
+ * confirmed live 2026-08-25: the Day Book report ignores its SVFROMDATE/
+ * SVTODATE date scoping outright on a real TallyPrime build, returning the
+ * same single stale voucher regardless of the requested range or company.
+ * See buildVouchersRequest's own doc comment for the full evidence and why a
+ * Collection's explicit `$Date` <FILTER> was verified correct instead.
+ *
+ * Voucher-type filtering happens entirely client-side (filterByVoucherType
+ * below) — confirmed live 2026-08-22 that a request-side VOUCHERTYPENAME
+ * filter does NOT narrow the result set at all (four requests for four
+ * different types each returned the same unfiltered set), so
+ * buildVouchersRequest doesn't send one; nothing here relies on Tally doing
+ * this filtering for us.
  */
 @Injectable()
 export class TransactionExtractionService extends TallyExtractionServiceBase {

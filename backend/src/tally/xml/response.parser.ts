@@ -236,27 +236,25 @@ export class TallyResponseParser {
     const { envelope, meta } = this.parse(rawXml);
     if (meta.isEmpty) return [];
 
-    // EnvelopeBuilder.buildVouchersRequest is Collection-style (TYPE=Voucher)
-    // — same BODY.DATA.COLLECTION.VOUCHER shape as every other collection
-    // request, via the same collectionItems() helper every master mapper
-    // uses. Individual field names (DATE, VOUCHERTYPENAME, ALLLEDGERENTRIES.LIST,
-    // ...) are identical either way — Tally's internal Voucher object shape
-    // doesn't change based on how it's exported — so mapVoucher() below is
-    // unchanged from when this read a report-export response.
+    // Two possible response shapes, mutually exclusive in practice (each
+    // branch finds nothing under the other's path, so running both never
+    // double-counts):
     //
-    // The IMPORTDATA/REQUESTDATA/TALLYMESSAGE path below is kept as a
-    // fallback for RawReportDto-driven ad-hoc report-export probes (see
-    // TallyDiagnosticsService.getRaw) — NOT for the typed VOUCHERS path
-    // above it, which live-verified 2026-08-25 to never actually resolve a
-    // requested report and answer with an unrelated fallback payload
-    // instead (see buildVouchersRequest's doc comment for the full
-    // incident). A message may also carry a master (not a voucher), so only
-    // the ones that actually contain a <VOUCHER> are kept.
-    const collectionVouchers = this.collectionItems(envelope, 'VOUCHER');
-    if (collectionVouchers.length > 0) {
-      return collectionVouchers.map((v) => this.mapVoucher(v));
-    }
-
+    // 1. Report-export shape (a REQUESTDESC-style request, e.g. the old Day
+    //    Book export, or the /tally/raw escape hatch aimed at a report) comes
+    //    back wrapped as if it were an importable payload — Tally reuses its
+    //    "Import Data" XML schema, so records land under
+    //    BODY.IMPORTDATA.REQUESTDATA.TALLYMESSAGE.VOUCHER (BODY.DATA.
+    //    TALLYMESSAGE kept as a fallback for an older Tally.ERP9 build/
+    //    differently-configured report that answers the other way — see this
+    //    method's tests). A message may also carry a master (not a voucher),
+    //    so only ones that actually contain a <VOUCHER> are kept.
+    // 2. Collection-export shape — what EnvelopeBuilder.buildVouchersRequest
+    //    actually sends today (a TYPE=Voucher Collection, not a report — see
+    //    its doc comment for why). <VOUCHER> sits directly under
+    //    BODY.DATA.COLLECTION, no TALLYMESSAGE wrapper at all — the same
+    //    shape every other Collection-based master fetch (mapLedgers/
+    //    mapGroups/...) already reads via collectionItems.
     const data =
       this.get(envelope, ['BODY', 'IMPORTDATA', 'REQUESTDATA']) ??
       this.get(envelope, ['BODY', 'DATA']);
@@ -267,6 +265,9 @@ export class TallyResponseParser {
       for (const v of toArray<any>(msg?.VOUCHER)) {
         vouchers.push(this.mapVoucher(v));
       }
+    }
+    for (const v of this.collectionItems(envelope, 'VOUCHER')) {
+      vouchers.push(this.mapVoucher(v));
     }
     return vouchers;
   }
