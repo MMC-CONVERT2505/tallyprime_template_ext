@@ -370,7 +370,6 @@ export function ExtractionsPanel() {
   };
 
   const deleteBulkExportRow = async (id: string) => {
-    if (!window.confirm('Delete this export from history? This cannot be undone.')) return;
     setBulkRowBusy((prev) => ({ ...prev, [id]: 'delete' }));
     setError(null);
     try {
@@ -463,7 +462,6 @@ export function ExtractionsPanel() {
   };
 
   const deleteJobRow = async (id: string) => {
-    if (!window.confirm('Delete this extraction from history? This cannot be undone.')) return;
     setJobRowBusy((prev) => ({ ...prev, [id]: 'delete' }));
     setError(null);
     try {
