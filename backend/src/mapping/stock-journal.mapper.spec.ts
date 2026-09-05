@@ -33,7 +33,7 @@ describe('StockJournalMapper', () => {
     inventoryEntries: [],
     partyGstin: null,
     placeOfSupply: null,
-    ...overrides,
+    currencyCode: null, exchangeRate: null, ...overrides,
   });
 
   it('maps quantity-adjustment fields, always hardcoding Status to "adjusted"', () => {
@@ -41,7 +41,7 @@ describe('StockJournalMapper', () => {
     const mapper = new StockJournalMapper(itemIndex);
     const [row] = mapper.toStockJournalRows([
       voucher({
-        inventoryEntries: [{ stockItemName: 'Widget A', quantity: -12, rate: null, amount: -600 }],
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: -12, rate: null, amount: -600 , discountPercent: null, accountLedgerName: null }],
       }),
     ]);
 
@@ -60,7 +60,7 @@ describe('StockJournalMapper', () => {
       voucher({
         reference: null,
         voucherNumber: 'SJ-2',
-        inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: null, amount: 1 }],
+        inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: null, amount: 1 , discountPercent: null, accountLedgerName: null }],
       }),
     ]);
     expect(row['Reference Number']).toBe('SJ-2');
@@ -74,7 +74,7 @@ describe('StockJournalMapper', () => {
   it('has no GST columns at all, unlike the other 3 voucher mappers', () => {
     const mapper = new StockJournalMapper(buildStockItemIndex([]));
     const [row] = mapper.toStockJournalRows([
-      voucher({ inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: null, amount: 1 }] }),
+      voucher({ inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: null, amount: 1 , discountPercent: null, accountLedgerName: null }] }),
     ]);
     expect(row).not.toHaveProperty('Item Tax');
     expect(row).not.toHaveProperty('HSN/SAC');

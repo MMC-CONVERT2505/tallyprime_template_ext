@@ -1,7 +1,12 @@
 import { TallyVoucher } from '../tally/interfaces/tally.interfaces';
 import { deriveIntraStateTax } from './gst-rate.shared';
 import { resolveGstTreatment } from './ledger-contact.shared';
-import { StockItemIndex, tallyDateToJsDate } from './voucher-line.shared';
+import {
+  addDaysToTallyDate,
+  resolveVoucherCurrency,
+  StockItemIndex,
+  tallyDateToJsDate,
+} from './voucher-line.shared';
 import {
   percentageOf,
   round2,
@@ -19,8 +24,22 @@ import {
  * live incident this mirrors — a Sales voucher recorded with NO inventory
  * lines at all (a pure ledger/service invoice) still gets exactly one row
  * instead of being silently dropped. Payment Terms, Sales person, Shipping
- * Charge, discount fields, e-commerce/payment-gateway flags, Branch/
- * Warehouse (no Godown extraction yet) are left blank, not guessed.
+ * Charge, e-commerce/payment-gateway flags, Branch/Warehouse (no Godown
+ * extraction yet — VERIFIED live 2026-09-05 that this project's own test
+ * company genuinely has none to extract, see EnvelopeBuilder doc comments)
+ * are left blank, not guessed.
+ *
+ * Currency Code/Exchange Rate (added 2026-09-05, resolveVoucherCurrency) —
+ * previously always hardcoded 'INR'; a real foreign-currency voucher now
+ * gets its actual transaction currency and rate. Account (added 2026-09-05)
+ * is the inventory line's own ACCOUNTINGALLOCATIONS.LIST ledger — the real
+ * Sales/revenue account this line posted against, not a guess. Discount
+ * (added 2026-09-05) is the inventory line's own flat DISCOUNT percentage,
+ * already part of the same list this project has fetched all along. Due
+ * Date (added 2026-09-05) is the party ledger entry's bill-wise credit
+ * period added to the voucher date — genuinely unset for this project's own
+ * test company (see LedgerTaxSummary.partyBillCreditPeriodDays), correct
+ * once a company actually sets one.
  *
  * Item Tax/HSN come from the separately-fetched STOCK_ITEMS job
  * (`itemIndex`, keyed by item name), not parsed off the voucher line itself
@@ -58,7 +77,10 @@ export interface ZohoInvoiceRow {
   'TDS Percentage': number | '';
   'TDS Amount': number | '';
   'Place of Supply': string;
+  'Due Date': Date | '';
   'Currency Code': string;
+  'Exchange Rate': number;
+  Account: string;
   'Item Name': string;
   SKU: string;
   'Item Desc': string;
@@ -67,13 +89,12 @@ export interface ZohoInvoiceRow {
   Quantity: number | '';
   'Usage unit': string;
   'Item Price': number | '';
+  Discount: number | '';
   'Item Tax': string;
   'Item Tax Type': string;
   'Item Tax %': number | '';
   Notes: string;
 }
-
-const DEFAULT_CURRENCY_CODE = 'INR';
 
 export class InvoiceMapper {
   constructor(private readonly itemIndex: StockItemIndex) {}
@@ -84,6 +105,7 @@ export class InvoiceMapper {
 
   private toInvoiceRowsForVoucher(voucher: TallyVoucher): ZohoInvoiceRow[] {
     const summary = summarizeLedgerEntries(voucher.ledgerEntries, voucher.partyLedgerName);
+    const currency = resolveVoucherCurrency(voucher);
 
     const common: Pick<
       ZohoInvoiceRow,
@@ -93,7 +115,9 @@ export class InvoiceMapper {
       | 'GST Treatment'
       | 'GST Identification Number (GSTIN)'
       | 'Place of Supply'
+      | 'Due Date'
       | 'Currency Code'
+      | 'Exchange Rate'
       | 'Notes'
       | 'TCS Tax Name'
       | 'TCS Amount'
@@ -106,7 +130,9 @@ export class InvoiceMapper {
       'GST Treatment': resolveGstTreatment(voucher.partyGstin),
       'GST Identification Number (GSTIN)': voucher.partyGstin ?? '',
       'Place of Supply': voucher.placeOfSupply ?? '',
-      'Currency Code': DEFAULT_CURRENCY_CODE,
+      'Due Date': addDaysToTallyDate(voucher.date, summary.partyBillCreditPeriodDays),
+      'Currency Code': currency.currencyCode,
+      'Exchange Rate': currency.exchangeRate,
       Notes: voucher.narration ?? '',
       'TCS Tax Name': summary.tcsName,
       'TCS Amount': summary.tcsAmount,
@@ -128,6 +154,7 @@ export class InvoiceMapper {
           ...common,
           'TCS Percentage': percentageOf(summary.tcsAmount, base),
           'TDS Percentage': percentageOf(summary.tdsAmount, base),
+          Account: line.accountLedgerName ?? '',
           'Item Name': line.stockItemName,
           SKU: item?.alias ?? '',
           'Item Desc': item?.description ?? '',
@@ -136,6 +163,7 @@ export class InvoiceMapper {
           Quantity: line.quantity ?? '',
           'Usage unit': item?.baseUnit ?? '',
           'Item Price': line.rate ?? '',
+          Discount: line.discountPercent ?? '',
           'Item Tax': tax.name,
           'Item Tax Type': tax.name ? TAX_TYPE_ITEM_AMOUNT : '',
           'Item Tax %': tax.rate,
@@ -160,6 +188,7 @@ export class InvoiceMapper {
         ...common,
         'TCS Percentage': percentageOf(summary.tcsAmount, base),
         'TDS Percentage': percentageOf(summary.tdsAmount, base),
+        Account: summary.nonTaxLedgerName,
         'Item Name': '',
         SKU: '',
         'Item Desc': '',
@@ -168,6 +197,7 @@ export class InvoiceMapper {
         Quantity: '',
         'Usage unit': '',
         'Item Price': base || '',
+        Discount: '',
         'Item Tax': taxName,
         'Item Tax Type': taxName ? TAX_TYPE_ITEM_AMOUNT : '',
         'Item Tax %': taxPercentage,

@@ -14,6 +14,7 @@ import {
 } from '../interfaces/tally.interfaces';
 import {
   parseTallyAmount,
+  parseTallyForeignAmount,
   readInt,
   readText,
   readYesNo,
@@ -159,6 +160,9 @@ export class TallyResponseParser {
         // setup still only has the legacy field.
         bankName: payment.bankName,
         bankAccountNumber: payment.accountNumber ?? readText(l?.BANKDETAILS),
+        website: readText(l?.WEBSITE),
+        creditLimit: parseTallyAmount(readText(l?.CREDITLIMIT)),
+        contactPersonName: readText(l?.LEDGERCONTACT),
       };
     });
   }
@@ -372,42 +376,131 @@ export class TallyResponseParser {
   }
 
   private mapVoucher(v: any): TallyVoucher {
+    const foreignByEntry = new Map<object, ReturnType<typeof parseTallyForeignAmount>>();
+
     const ledgerEntries: TallyLedgerEntry[] = toArray<any>(v?.['ALLLEDGERENTRIES.LIST'])
       // Some exports use LEDGERENTRIES.LIST instead — fall back to it.
       .concat(v?.['ALLLEDGERENTRIES.LIST'] ? [] : toArray<any>(v?.['LEDGERENTRIES.LIST']))
+      // A genuinely empty <…LIST></…LIST> tag (a real voucher with zero
+      // entries of this kind) parses to '' via fast-xml-parser, not
+      // undefined — toArray('') then wrongly produces a phantom one-element
+      // array holding a bare string. VERIFIED live 2026-09-05: every one of
+      // this project's real ledger-only Sales vouchers (no stock items) came
+      // back with exactly this shape for ALLINVENTORYENTRIES.LIST, silently
+      // misclassifying a service invoice as item-based (blank Item
+      // Name/Account instead of the correct ledger-derived fallback — see
+      // invoice.mapper.ts/bill.mapper.ts's service-row branch). Filtering to
+      // real objects here fixes both lists at the source instead of pushing
+      // an empty-string check into every mapper.
+      .filter((e) => e !== null && typeof e === 'object')
       .map((e) => {
-        const amount = parseTallyAmount(readText(e?.AMOUNT));
+        const foreign = parseTallyForeignAmount(readText(e?.AMOUNT));
+        foreignByEntry.set(e, foreign);
+        const amount = foreign.amount;
         const isDeemedPositive = readYesNo(e?.ISDEEMEDPOSITIVE);
         return {
           ledgerName: readText(e?.LEDGERNAME) ?? '',
           amount,
           isDeemedPositive,
           isDebit: this.resolveIsDebit(amount, isDeemedPositive),
+          billCreditPeriodDays: this.readBillCreditPeriod(e?.['BILLALLOCATIONS.LIST']),
         };
       });
 
     const inventoryEntries: TallyInventoryEntry[] = toArray<any>(v?.['ALLINVENTORYENTRIES.LIST'])
       .concat(v?.['ALLINVENTORYENTRIES.LIST'] ? [] : toArray<any>(v?.['INVENTORYENTRIES.LIST']))
+      // See ledgerEntries' identical filter above — the same empty-tag-to-
+      // phantom-entry bug, confirmed live on this same field.
+      .filter((e) => e !== null && typeof e === 'object')
       .map((e) => ({
         stockItemName: readText(e?.STOCKITEMNAME) ?? '',
         quantity: parseTallyAmount(readText(e?.ACTUALQTY) ?? readText(e?.BILLEDQTY)),
-        rate: parseTallyAmount(readText(e?.RATE)),
-        amount: parseTallyAmount(readText(e?.AMOUNT)),
+        rate: parseTallyForeignAmount(readText(e?.RATE)).amount,
+        amount: parseTallyForeignAmount(readText(e?.AMOUNT)).amount,
+        discountPercent: parseTallyAmount(readText(e?.DISCOUNT)),
+        accountLedgerName: this.readPrimaryAccountLedger(e?.['ACCOUNTINGALLOCATIONS.LIST']),
       }));
+
+    const partyLedgerName = readText(v?.PARTYLEDGERNAME);
+    const currency = this.detectVoucherCurrency(foreignByEntry, partyLedgerName);
 
     return {
       date: readText(v?.DATE),
       voucherType: readText(v?.VOUCHERTYPENAME) ?? readText(v?.['@_VCHTYPE']),
       voucherNumber: readText(v?.VOUCHERNUMBER),
-      partyLedgerName: readText(v?.PARTYLEDGERNAME),
+      partyLedgerName,
       narration: readText(v?.NARRATION),
       reference: readText(v?.REFERENCE),
       alterId: readInt(v?.ALTERID),
       ledgerEntries,
       inventoryEntries,
       partyGstin: readText(v?.PARTYGSTIN),
-      placeOfSupply: readText(v?.PLACEOFSUPPLY),
+      // ConsigneeStateName fallback added 2026-09-05, VERIFIED live — see
+      // EnvelopeBuilder.buildVouchersRequest's doc comment: several real
+      // export vouchers have a blank PlaceOfSupply but a populated
+      // ConsigneeStateName (the GST e-invoice ship-to state).
+      placeOfSupply: readText(v?.PLACEOFSUPPLY) ?? readText(v?.CONSIGNEESTATENAME),
+      currencyCode: currency.currencyCode,
+      exchangeRate: currency.exchangeRate,
     };
+  }
+
+  /**
+   * BILLALLOCATIONS.LIST is a REPEATING list (a ledger entry can span
+   * multiple bills — part-payments, adjustments) — added 2026-09-05. Takes
+   * the first entry that actually carries a credit period rather than
+   * summing/averaging across bills, since Zoho's Due Date is a single
+   * voucher-level value; real data for this project's test company never
+   * populates this field at all (see TallyLedgerEntry.billCreditPeriodDays's
+   * doc comment), so this is unverified against a genuinely non-empty case.
+   */
+  private readBillCreditPeriod(billAllocations: unknown): number | null {
+    const entries = toArray<any>(billAllocations);
+    for (const entry of entries) {
+      const days = readInt(entry?.BILLCREDITPERIOD);
+      if (days !== null) return days;
+    }
+    return null;
+  }
+
+  /**
+   * ACCOUNTINGALLOCATIONS.LIST is a REPEATING list (an inventory line can
+   * split its value across more than one ledger, e.g. a partial discount
+   * ledger) — added 2026-09-05, VERIFIED live. The first entry is this
+   * line's primary posted account; a full multi-ledger breakdown has no
+   * single Zoho "Account" column to hold it anyway.
+   */
+  private readPrimaryAccountLedger(accountingAllocations: unknown): string | null {
+    const entries = toArray<any>(accountingAllocations);
+    return readText(entries[0]?.LEDGERNAME);
+  }
+
+  /**
+   * Added 2026-09-05 alongside parseTallyForeignAmount. Prefers the party
+   * ledger entry (the one line every voucher has, representing the total)
+   * when it resolved a foreign currency; falls back to the first OTHER
+   * entry that did, since a voucher's party line can itself be domestic
+   * while a specific expense/income line is genuinely foreign (e.g. a
+   * dollar-denominated subscription booked against an INR party ledger).
+   * Returns {null, null} — "assume INR" — when nothing in the voucher
+   * carried a recognized foreign symbol.
+   */
+  private detectVoucherCurrency(
+    foreignByEntry: Map<object, ReturnType<typeof parseTallyForeignAmount>>,
+    partyLedgerName: string | null,
+  ): { currencyCode: string | null; exchangeRate: number | null } {
+    let partyMatch: ReturnType<typeof parseTallyForeignAmount> | null = null;
+    for (const [entry, foreign] of foreignByEntry) {
+      if (foreign.currencyCode === null) continue;
+      if (partyLedgerName && readText((entry as any)?.LEDGERNAME) === partyLedgerName) {
+        partyMatch = foreign;
+        break;
+      }
+      if (!partyMatch) partyMatch = foreign;
+    }
+    return partyMatch
+      ? { currencyCode: partyMatch.currencyCode, exchangeRate: partyMatch.exchangeRate }
+      : { currencyCode: null, exchangeRate: null };
   }
 
   /**

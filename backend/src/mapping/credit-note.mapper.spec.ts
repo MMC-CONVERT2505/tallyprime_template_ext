@@ -37,7 +37,7 @@ describe('CreditNoteMapper', () => {
     inventoryEntries: [],
     partyGstin: null,
     placeOfSupply: null,
-    ...overrides,
+    currencyCode: null, exchangeRate: null, ...overrides,
   });
 
   it('emits one row per inventory line with the tax derived from the item index', () => {
@@ -47,7 +47,7 @@ describe('CreditNoteMapper', () => {
     const mapper = new CreditNoteMapper(itemIndex);
     const [row] = mapper.toCreditNoteRows([
       voucher({
-        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 }],
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
       }),
     ]);
 
@@ -65,10 +65,22 @@ describe('CreditNoteMapper', () => {
     const [row] = mapper.toCreditNoteRows([
       voucher({
         reference: 'RET-2026-004',
-        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 }],
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
       }),
     ]);
     expect(row['Reference#']).toBe('RET-2026-004');
+  });
+
+  it('also maps the same reference onto Associated Invoice Number — a real Credit Note against a real original invoice number, not a duplicate guess', () => {
+    const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+    const [row] = mapper.toCreditNoteRows([
+      voucher({
+        reference: 'Coredge/25-26/27',
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
+      }),
+    ]);
+    expect(row['Associated Invoice Number']).toBe('Coredge/25-26/27');
+    expect(row['Reference#']).toBe('Coredge/25-26/27');
   });
 
   it('returns nothing for a voucher with neither inventory lines nor ledger entries (genuinely empty)', () => {
@@ -84,7 +96,7 @@ describe('CreditNoteMapper', () => {
       amount: null,
       isDeemedPositive: null,
       isDebit: null,
-      ...overrides,
+      billCreditPeriodDays: null, ...overrides,
     });
 
     it('does NOT drop a real Credit Note just because it has no stock items', () => {
@@ -94,8 +106,8 @@ describe('CreditNoteMapper', () => {
           voucherNumber: 'CN-SVC-1',
           partyLedgerName: 'ABC Traders',
           ledgerEntries: [
-            ledger({ ledgerName: 'Sales Returns', amount: -5000, isDebit: true }),
-            ledger({ ledgerName: 'ABC Traders', amount: 5000, isDebit: false }),
+            ledger({ ledgerName: 'Sales Returns', amount: -5000, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'ABC Traders', amount: 5000, isDebit: false , billCreditPeriodDays: null }),
           ],
         }),
       ]);
@@ -112,11 +124,11 @@ describe('CreditNoteMapper', () => {
         voucher({
           partyLedgerName: 'ABC Traders',
           ledgerEntries: [
-            ledger({ ledgerName: 'Sales Returns', amount: -100000, isDebit: true }),
-            ledger({ ledgerName: 'Output CGST', amount: -9000, isDebit: true }),
-            ledger({ ledgerName: 'Output SGST', amount: -9000, isDebit: true }),
-            ledger({ ledgerName: 'TCS Payable', amount: -5000, isDebit: true }),
-            ledger({ ledgerName: 'ABC Traders', amount: 123000, isDebit: false }),
+            ledger({ ledgerName: 'Sales Returns', amount: -100000, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Output CGST', amount: -9000, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Output SGST', amount: -9000, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'TCS Payable', amount: -5000, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'ABC Traders', amount: 123000, isDebit: false , billCreditPeriodDays: null }),
           ],
         }),
       ]);
@@ -126,6 +138,80 @@ describe('CreditNoteMapper', () => {
       expect(row['TCS Tax Name']).toBe('TCS Payable');
       expect(row['TCS Amount']).toBe(5000);
       expect(row['TCS Percentage']).toBe(5);
+    });
+  });
+
+  describe('Currency Code/Exchange Rate/Account/Discount (2026-09-05 field-mapping pass)', () => {
+    const ledger = (overrides: Partial<TallyLedgerEntry>): TallyLedgerEntry => ({
+      ledgerName: 'Some Ledger',
+      amount: null,
+      isDeemedPositive: null,
+      isDebit: null,
+      billCreditPeriodDays: null,
+      ...overrides,
+    });
+
+    it('defaults to INR/1 when the voucher carries no foreign-currency data', () => {
+      const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+      const [row] = mapper.toCreditNoteRows([
+        voucher({
+          inventoryEntries: [
+            { stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null },
+          ],
+        }),
+      ]);
+      expect(row['Currency Code']).toBe('INR');
+      expect(row['Exchange Rate']).toBe(1);
+    });
+
+    it('carries the voucher\'s real foreign currency code and exchange rate', () => {
+      const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+      const [row] = mapper.toCreditNoteRows([
+        voucher({
+          currencyCode: 'USD',
+          exchangeRate: 95.021,
+          inventoryEntries: [
+            { stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null },
+          ],
+        }),
+      ]);
+      expect(row['Currency Code']).toBe('USD');
+      expect(row['Exchange Rate']).toBe(95.021);
+    });
+
+    it('maps an inventory line\'s own posted account and flat discount', () => {
+      const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+      const [row] = mapper.toCreditNoteRows([
+        voucher({
+          inventoryEntries: [
+            {
+              stockItemName: 'Widget A',
+              quantity: 1,
+              rate: 100,
+              amount: 90,
+              discountPercent: 10,
+              accountLedgerName: 'Sales Returns',
+            },
+          ],
+        }),
+      ]);
+      expect(row.Account).toBe('Sales Returns');
+      expect(row.Discount).toBe(10);
+    });
+
+    it('uses the single non-tax ledger name as Account on a service-only row, leaving Discount blank', () => {
+      const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+      const [row] = mapper.toCreditNoteRows([
+        voucher({
+          partyLedgerName: 'ABC Traders',
+          ledgerEntries: [
+            ledger({ ledgerName: 'Sales Returns', amount: -5000, isDebit: true }),
+            ledger({ ledgerName: 'ABC Traders', amount: 5000, isDebit: false }),
+          ],
+        }),
+      ]);
+      expect(row.Account).toBe('Sales Returns');
+      expect(row.Discount).toBe('');
     });
   });
 });

@@ -89,6 +89,91 @@ export function parseTallyAmount(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Symbols that unambiguously indicate a genuinely foreign-currency amount —
+ *  deliberately excludes '₹' and its mangled '?' rendering (see
+ *  parseTallyAmount's doc comment), since those appear on BOTH sides of a
+ *  same-currency quantity/rate breakdown too and would misfire here. */
+const FOREIGN_CURRENCY_SYMBOLS = ['$', '€', '£', '¥'] as const;
+
+/** Best-effort foreign-symbol -> ISO 4217 code, for the handful of symbols
+ *  this project actually watches for. Extend as new symbols are confirmed
+ *  live rather than guessing a comprehensive table upfront. */
+const CURRENCY_CODE_BY_SYMBOL: Record<string, string> = {
+  $: 'USD',
+  '€': 'EUR',
+  '£': 'GBP',
+  '¥': 'JPY',
+};
+
+export interface TallyForeignAmount {
+  /** Base/reporting-currency (INR) equivalent — what every caller should book. */
+  amount: number | null;
+  /** ISO 4217 code (e.g. 'USD'), or null for a plain domestic amount. */
+  currencyCode: string | null;
+  /** Units of foreign currency before conversion — null when not foreign. */
+  foreignAmount: number | null;
+  /** INR per 1 unit of foreign currency — null when not foreign. */
+  exchangeRate: number | null;
+}
+
+/**
+ * Currency-aware sibling of parseTallyAmount, for the small set of fields
+ * where the caller also needs to know the ORIGINAL transaction currency
+ * (voucher ledger/inventory entries) rather than just a plain INR number.
+ *
+ * Confirmed live 2026-09-05, COREDGE.IO INDIA PRIVATE LIMITED: ~5% of this
+ * company's real ledger-entry amounts are foreign-currency, e.g.
+ * `76225.00 $ @ ? 95.021/ $ = ? 7242975.73` (76,225 USD @ 95.021 -> ~72.4
+ * lakh INR; '?' is '₹' mangled by TALLY_RESPONSE_ENCODING, same artifact
+ * parseTallyAmount's own doc comment already documents). Calling plain
+ * parseTallyAmount on this string silently returns 76225 — the DOLLAR face
+ * value — because it only strips the " @ ..." rate-breakdown suffix; that
+ * value was then being booked as if it were 76,225 RUPEES, understating this
+ * line by roughly 95x. This function instead recognizes the presence of an
+ * unambiguous foreign symbol ($/€/£/¥ — never ₹ or its mangled '?', which
+ * also legitimately appears in a SAME-currency quantity/rate breakdown, see
+ * parseTallyAmount) and returns the converted amount after the final '='
+ * instead.
+ *
+ * Deliberately NOT folded into parseTallyAmount itself: that function is
+ * shared by every numeric field this project reads, including ledger/stock
+ * item master balances that have never been observed in a foreign-currency
+ * shape — changing its core behavior would risk the already-live-verified
+ * quantity/rate fix regressing for a case this project hasn't tested. This
+ * sibling is opt-in, used only where a foreign-currency voucher amount is
+ * actually plausible (TallyResponseParser.mapVoucher's ledger/inventory
+ * entries).
+ */
+export function parseTallyForeignAmount(value: unknown): TallyForeignAmount {
+  const raw = value === null || value === undefined ? '' : String(value).trim();
+  const symbol = FOREIGN_CURRENCY_SYMBOLS.find((s) => raw.includes(s));
+
+  if (!raw || !symbol || !raw.includes('=')) {
+    return { amount: parseTallyAmount(raw), currencyCode: null, foreignAmount: null, exchangeRate: null };
+  }
+
+  const segments = raw.split('=');
+  const converted = parseTallyAmount(segments[segments.length - 1]);
+  // A leading '-' only ever appears once, at the very front of the whole
+  // string (confirmed against both this and parseTallyAmount's own live
+  // example) — the converted segment after '=' doesn't repeat it unless
+  // Tally itself already included one there.
+  const isNegative = raw.trimStart().startsWith('-');
+  const amount = converted !== null && isNegative && converted > 0 ? -converted : converted;
+
+  const hasRate = raw.includes('@');
+  const foreignAmount = hasRate ? parseTallyAmount(raw.split('@')[0]) : null;
+  const rateMatch = raw.match(/@\s*[^\d-]*(-?[\d,.]+)/);
+  const exchangeRate = rateMatch ? parseTallyAmount(rateMatch[1]) : null;
+
+  return {
+    amount,
+    currencyCode: CURRENCY_CODE_BY_SYMBOL[symbol] ?? null,
+    foreignAmount,
+    exchangeRate,
+  };
+}
+
 /**
  * Tally prefixes references to certain built-in top-level objects (e.g. the
  * "Primary" group) with a literal, non-standard marker that looks like an XML

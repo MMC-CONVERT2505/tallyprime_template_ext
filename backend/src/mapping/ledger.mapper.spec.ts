@@ -21,6 +21,9 @@ describe('LedgerMapper', () => {
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
   };
 
   const ledger = (overrides: Partial<TallyLedger>): TallyLedger => ({

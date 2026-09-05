@@ -36,6 +36,7 @@ describe('StockItemMapper', () => {
 
     expect(row).toEqual({
       'Item Name': 'Widget A',
+      SKU: '',
       'Alias Name': '',
       Description: 'A widget',
       'HSN/SAC': '',
@@ -45,6 +46,9 @@ describe('StockItemMapper', () => {
       'Stock On Hand': 80,
       'Item Type': 'goods',
       Status: 'Active',
+      Sellable: true,
+      Purchasable: true,
+      'Track Inventory': true,
       Taxable: '',
       'Taxability Type': '',
       'Intra State Tax Name': '',
@@ -65,6 +69,7 @@ describe('StockItemMapper', () => {
     const [row] = mapper.toItemRows([item({ name: 'Brand New Item' })]);
     expect(row).toEqual({
       'Item Name': 'Brand New Item',
+      SKU: '',
       'Alias Name': '',
       Description: '',
       'HSN/SAC': '',
@@ -74,6 +79,9 @@ describe('StockItemMapper', () => {
       'Stock On Hand': '',
       'Item Type': 'goods',
       Status: 'Active',
+      Sellable: true,
+      Purchasable: true,
+      'Track Inventory': true,
       Taxable: '',
       'Taxability Type': '',
       'Intra State Tax Name': '',
@@ -107,6 +115,7 @@ describe('StockItemMapper', () => {
       item({ name: 'Harpic', alias: 'HRP-1', hsnCode: '34022090', gstRate: 12 }),
     ]);
     expect(row['Alias Name']).toBe('HRP-1');
+    expect(row.SKU).toBe('HRP-1');
     expect(row['HSN/SAC']).toBe('34022090');
     expect(row['Intra State Tax Name']).toBe('GST12');
     expect(row['Intra State Tax Rate']).toBe(12);

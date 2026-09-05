@@ -24,6 +24,9 @@ describe('CustomerMapper', () => {
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
   };
 
   it('includes only ledgers resolving to Sundry Debtors', () => {
@@ -95,5 +98,21 @@ describe('CustomerMapper', () => {
   it('leaves Opening Balance blank rather than 0 when Tally has no balance at all', () => {
     const [row] = mapper.toCustomerRows([baseLedger]);
     expect(row['Opening Balance']).toBe('');
+  });
+
+  it('maps Website/Credit Limit/Conact Display Name (2026-09-05 field-mapping pass)', () => {
+    const [row] = mapper.toCustomerRows([
+      { ...baseLedger, website: 'ssss123.com', creditLimit: 36000, contactPersonName: 'RR Patil' },
+    ]);
+    expect(row.Website).toBe('ssss123.com');
+    expect(row['Credit Limit']).toBe(36000);
+    expect(row['Conact Display Name']).toBe('RR Patil');
+  });
+
+  it('leaves Website/Credit Limit/Conact Display Name blank rather than guessing when the ledger has none', () => {
+    const [row] = mapper.toCustomerRows([baseLedger]);
+    expect(row.Website).toBe('');
+    expect(row['Credit Limit']).toBe('');
+    expect(row['Conact Display Name']).toBe('');
   });
 });

@@ -1,7 +1,12 @@
 import { TallyVoucher } from '../tally/interfaces/tally.interfaces';
 import { deriveIntraStateTax } from './gst-rate.shared';
 import { resolveGstTreatment } from './ledger-contact.shared';
-import { StockItemIndex, tallyDateToJsDate } from './voucher-line.shared';
+import {
+  addDaysToTallyDate,
+  resolveVoucherCurrency,
+  StockItemIndex,
+  tallyDateToJsDate,
+} from './voucher-line.shared';
 import {
   percentageOf,
   round2,
@@ -35,6 +40,14 @@ import {
  * behavior. SubTotal/Total/Balance/TDS/TCS are voucher-level (Zoho's own
  * per-line-repeats-header convention — see invoice.mapper.ts), derived from
  * ledger entries for every voucher regardless of whether it has item lines.
+ *
+ * Currency Code/Exchange Rate/Account/Due Date (added 2026-09-05) — see
+ * invoice.mapper.ts's doc comment for the same fields; Account here is the
+ * inventory line's ACCOUNTINGALLOCATIONS.LIST ledger (or, for a service-only
+ * row, the voucher's own single non-tax ledger name, when unambiguous —
+ * LedgerTaxSummary.nonTaxLedgerName). This template has no per-line
+ * "Discount" column (unlike Invoice.xlsx/Credit Note.xlsx), so
+ * TallyInventoryEntry.discountPercent has nowhere to go here.
  */
 export interface ZohoBillRow {
   'Bill Date': Date | '';
@@ -42,8 +55,11 @@ export interface ZohoBillRow {
   'GST Treatment': string;
   'GST Identification Number (GSTIN)': string;
   'Vendor Name': string;
+  'Due Date': Date | '';
   'Currency Code': string;
+  'Exchange Rate': number;
   'Purchase Order Number': string;
+  Account: string;
   'Item Name': string;
   SKU: string;
   'Item Description': string;
@@ -80,8 +96,6 @@ export interface ZohoBillRow {
   'ITC Eligibility': string;
 }
 
-const DEFAULT_CURRENCY_CODE = 'INR';
-
 /** See ZohoBillRow['ITC Eligibility']'s doc comment — plain English, not a
  *  guessed Zoho enum. Blank (not "Eligible") when Tally has no GST
  *  classification for the item at all, since "eligible" would be asserting
@@ -100,6 +114,7 @@ export class BillMapper {
 
   private toBillRowsForVoucher(voucher: TallyVoucher): ZohoBillRow[] {
     const summary = summarizeLedgerEntries(voucher.ledgerEntries, voucher.partyLedgerName);
+    const currency = resolveVoucherCurrency(voucher);
 
     const common: Pick<
       ZohoBillRow,
@@ -108,7 +123,9 @@ export class BillMapper {
       | 'GST Treatment'
       | 'GST Identification Number (GSTIN)'
       | 'Vendor Name'
+      | 'Due Date'
       | 'Currency Code'
+      | 'Exchange Rate'
       | 'Purchase Order Number'
       | 'Vendor Notes'
       | 'TDS Name'
@@ -121,7 +138,9 @@ export class BillMapper {
       'GST Treatment': resolveGstTreatment(voucher.partyGstin),
       'GST Identification Number (GSTIN)': voucher.partyGstin ?? '',
       'Vendor Name': voucher.partyLedgerName ?? '',
-      'Currency Code': DEFAULT_CURRENCY_CODE,
+      'Due Date': addDaysToTallyDate(voucher.date, summary.partyBillCreditPeriodDays),
+      'Currency Code': currency.currencyCode,
+      'Exchange Rate': currency.exchangeRate,
       // Tally has no dedicated "linked Purchase Order" field on a Purchase
       // voucher; the Ref# field (`reference`) is the closest genuine source
       // — commonly used for exactly this purpose — but is a free-text field
@@ -154,6 +173,7 @@ export class BillMapper {
 
       return lines.map(({ line, item, tax, taxAmount }) => ({
         ...common,
+        Account: line.accountLedgerName ?? '',
         'Item Name': line.stockItemName,
         SKU: item?.alias ?? '',
         'Item Description': item?.description ?? '',
@@ -191,6 +211,7 @@ export class BillMapper {
     return [
       {
         ...common,
+        Account: summary.nonTaxLedgerName,
         'Item Name': '',
         SKU: '',
         'Item Description': '',

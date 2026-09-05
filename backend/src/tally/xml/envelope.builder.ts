@@ -204,6 +204,15 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>PINCODE</NATIVEMETHOD>
         <NATIVEMETHOD>BANKDETAILS</NATIVEMETHOD>
         <NATIVEMETHOD>PAYMENTDETAILS.LIST</NATIVEMETHOD>
+        <!--
+          Website/CreditLimit/LedgerContact added 2026-09-05, VERIFIED live —
+          see TallyLedger.website's doc comment. Genuinely sparse (1/1409
+          real ledgers populated) but confirmed correct field names, not a
+          guess: that one ledger returned real values for all three.
+        -->
+        <NATIVEMETHOD>WEBSITE</NATIVEMETHOD>
+        <NATIVEMETHOD>CREDITLIMIT</NATIVEMETHOD>
+        <NATIVEMETHOD>LEDGERCONTACT</NATIVEMETHOD>
         ${this.alterIdRangeFilterRef(alterIdRange)}
       </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(
@@ -426,6 +435,16 @@ export class EnvelopeBuilder {
         <FETCH>AlterID</FETCH>
         <FETCH>PartyGSTIN</FETCH>
         <FETCH>PlaceOfSupply</FETCH>
+        <!--
+          ConsigneeStateName added 2026-09-05, VERIFIED live: a real GST
+          e-invoice field that's populated for several real export
+          vouchers (foreign customers) where PlaceOfSupply itself comes
+          back blank — e.g. Coredge/25-26/107 to "ADI DLT Foundation"
+          (Abu Dhabi) has PlaceOfSupply empty but ConsigneeStateName
+          "Abu Dhabi". Used as a fallback in mapVoucher, not a
+          replacement — PlaceOfSupply wins when Tally does populate it.
+        -->
+        <FETCH>ConsigneeStateName</FETCH>
         <FETCH>AllLedgerEntries.List</FETCH>
         <FETCH>AllInventoryEntries.List</FETCH>
         <FILTER>VoucherDateRangeFilter</FILTER>

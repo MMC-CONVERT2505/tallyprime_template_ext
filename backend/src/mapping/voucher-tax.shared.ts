@@ -24,6 +24,24 @@ export interface LedgerTaxSummary {
    *  as the line-item base for a voucher with no inventory lines to sum
    *  instead. */
   nonTaxLedgerTotal: number;
+  /**
+   * The name of that same non-tax ledger — added 2026-09-05, powers
+   * Invoice.xlsx/Bill.xlsx/Credit Note.xlsx's "Account" column for a
+   * ledger-only (service) row, the same way `line.accountLedgerName` powers
+   * it for an item-based line. Empty when more than one distinct non-tax
+   * ledger is posted (no single "the" account to report — matches the
+   * existing "amount" total's own single-base assumption for this same
+   * case) or when none was found.
+   */
+  nonTaxLedgerName: string;
+  /**
+   * The party ledger entry's own BILLALLOCATIONS.LIST -> BILLCREDITPERIOD —
+   * added 2026-09-05, powers Invoice.xlsx/Bill.xlsx's "Due Date" (voucher
+   * date + this many days). Null when the party entry carries no bill-wise
+   * credit period (this project's own test company never sets one — see
+   * TallyLedgerEntry.billCreditPeriodDays's doc comment).
+   */
+  partyBillCreditPeriodDays: number | null;
 }
 
 /** Zoho's fixed enum for "how was this line's tax computed" — a percentage
@@ -63,8 +81,13 @@ export function summarizeLedgerEntries(
   let tcsName = '';
   let tcsAmount: number | '' = '';
   let nonTaxLedgerTotal = 0;
+  const nonTaxLedgerNames = new Set<string>();
+  let partyBillCreditPeriodDays: number | null = null;
 
   for (const entry of entries) {
+    if (partyLedgerName && entry.ledgerName === partyLedgerName) {
+      partyBillCreditPeriodDays = entry.billCreditPeriodDays;
+    }
     if (entry.amount === null) continue;
     const abs = Math.abs(entry.amount);
 
@@ -90,6 +113,7 @@ export function summarizeLedgerEntries(
     if (partyLedgerName && entry.ledgerName === partyLedgerName) continue;
 
     nonTaxLedgerTotal += abs;
+    nonTaxLedgerNames.add(entry.ledgerName);
   }
 
   return {
@@ -100,6 +124,8 @@ export function summarizeLedgerEntries(
     tcsName,
     tcsAmount: tcsAmount === '' ? '' : round2(tcsAmount),
     nonTaxLedgerTotal: round2(nonTaxLedgerTotal),
+    nonTaxLedgerName: nonTaxLedgerNames.size === 1 ? [...nonTaxLedgerNames][0] : '',
+    partyBillCreditPeriodDays,
   };
 }
 

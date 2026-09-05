@@ -258,8 +258,13 @@ describe('full Tally -> Zoho export pipeline (all 9 templates)', () => {
       expect(cell(sheet, 4, 'Alias Name')).toBeFalsy(); // no alias in Tally for this one
       expect(cell(sheet, 4, 'Stock On Hand')).toBe(300);
       expect(cell(sheet, 4, 'Intra State Tax Name')).toBe('GST5');
-      // No Tally source for these — must stay blank.
-      expect(cell(sheet, 2, 'SKU')).toBeFalsy();
+      // Item.xlsx has both a "SKU" and a separate "Alias Name" column — both
+      // get the same TallyStockItem.alias value (see stock-item.mapper.ts's
+      // doc comment), so row 2 (which has an alias) carries it on both.
+      expect(cell(sheet, 2, 'SKU')).toBe('WID-A');
+      // Row 4 has no alias in Tally, so both stay blank.
+      expect(cell(sheet, 4, 'SKU')).toBeFalsy();
+      // No Tally source for this — must stay blank.
       expect(cell(sheet, 2, 'Rate')).toBeFalsy();
     });
   });

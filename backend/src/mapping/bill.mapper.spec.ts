@@ -37,7 +37,7 @@ describe('BillMapper', () => {
     inventoryEntries: [],
     partyGstin: null,
     placeOfSupply: null,
-    ...overrides,
+    currencyCode: null, exchangeRate: null, ...overrides,
   });
 
   const ledger = (overrides: Partial<TallyLedgerEntry>): TallyLedgerEntry => ({
@@ -45,7 +45,7 @@ describe('BillMapper', () => {
     amount: null,
     isDeemedPositive: null,
     isDebit: null,
-    ...overrides,
+    billCreditPeriodDays: null, ...overrides,
   });
 
   describe('item-based bills (inventory lines present)', () => {
@@ -54,7 +54,7 @@ describe('BillMapper', () => {
       const mapper = new BillMapper(itemIndex);
       const [row] = mapper.toBillRows([
         voucher({
-          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 2, rate: 500, amount: 1000 }],
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 2, rate: 500, amount: 1000 , discountPercent: null, accountLedgerName: null }],
         }),
       ]);
 
@@ -69,7 +69,7 @@ describe('BillMapper', () => {
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [
-            { stockItemName: 'Widget A', quantity: 1, rate: 33.33, amount: 33.33 },
+            { stockItemName: 'Widget A', quantity: 1, rate: 33.33, amount: 33.33 , discountPercent: null, accountLedgerName: null },
           ],
         }),
       ]);
@@ -81,7 +81,7 @@ describe('BillMapper', () => {
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [
-            { stockItemName: 'Unknown Item', quantity: 1, rate: 100, amount: 100 },
+            { stockItemName: 'Unknown Item', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null },
           ],
         }),
       ]);
@@ -93,7 +93,7 @@ describe('BillMapper', () => {
       const mapper = new BillMapper(itemIndex);
       const [row] = mapper.toBillRows([
         voucher({
-          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 }],
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
         }),
       ]);
       expect(row['Tax Type']).toBe('ItemAmount');
@@ -104,7 +104,7 @@ describe('BillMapper', () => {
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [
-            { stockItemName: 'Unknown Item', quantity: 1, rate: 100, amount: 100 },
+            { stockItemName: 'Unknown Item', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null },
           ],
         }),
       ]);
@@ -120,8 +120,8 @@ describe('BillMapper', () => {
       const rows = mapper.toBillRows([
         voucher({
           inventoryEntries: [
-            { stockItemName: 'A', quantity: 1, rate: 100, amount: 100 },
-            { stockItemName: 'B', quantity: 1, rate: 200, amount: 200 },
+            { stockItemName: 'A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null },
+            { stockItemName: 'B', quantity: 1, rate: 200, amount: 200 , discountPercent: null, accountLedgerName: null },
           ],
         }),
       ]);
@@ -140,7 +140,7 @@ describe('BillMapper', () => {
       const mapper = new BillMapper(itemIndex);
       const [row] = mapper.toBillRows([
         voucher({
-          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 }],
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
         }),
       ]);
       expect(row['HSN/SAC']).toBe('998314');
@@ -161,8 +161,8 @@ describe('BillMapper', () => {
           voucherNumber: 'BILL-SVC-1',
           partyLedgerName: 'Acme Consulting',
           ledgerEntries: [
-            ledger({ ledgerName: 'Professional Fees', amount: -50000, isDebit: true }),
-            ledger({ ledgerName: 'Acme Consulting', amount: 50000, isDebit: false }),
+            ledger({ ledgerName: 'Professional Fees', amount: -50000, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Acme Consulting', amount: 50000, isDebit: false , billCreditPeriodDays: null }),
           ],
         }),
       ]);
@@ -182,11 +182,11 @@ describe('BillMapper', () => {
           partyLedgerName: 'Celebration',
           partyGstin: '27ATWPK0907H1ZE',
           ledgerEntries: [
-            ledger({ ledgerName: 'Marketing Expenses', amount: -92242, isDebit: true }),
-            ledger({ ledgerName: 'Input IGST', amount: -16603.56, isDebit: true }),
-            ledger({ ledgerName: 'TDS on Contractor', amount: 1845, isDebit: false }),
-            ledger({ ledgerName: 'Celebration', amount: 107000, isDebit: false }),
-            ledger({ ledgerName: 'Round Off', amount: 0.56, isDebit: false }),
+            ledger({ ledgerName: 'Marketing Expenses', amount: -92242, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Input IGST', amount: -16603.56, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'TDS on Contractor', amount: 1845, isDebit: false , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Celebration', amount: 107000, isDebit: false , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Round Off', amount: 0.56, isDebit: false , billCreditPeriodDays: null }),
           ],
         }),
       ]);
@@ -208,10 +208,10 @@ describe('BillMapper', () => {
         voucher({
           partyLedgerName: 'Landlord',
           ledgerEntries: [
-            ledger({ ledgerName: 'Office Rent', amount: -10000, isDebit: true }),
-            ledger({ ledgerName: 'Input CGST', amount: -900, isDebit: true }),
-            ledger({ ledgerName: 'Input SGST', amount: -900, isDebit: true }),
-            ledger({ ledgerName: 'Landlord', amount: 11800, isDebit: false }),
+            ledger({ ledgerName: 'Office Rent', amount: -10000, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Input CGST', amount: -900, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Input SGST', amount: -900, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Landlord', amount: 11800, isDebit: false , billCreditPeriodDays: null }),
           ],
         }),
       ]);
@@ -228,9 +228,9 @@ describe('BillMapper', () => {
         voucher({
           partyLedgerName: 'Vendor',
           ledgerEntries: [
-            ledger({ ledgerName: 'Scrap Purchase', amount: -100000, isDebit: true }),
-            ledger({ ledgerName: 'TCS Payable', amount: 5000, isDebit: false }),
-            ledger({ ledgerName: 'Vendor', amount: 105000, isDebit: false }),
+            ledger({ ledgerName: 'Scrap Purchase', amount: -100000, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'TCS Payable', amount: 5000, isDebit: false , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Vendor', amount: 105000, isDebit: false , billCreditPeriodDays: null }),
           ],
         }),
       ]);
@@ -247,8 +247,8 @@ describe('BillMapper', () => {
           partyGstin: null,
           partyLedgerName: 'Local Vendor',
           ledgerEntries: [
-            ledger({ ledgerName: 'Office Supplies', amount: -500, isDebit: true }),
-            ledger({ ledgerName: 'Local Vendor', amount: 500, isDebit: false }),
+            ledger({ ledgerName: 'Office Supplies', amount: -500, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Local Vendor', amount: 500, isDebit: false , billCreditPeriodDays: null }),
           ],
         }),
       ]);
@@ -274,7 +274,7 @@ describe('BillMapper', () => {
       const [row] = mapper.toBillRows([
         voucher({
           partyGstin: '33AAAAA1111A1Z1',
-          inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: 10, amount: 10 }],
+          inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: 10, amount: 10 , discountPercent: null, accountLedgerName: null }],
         }),
       ]);
       expect(row['GST Treatment']).toBe('business_gst');
@@ -286,7 +286,7 @@ describe('BillMapper', () => {
       const [row] = mapper.toBillRows([
         voucher({
           reference: 'PO-00031',
-          inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: 10, amount: 10 }],
+          inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: 10, amount: 10 , discountPercent: null, accountLedgerName: null }],
         }),
       ]);
       expect(row['Purchase Order Number']).toBe('PO-00031');
@@ -299,7 +299,7 @@ describe('BillMapper', () => {
           voucherNumber: 'BILL-42',
           date: '20260115',
           partyLedgerName: 'David',
-          inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: 10, amount: 10 }],
+          inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: 10, amount: 10 , discountPercent: null, accountLedgerName: null }],
         }),
       ]);
       expect(row['Bill Number']).toBe('BILL-42');
@@ -318,20 +318,20 @@ describe('BillMapper', () => {
       const rows = mapper.toBillRows([
         voucher({
           voucherNumber: 'BILL-1',
-          inventoryEntries: [{ stockItemName: 'Goods', quantity: 1, rate: 100, amount: 100 }],
+          inventoryEntries: [{ stockItemName: 'Goods', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
         }),
         voucher({
           voucherNumber: 'BILL-2',
           ledgerEntries: [
-            ledger({ ledgerName: 'Consulting Fees', amount: -200, isDebit: true }),
-            ledger({ ledgerName: 'Vendor', amount: 200, isDebit: false }),
+            ledger({ ledgerName: 'Consulting Fees', amount: -200, isDebit: true , billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Vendor', amount: 200, isDebit: false , billCreditPeriodDays: null }),
           ],
         }),
         voucher({
           voucherNumber: 'BILL-3',
           inventoryEntries: [
-            { stockItemName: 'Goods', quantity: 1, rate: 100, amount: 100 },
-            { stockItemName: 'Goods', quantity: 2, rate: 50, amount: 100 },
+            { stockItemName: 'Goods', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null },
+            { stockItemName: 'Goods', quantity: 2, rate: 50, amount: 100 , discountPercent: null, accountLedgerName: null },
           ],
         }),
       ]);
@@ -339,6 +339,101 @@ describe('BillMapper', () => {
       const billNumbers = rows.map((r) => r['Bill Number']);
       expect(billNumbers).toEqual(['BILL-1', 'BILL-2', 'BILL-3', 'BILL-3']);
       expect(rows).toHaveLength(4); // 1 + 1 + 2 lines
+    });
+  });
+
+  describe('Currency Code/Exchange Rate/Account/Due Date (2026-09-05 field-mapping pass)', () => {
+    it('defaults to INR/1 when the voucher carries no foreign-currency data', () => {
+      const mapper = new BillMapper(buildStockItemIndex([]));
+      const [row] = mapper.toBillRows([
+        voucher({
+          inventoryEntries: [
+            { stockItemName: 'X', quantity: 1, rate: 10, amount: 10, discountPercent: null, accountLedgerName: null },
+          ],
+        }),
+      ]);
+      expect(row['Currency Code']).toBe('INR');
+      expect(row['Exchange Rate']).toBe(1);
+    });
+
+    it('carries the voucher\'s real foreign currency code and exchange rate', () => {
+      const mapper = new BillMapper(buildStockItemIndex([]));
+      const [row] = mapper.toBillRows([
+        voucher({
+          currencyCode: 'USD',
+          exchangeRate: 95.021,
+          inventoryEntries: [
+            { stockItemName: 'X', quantity: 1, rate: 10, amount: 10, discountPercent: null, accountLedgerName: null },
+          ],
+        }),
+      ]);
+      expect(row['Currency Code']).toBe('USD');
+      expect(row['Exchange Rate']).toBe(95.021);
+    });
+
+    it('maps an inventory line\'s own posted account, distinct from the item master', () => {
+      const mapper = new BillMapper(buildStockItemIndex([]));
+      const [row] = mapper.toBillRows([
+        voucher({
+          inventoryEntries: [
+            {
+              stockItemName: 'X',
+              quantity: 1,
+              rate: 10,
+              amount: 10,
+              discountPercent: null,
+              accountLedgerName: 'Purchase - Raw Materials',
+            },
+          ],
+        }),
+      ]);
+      expect(row.Account).toBe('Purchase - Raw Materials');
+    });
+
+    it('uses the single non-tax ledger name as Account on a service-only row', () => {
+      const mapper = new BillMapper(buildStockItemIndex([]));
+      const [row] = mapper.toBillRows([
+        voucher({
+          partyLedgerName: 'Acme Consulting',
+          ledgerEntries: [
+            ledger({ ledgerName: 'Professional Fees', amount: -50000, isDebit: true }),
+            ledger({ ledgerName: 'Acme Consulting', amount: 50000, isDebit: false }),
+          ],
+        }),
+      ]);
+      expect(row.Account).toBe('Professional Fees');
+    });
+
+    it('computes Due Date from the voucher date plus the vendor\'s bill-wise credit period', () => {
+      const mapper = new BillMapper(buildStockItemIndex([]));
+      const [row] = mapper.toBillRows([
+        voucher({
+          date: '20250415',
+          partyLedgerName: 'Reliable Supplies Co',
+          ledgerEntries: [
+            ledger({ ledgerName: 'Purchases', amount: -10000, isDebit: true }),
+            ledger({
+              ledgerName: 'Reliable Supplies Co',
+              amount: 10000,
+              isDebit: false,
+              billCreditPeriodDays: 45,
+            }),
+          ],
+        }),
+      ]);
+      expect(row['Due Date']).toEqual(new Date(Date.UTC(2025, 4, 30, 12)));
+    });
+
+    it('leaves Due Date blank when no bill-wise credit period is set', () => {
+      const mapper = new BillMapper(buildStockItemIndex([]));
+      const [row] = mapper.toBillRows([
+        voucher({
+          inventoryEntries: [
+            { stockItemName: 'X', quantity: 1, rate: 10, amount: 10, discountPercent: null, accountLedgerName: null },
+          ],
+        }),
+      ]);
+      expect(row['Due Date']).toBe('');
     });
   });
 });

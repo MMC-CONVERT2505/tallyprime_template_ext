@@ -24,6 +24,9 @@ describe('VendorMapper', () => {
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
   };
 
   it('includes only ledgers resolving to Sundry Creditors', () => {
@@ -67,5 +70,20 @@ describe('VendorMapper', () => {
     expect(row.Notes).toBe('Preferred hardware supplier');
     expect(row['Billing Address']).toBe('Plot 12, Industrial Area');
     expect(row['Billing Street2']).toBe('Phase 2');
+  });
+
+  it('maps Website/Conact Display Name — Vendor.xlsx has no Credit Limit column (2026-09-05 field-mapping pass)', () => {
+    const [row] = mapper.toVendorRows([
+      { ...baseLedger, website: 'ssss123.com', contactPersonName: 'RR Patil' },
+    ]);
+    expect(row.Website).toBe('ssss123.com');
+    expect(row['Conact Display Name']).toBe('RR Patil');
+    expect(row).not.toHaveProperty('Credit Limit');
+  });
+
+  it('leaves Website/Conact Display Name blank rather than guessing when the ledger has none', () => {
+    const [row] = mapper.toVendorRows([baseLedger]);
+    expect(row.Website).toBe('');
+    expect(row['Conact Display Name']).toBe('');
   });
 });

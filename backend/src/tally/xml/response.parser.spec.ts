@@ -83,6 +83,9 @@ describe('TallyResponseParser', () => {
         billingPincode: null,
         bankName: null,
         bankAccountNumber: null,
+        website: null,
+        creditLimit: null,
+        contactPersonName: null,
       };
       expect(ledgers[0]).toEqual({
         name: 'Cash',
@@ -138,6 +141,26 @@ describe('TallyResponseParser', () => {
       // bankAccountNumber falls back to the legacy flat field.
       expect(ledger.bankName).toBeNull();
       expect(ledger.bankAccountNumber).toBe('000123456789');
+    });
+
+    it('parses Website/CreditLimit/LedgerContact, null when the ledger carries none', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<LEDGER><NAME>Sachin</NAME>' +
+        '<WEBSITE>ssss123.com</WEBSITE>' +
+        '<CREDITLIMIT>36000.00</CREDITLIMIT>' +
+        '<LEDGERCONTACT>RR Patil</LEDGERCONTACT>' +
+        '</LEDGER>' +
+        '<LEDGER><NAME>No Extras</NAME></LEDGER>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+
+      const [withExtras, withoutExtras] = parser.mapLedgers(xml);
+      expect(withExtras.website).toBe('ssss123.com');
+      expect(withExtras.creditLimit).toBe(36000);
+      expect(withExtras.contactPersonName).toBe('RR Patil');
+      expect(withoutExtras.website).toBeNull();
+      expect(withoutExtras.creditLimit).toBeNull();
+      expect(withoutExtras.contactPersonName).toBeNull();
     });
 
     it('prefers PAYMENTDETAILS.LIST over the legacy flat BANKDETAILS field for a vendors real payment bank details', () => {
@@ -433,7 +456,14 @@ describe('TallyResponseParser', () => {
       });
       expect(voucher.ledgerEntries).toHaveLength(2);
       expect(voucher.inventoryEntries).toEqual([
-        { stockItemName: 'Widget A', quantity: null, rate: null, amount: 10000 },
+        {
+          stockItemName: 'Widget A',
+          quantity: null,
+          rate: null,
+          amount: 10000,
+          discountPercent: null,
+          accountLedgerName: null,
+        },
       ]);
     });
 
@@ -451,6 +481,30 @@ describe('TallyResponseParser', () => {
       const [withoutGst] = parser.mapVouchers(salesVoucher);
       expect(withoutGst.partyGstin).toBeNull();
       expect(withoutGst.placeOfSupply).toBeNull();
+    });
+
+    it('falls back to ConsigneeStateName for Place of Supply on a real export voucher with no PlaceOfSupply — a live 2026-09-05 finding (Coredge/25-26/107 to a UAE customer)', () => {
+      const xml =
+        '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Sales">' +
+        '<VOUCHERNUMBER>Coredge/25-26/107</VOUCHERNUMBER>' +
+        '<CONSIGNEESTATENAME>Abu Dhabi</CONSIGNEESTATENAME>' +
+        '</VOUCHER></TALLYMESSAGE>' +
+        '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>';
+      const [voucher] = parser.mapVouchers(xml);
+      expect(voucher.placeOfSupply).toBe('Abu Dhabi');
+    });
+
+    it('prefers a real PlaceOfSupply over ConsigneeStateName when both are present', () => {
+      const xml =
+        '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Sales">' +
+        '<PLACEOFSUPPLY>Tamil Nadu</PLACEOFSUPPLY>' +
+        '<CONSIGNEESTATENAME>Abu Dhabi</CONSIGNEESTATENAME>' +
+        '</VOUCHER></TALLYMESSAGE>' +
+        '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>';
+      const [voucher] = parser.mapVouchers(xml);
+      expect(voucher.placeOfSupply).toBe('Tamil Nadu');
     });
 
     it('resolves Dr/Cr from ISDEEMEDPOSITIVE + amount sign', () => {
@@ -484,6 +538,33 @@ describe('TallyResponseParser', () => {
       const [voucher] = parser.mapVouchers(xml);
       expect(voucher.ledgerEntries).toHaveLength(1);
       expect(voucher.ledgerEntries[0]).toMatchObject({ ledgerName: 'Only One', amount: 50 });
+    });
+
+    it('treats a genuinely empty ALLINVENTORYENTRIES.LIST tag as zero entries, not a phantom one — a real live bug (2026-09-05): a ledger-only Sales voucher with no stock items came back misclassified as item-based because fast-xml-parser turns an empty tag into \'\', and toArray(\'\') wrongly produced a one-element array', () => {
+      const xml =
+        '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Sales">' +
+        '<VOUCHERNUMBER>INV-SVC-1</VOUCHERNUMBER>' +
+        '<ALLLEDGERENTRIES.LIST><LEDGERNAME>Consulting Income</LEDGERNAME><AMOUNT>50000.00</AMOUNT></ALLLEDGERENTRIES.LIST>' +
+        '<ALLLEDGERENTRIES.LIST><LEDGERNAME>Acme Consulting</LEDGERNAME><AMOUNT>-50000.00</AMOUNT></ALLLEDGERENTRIES.LIST>' +
+        '<ALLINVENTORYENTRIES.LIST></ALLINVENTORYENTRIES.LIST>' +
+        '</VOUCHER></TALLYMESSAGE>' +
+        '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>';
+      const [voucher] = parser.mapVouchers(xml);
+      expect(voucher.inventoryEntries).toEqual([]);
+      expect(voucher.ledgerEntries).toHaveLength(2);
+    });
+
+    it('treats a genuinely empty ALLLEDGERENTRIES.LIST tag as zero entries, not a phantom one', () => {
+      const xml =
+        '<ENVELOPE><BODY><IMPORTDATA><REQUESTDATA>' +
+        '<TALLYMESSAGE><VOUCHER VCHTYPE="Journal">' +
+        '<VOUCHERNUMBER>J-EMPTY</VOUCHERNUMBER>' +
+        '<ALLLEDGERENTRIES.LIST></ALLLEDGERENTRIES.LIST>' +
+        '</VOUCHER></TALLYMESSAGE>' +
+        '</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>';
+      const [voucher] = parser.mapVouchers(xml);
+      expect(voucher.ledgerEntries).toEqual([]);
     });
 
     it('falls back to BODY.DATA.TALLYMESSAGE for Tally builds that answer that way', () => {

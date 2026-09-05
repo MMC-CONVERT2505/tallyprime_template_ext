@@ -12,10 +12,13 @@ import {
  * sheet "Vendor"). See customer.mapper.ts's doc comment for the same
  * "populate what Tally can genuinely supply, leave the rest blank" rule;
  * Vendor additionally gets Bank Name/Bank Account Number, which Customer.xlsx
- * has no columns for at all.
+ * has no columns for at all. Vendor.xlsx has no "Credit Limit" column
+ * (unlike Customer.xlsx) — that's an AR-side concept.
  */
 export interface ZohoVendorRow {
   'Display Name': string;
+  /** Added 2026-09-05 — see customer.mapper.ts's identical field. */
+  'Company Name': string;
   'Currency Code': string;
   EmailID: string;
   Phone: string;
@@ -37,6 +40,9 @@ export interface ZohoVendorRow {
   Notes: string;
   'Bank Name': string;
   'Bank Account Number': string;
+  /** Added 2026-09-05 — see customer.mapper.ts's identical fields. */
+  Website: string;
+  'Conact Display Name': string;
 }
 
 const DEFAULT_CURRENCY_CODE = 'INR';
@@ -56,6 +62,7 @@ export class VendorMapper {
     const address = splitBillingAddress(ledger.billingAddress);
     return {
       'Display Name': ledger.name,
+      'Company Name': ledger.name,
       'Currency Code': DEFAULT_CURRENCY_CODE,
       EmailID: ledger.email ?? '',
       Phone: ledger.phone ?? '',
@@ -73,6 +80,8 @@ export class VendorMapper {
       Notes: ledger.description ?? '',
       'Bank Name': ledger.bankName ?? '',
       'Bank Account Number': ledger.bankAccountNumber ?? '',
+      Website: ledger.website ?? '',
+      'Conact Display Name': ledger.contactPersonName ?? '',
     };
   }
 }

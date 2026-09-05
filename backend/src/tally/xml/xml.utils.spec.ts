@@ -1,6 +1,7 @@
 import {
   escapeXml,
   parseTallyAmount,
+  parseTallyForeignAmount,
   readInt,
   readText,
   readYesNo,
@@ -59,6 +60,58 @@ describe('xml.utils', () => {
       expect(parseTallyAmount('-')).toBeNull();
       expect(parseTallyAmount(undefined)).toBeNull();
       expect(parseTallyAmount(null)).toBeNull();
+    });
+
+    // Confirmed live 2026-08-25: a same-currency (₹-on-both-sides) quantity/
+    // rate breakdown must still resolve via the FIRST segment, exactly as
+    // before — parseTallyForeignAmount below is what handles a genuine
+    // currency change; this function must not regress this live incident.
+    it('takes the first segment for a same-currency quantity/rate breakdown, not the total', () => {
+      expect(parseTallyAmount('-₹638667.00 @ ₹ 25/? = -₹ 15966675.00')).toBe(-638667);
+    });
+  });
+
+  describe('parseTallyForeignAmount', () => {
+    it('returns the converted (INR) amount for a genuine foreign-currency entry, not the face value', () => {
+      // Confirmed live 2026-09-05: 76,225 USD @ 95.021 -> ~72.4 lakh INR;
+      // plain parseTallyAmount would silently return 76225 (the dollar face
+      // value), understating this line by ~95x.
+      const result = parseTallyForeignAmount('76225.00 $ @ ? 95.021/ $ = ? 7242975.73');
+      expect(result.amount).toBeCloseTo(7242975.73);
+      expect(result.currencyCode).toBe('USD');
+      expect(result.foreignAmount).toBe(76225);
+      expect(result.exchangeRate).toBeCloseTo(95.021);
+    });
+
+    it('preserves a negative sign from the front of the string onto the converted amount', () => {
+      const result = parseTallyForeignAmount('-76225.00 $ @ ? 95.021/ $ = ? 7242975.73');
+      expect(result.amount).toBeCloseTo(-7242975.73);
+    });
+
+    it('falls back to plain parseTallyAmount for a same-currency (₹-only) breakdown', () => {
+      const result = parseTallyForeignAmount('-₹638667.00 @ ₹ 25/? = -₹ 15966675.00');
+      expect(result.amount).toBe(-638667);
+      expect(result.currencyCode).toBeNull();
+      expect(result.exchangeRate).toBeNull();
+    });
+
+    it('falls back to plain parseTallyAmount for an ordinary domestic amount', () => {
+      const result = parseTallyForeignAmount('-11800.00');
+      expect(result.amount).toBe(-11800);
+      expect(result.currencyCode).toBeNull();
+    });
+
+    it('handles a RATE-shaped string with no "@" (per-unit rate, no exchange-rate segment)', () => {
+      const result = parseTallyForeignAmount('762.25 $ = ? 72429.76/Nodes');
+      expect(result.amount).toBeCloseTo(72429.76);
+      expect(result.currencyCode).toBe('USD');
+      expect(result.foreignAmount).toBeNull();
+      expect(result.exchangeRate).toBeNull();
+    });
+
+    it('returns nulls for empty/missing values', () => {
+      expect(parseTallyForeignAmount('').amount).toBeNull();
+      expect(parseTallyForeignAmount(undefined).amount).toBeNull();
     });
   });
 

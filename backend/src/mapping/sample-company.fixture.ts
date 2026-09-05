@@ -44,6 +44,9 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: '400001',
     bankName: null,
     bankAccountNumber: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
   },
   {
     name: 'Priya Distributors',
@@ -64,6 +67,9 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: '700016',
     bankName: null,
     bankAccountNumber: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
   },
   {
     name: 'Global Supplies Pvt Ltd',
@@ -84,6 +90,9 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: '560001',
     bankName: 'HDFC Bank',
     bankAccountNumber: '50100123456789',
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
   },
   {
     name: 'Office Rent',
@@ -104,6 +113,9 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
   },
   {
     name: 'HDFC Bank Current A/c',
@@ -124,6 +136,9 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
   },
 ];
 
@@ -194,12 +209,12 @@ export const SAMPLE_SALES_VOUCHER: TallyVoucher = {
   alterId: 401,
   ledgerEntries: [],
   inventoryEntries: [
-    { stockItemName: 'Widget A', quantity: 10, rate: 250, amount: 2500 },
-    { stockItemName: 'Widget B', quantity: 5, rate: 400, amount: 2000 },
+    { stockItemName: 'Widget A', quantity: 10, rate: 250, amount: 2500 , discountPercent: null, accountLedgerName: null },
+    { stockItemName: 'Widget B', quantity: 5, rate: 400, amount: 2000 , discountPercent: null, accountLedgerName: null },
   ],
   partyGstin: '27AABCU9603R1ZM',
   placeOfSupply: 'Maharashtra',
-};
+ currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_SALES_VOUCHER_2: TallyVoucher = {
   date: '20260408',
@@ -210,10 +225,10 @@ export const SAMPLE_SALES_VOUCHER_2: TallyVoucher = {
   reference: null,
   alterId: 405,
   ledgerEntries: [],
-  inventoryEntries: [{ stockItemName: 'Widget B', quantity: 20, rate: 380, amount: 7600 }],
+  inventoryEntries: [{ stockItemName: 'Widget B', quantity: 20, rate: 380, amount: 7600 , discountPercent: null, accountLedgerName: null }],
   partyGstin: '19AACPD1122K1ZQ',
   placeOfSupply: 'West Bengal',
-};
+ currencyCode: null, exchangeRate: null };
 
 /** A genuine ledger-only Sales voucher — a service invoice recorded in
  *  Tally's accounting-only mode, no stock item at all. Must still produce
@@ -231,14 +246,14 @@ export const SAMPLE_LEDGER_ONLY_SALES_VOUCHER: TallyVoucher = {
   reference: null,
   alterId: 406,
   ledgerEntries: [
-    { ledgerName: 'Consulting Income', amount: -5000, isDeemedPositive: true, isDebit: false },
-    { ledgerName: 'Output IGST', amount: -900, isDeemedPositive: true, isDebit: false },
-    { ledgerName: 'Rohan Traders', amount: 5900, isDeemedPositive: false, isDebit: true },
+    { ledgerName: 'Consulting Income', amount: -5000, isDeemedPositive: true, isDebit: false , billCreditPeriodDays: null },
+    { ledgerName: 'Output IGST', amount: -900, isDeemedPositive: true, isDebit: false , billCreditPeriodDays: null },
+    { ledgerName: 'Rohan Traders', amount: 5900, isDeemedPositive: false, isDebit: true , billCreditPeriodDays: null },
   ],
   inventoryEntries: [],
   partyGstin: '27AABCU9603R1ZM',
   placeOfSupply: 'Maharashtra',
-};
+ currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_PURCHASE_VOUCHER: TallyVoucher = {
   date: '20260410',
@@ -251,18 +266,18 @@ export const SAMPLE_PURCHASE_VOUCHER: TallyVoucher = {
   // TDS deducted at source (2% of the 20000 item value) — exercises
   // Bill.xlsx's ledger-derived TDS Name/Amount/Percentage columns.
   ledgerEntries: [
-    { ledgerName: 'TDS on Contractor', amount: 400, isDeemedPositive: false, isDebit: false },
+    { ledgerName: 'TDS on Contractor', amount: 400, isDeemedPositive: false, isDebit: false , billCreditPeriodDays: null },
     {
       ledgerName: 'Global Supplies Pvt Ltd',
       amount: -20600,
       isDeemedPositive: false,
       isDebit: false,
-    },
+     billCreditPeriodDays: null },
   ],
-  inventoryEntries: [{ stockItemName: 'Raw Material X', quantity: 200, rate: 100, amount: 20000 }],
+  inventoryEntries: [{ stockItemName: 'Raw Material X', quantity: 200, rate: 100, amount: 20000 , discountPercent: null, accountLedgerName: null }],
   partyGstin: '29AAACG1234F1Z5',
   placeOfSupply: 'Karnataka',
-};
+ currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_CREDIT_NOTE_VOUCHER: TallyVoucher = {
   date: '20260415',
@@ -273,10 +288,10 @@ export const SAMPLE_CREDIT_NOTE_VOUCHER: TallyVoucher = {
   reference: 'RMA-2026-01',
   alterId: 403,
   ledgerEntries: [],
-  inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 250, amount: 250 }],
+  inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 250, amount: 250 , discountPercent: null, accountLedgerName: null }],
   partyGstin: '27AABCU9603R1ZM',
   placeOfSupply: 'Maharashtra',
-};
+ currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_STOCK_JOURNAL_VOUCHER: TallyVoucher = {
   date: '20260420',
@@ -288,12 +303,12 @@ export const SAMPLE_STOCK_JOURNAL_VOUCHER: TallyVoucher = {
   alterId: 404,
   ledgerEntries: [],
   inventoryEntries: [
-    { stockItemName: 'Widget A', quantity: -2, rate: 250, amount: -500 },
-    { stockItemName: 'Raw Material X', quantity: 10, rate: 100, amount: 1000 },
+    { stockItemName: 'Widget A', quantity: -2, rate: 250, amount: -500 , discountPercent: null, accountLedgerName: null },
+    { stockItemName: 'Raw Material X', quantity: 10, rate: 100, amount: 1000 , discountPercent: null, accountLedgerName: null },
   ],
   partyGstin: null,
   placeOfSupply: null,
-};
+ currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_INVOICE_VOUCHERS: TallyVoucher[] = [
   SAMPLE_SALES_VOUCHER,
