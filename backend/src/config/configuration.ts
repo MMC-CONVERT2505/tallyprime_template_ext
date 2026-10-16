@@ -218,6 +218,17 @@ export interface ExtractionConfig {
    * on the common path — a fast Tally still answers fast.
    */
   commandTimeoutMs: number;
+  /**
+   * How long a TallyFullSyncService snapshot (every master + every voucher,
+   * cached in Redis under `tally:full:*`) stays fetchable before expiring.
+   * Deliberately much longer than `resultTtlSeconds` — that TTL is for a
+   * single job's transient result; this one is meant to survive long enough
+   * for a separate "build the Excel templates from this" step to run later,
+   * possibly a different day. Defaults to a week, matching
+   * BULK_EXPORT_RECORD_TTL_SECONDS' existing "keep this around longer"
+   * precedent below.
+   */
+  fullSyncTtlSeconds: number;
 }
 
 /**
@@ -354,6 +365,7 @@ export default (): AppConfig => {
     extraction: {
       resultTtlSeconds: toInt(process.env.EXTRACTION_RESULT_TTL_SECONDS, 3600),
       commandTimeoutMs: toInt(process.env.EXTRACTION_COMMAND_TIMEOUT_MS, 900000),
+      fullSyncTtlSeconds: toInt(process.env.TALLY_FULL_SYNC_TTL_SECONDS, 604_800),
     },
     bulkExport: {
       exportsDir: process.env.EXPORTS_DIR || 'public/exports',

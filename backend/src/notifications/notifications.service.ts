@@ -40,6 +40,40 @@ export class NotificationsService {
     });
   }
 
+  /**
+   * Unlike sendExtractionComplete's silent debug-log no-op, an unconfigured
+   * SMTP here still surfaces the code at `warn` level — this is the only way
+   * a "forgot password" flow can be exercised at all in a local/dev
+   * environment with no mail server (same "stay usable without the real
+   * infra" idea as AgentPairingService printing its pairing code to the
+   * console when unpaired). In practice this rarely matters outside
+   * production anyway, since AuthService.generateOtp already hands out a
+   * fixed, well-known code there — this path only fires for the one case
+   * where it still can't be predicted (a real, random OTP with no SMTP
+   * configured, e.g. a misconfigured staging box).
+   */
+  async sendPasswordResetOtp(to: string, otp: string): Promise<void> {
+    if (!this.transporter) {
+      this.logger.warn(`SMTP not configured — password reset code for ${to}: ${otp}`);
+      return;
+    }
+
+    const subject = 'Your password reset code';
+    const body =
+      `Your password reset code is: ${otp}\n\n` +
+      `Enter it on the login screen to set a new password. It expires in 10 minutes.\n\n` +
+      `If you didn't request this, you can safely ignore this email.`;
+
+    try {
+      await this.transporter.sendMail({ from: this.from, to, subject, text: body });
+    } catch (err) {
+      // Best-effort, like sendExtractionComplete — but unlike that one, a
+      // failed send here means the user has NO other way to get the code, so
+      // this is worth a warn, not a swallowed debug log.
+      this.logger.warn(`Could not send password reset code to ${to}: ${String(err)}`);
+    }
+  }
+
   async sendExtractionComplete(to: string, notice: ExtractionCompleteNotice): Promise<void> {
     if (!this.transporter) {
       this.logger.debug(`SMTP not configured — skipping notification for job ${notice.jobId}.`);

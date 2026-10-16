@@ -2,10 +2,17 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ExtractionJob } from '@prisma/client';
 import {
   TallyCompany,
+  TallyCostCategory,
   TallyCostCentre,
+  TallyCurrency,
+  TallyGodown,
   TallyGroup,
   TallyLedger,
+  TallyStockCategory,
+  TallyStockGroup,
   TallyStockItem,
+  TallyUnit,
+  TallyVoucherType,
 } from '../interfaces/tally.interfaces';
 import { ExtractionType, TallyExtractionServiceBase } from './tally-extraction.base';
 
@@ -75,6 +82,108 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
         const xml = this.builder.buildCostCentresRequest(resolved);
         const raw = await this.connector.post(xml);
         return this.parser.mapCostCentres(raw);
+      },
+    );
+  }
+
+  /**
+   * Remaining standard master types (added 2026-09-19 for comprehensive
+   * extraction — see TallyFullSyncService, the orchestrator that calls all
+   * of these plus getLedgers/getStockItems/getGroups/getCostCentres/
+   * getVouchers together and caches the lot in Redis). None of these need
+   * fetchLedgersBatched/fetchStockItemsBatched's AlterID-range batching —
+   * VERIFIED live that every one of them is small on a real company (0-56
+   * records), unlike Ledgers/Stock Items which can run into the thousands.
+   */
+  async getStockGroups(company?: string): Promise<TallyStockGroup[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(
+      ExtractionType.STOCK_GROUPS,
+      resolved,
+      { company: resolved },
+      async () => {
+        const xml = this.builder.buildStockGroupsRequest(resolved);
+        const raw = await this.connector.post(xml);
+        return this.parser.mapStockGroups(raw);
+      },
+    );
+  }
+
+  async getStockCategories(company?: string): Promise<TallyStockCategory[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(
+      ExtractionType.STOCK_CATEGORIES,
+      resolved,
+      { company: resolved },
+      async () => {
+        const xml = this.builder.buildStockCategoriesRequest(resolved);
+        const raw = await this.connector.post(xml);
+        return this.parser.mapStockCategories(raw);
+      },
+    );
+  }
+
+  async getUnits(company?: string): Promise<TallyUnit[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(ExtractionType.UNITS, resolved, { company: resolved }, async () => {
+      const xml = this.builder.buildUnitsRequest(resolved);
+      const raw = await this.connector.post(xml);
+      return this.parser.mapUnits(raw);
+    });
+  }
+
+  async getCurrencies(company?: string): Promise<TallyCurrency[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(
+      ExtractionType.CURRENCIES,
+      resolved,
+      { company: resolved },
+      async () => {
+        const xml = this.builder.buildCurrenciesRequest(resolved);
+        const raw = await this.connector.post(xml);
+        return this.parser.mapCurrencies(raw);
+      },
+    );
+  }
+
+  async getGodowns(company?: string): Promise<TallyGodown[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(
+      ExtractionType.GODOWNS,
+      resolved,
+      { company: resolved },
+      async () => {
+        const xml = this.builder.buildGodownsRequest(resolved);
+        const raw = await this.connector.post(xml);
+        return this.parser.mapGodowns(raw);
+      },
+    );
+  }
+
+  async getCostCategories(company?: string): Promise<TallyCostCategory[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(
+      ExtractionType.COST_CATEGORIES,
+      resolved,
+      { company: resolved },
+      async () => {
+        const xml = this.builder.buildCostCategoriesRequest(resolved);
+        const raw = await this.connector.post(xml);
+        return this.parser.mapCostCategories(raw);
+      },
+    );
+  }
+
+  async getVoucherTypes(company?: string): Promise<TallyVoucherType[]> {
+    const resolved = this.resolveCompany(company);
+    return this.runExtraction(
+      ExtractionType.VOUCHER_TYPES,
+      resolved,
+      { company: resolved },
+      async () => {
+        const xml = this.builder.buildVoucherTypesRequest(resolved);
+        const raw = await this.connector.post(xml);
+        return this.parser.mapVoucherTypes(raw);
       },
     );
   }

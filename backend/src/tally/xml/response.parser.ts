@@ -3,14 +3,21 @@ import { XMLParser } from 'fast-xml-parser';
 import { TallyResponseException } from '../exceptions/tally.exceptions';
 import {
   TallyCompany,
+  TallyCostCategory,
   TallyCostCentre,
+  TallyCurrency,
+  TallyGodown,
   TallyGroup,
   TallyInventoryEntry,
   TallyLedger,
   TallyLedgerEntry,
   TallyResponseMeta,
+  TallyStockCategory,
+  TallyStockGroup,
   TallyStockItem,
+  TallyUnit,
   TallyVoucher,
+  TallyVoucherType,
 } from '../interfaces/tally.interfaces';
 import {
   parseTallyAmount,
@@ -129,6 +136,7 @@ export class TallyResponseParser {
     const items = this.collectionItems(envelope, 'LEDGER');
     return items.map((l) => {
       const payment = this.readPaymentDetails(l?.['PAYMENTDETAILS.LIST']);
+      const gstReg = this.readLatestGstRegDetails(l?.['LEDGSTREGDETAILS.LIST']);
       return {
         name: readText(l?.NAME) ?? readText(l?.['@_NAME']) ?? '',
         parent: readText(l?.PARENT),
@@ -142,7 +150,10 @@ export class TallyResponseParser {
         // Field names verified live 2026-08-22 against a real Tally instance
         // — see EnvelopeBuilder.buildLedgersRequest's doc comment for exactly
         // what was wrong (GSTIN, BankDetails) vs. confirmed correct.
-        gstin: this.readLatestGstin(l?.['LEDGSTREGDETAILS.LIST']),
+        gstin: gstReg.gstin,
+        // See TallyLedger.gstRegistrationType/gstPlaceOfSupply's doc comments.
+        gstRegistrationType: gstReg.registrationType,
+        gstPlaceOfSupply: gstReg.placeOfSupply,
         panNumber: readText(l?.INCOMETAXNUMBER),
         email: readText(l?.EMAIL),
         phone: readText(l?.LEDGERPHONE),
@@ -163,6 +174,9 @@ export class TallyResponseParser {
         website: readText(l?.WEBSITE),
         creditLimit: parseTallyAmount(readText(l?.CREDITLIMIT)),
         contactPersonName: readText(l?.LEDGERCONTACT),
+        // See TallyLedger.mailingName/creditPeriod's doc comments.
+        mailingName: readText(l?.MAILINGNAME),
+        creditPeriod: readText(l?.BILLCREDITPERIOD),
       };
     });
   }
@@ -175,6 +189,7 @@ export class TallyResponseParser {
    * (confirmed against real data), so that entry wins when present —
    * falling back to the first entry otherwise, never fabricating a
    * preference among equals.
+   *
    */
   private readPaymentDetails(paymentDetailsList: unknown): {
     bankName: string | null;
@@ -210,15 +225,39 @@ export class TallyResponseParser {
    * GST registration (no GSTIN) and one after (with it). Not every entry
    * has a GSTIN, and Tally lists them chronologically, so the correct
    * current value is the GSTIN on the LAST entry that actually has one, not
-   * just the last entry outright.
+   * just the last entry outright. Each entry also carries
+   * GSTREGISTRATIONTYPE/PLACEOFSUPPLY alongside GSTIN — added 2026-09-10,
+   * VERIFIED live (see TallyLedger.gstRegistrationType/gstPlaceOfSupply's
+   * doc comments) — read from that same GSTIN-bearing entry so all three
+   * values describe the same registration, not three different ones. When
+   * no entry has a GSTIN at all (e.g. an unregistered party), falls back to
+   * the last entry that at least has a registration type, so
+   * "Unregistered/Consumer" ledgers (which by definition never have a
+   * GSTIN) still get a real registrationType instead of null.
    */
-  private readLatestGstin(gstRegDetails: unknown): string | null {
+  private readLatestGstRegDetails(gstRegDetails: unknown): {
+    gstin: string | null;
+    registrationType: string | null;
+    placeOfSupply: string | null;
+  } {
     const entries = toArray<any>(gstRegDetails);
     for (let i = entries.length - 1; i >= 0; i--) {
       const gstin = readText(entries[i]?.GSTIN);
-      if (gstin) return gstin;
+      if (gstin) {
+        return {
+          gstin,
+          registrationType: readText(entries[i]?.GSTREGISTRATIONTYPE),
+          placeOfSupply: readText(entries[i]?.PLACEOFSUPPLY),
+        };
+      }
     }
-    return null;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const registrationType = readText(entries[i]?.GSTREGISTRATIONTYPE);
+      if (registrationType) {
+        return { gstin: null, registrationType, placeOfSupply: readText(entries[i]?.PLACEOFSUPPLY) };
+      }
+    }
+    return { gstin: null, registrationType: null, placeOfSupply: null };
   }
 
   mapGroups(rawXml: string): TallyGroup[] {
@@ -245,6 +284,106 @@ export class TallyResponseParser {
     }));
   }
 
+  /** See TallyStockGroup's doc comment — VERIFIED live (0 real records on
+   *  this company, a valid empty Collection, not an error). */
+  mapStockGroups(rawXml: string): TallyStockGroup[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'STOCKGROUP');
+    return items.map((g) => ({
+      name: readText(g?.NAME) ?? readText(g?.['@_NAME']) ?? '',
+      parent: readText(g?.PARENT),
+      alterId: readInt(g?.ALTERID),
+    }));
+  }
+
+  /** See TallyStockCategory's doc comment — VERIFIED live (0 real records on
+   *  this company, a valid empty Collection, not an error). */
+  mapStockCategories(rawXml: string): TallyStockCategory[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'STOCKCATEGORY');
+    return items.map((c) => ({
+      name: readText(c?.NAME) ?? readText(c?.['@_NAME']) ?? '',
+      parent: readText(c?.PARENT),
+      alterId: readInt(c?.ALTERID),
+    }));
+  }
+
+  /** See TallyUnit's doc comment — VERIFIED live (7 real units). */
+  mapUnits(rawXml: string): TallyUnit[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'UNIT');
+    return items.map((u) => ({
+      name: readText(u?.NAME) ?? readText(u?.['@_NAME']) ?? '',
+      originalName: readText(u?.ORIGINALNAME),
+      isSimpleUnit: readYesNo(u?.ISSIMPLEUNIT),
+      decimalPlaces: readInt(u?.DECIMALPLACES),
+      alterId: readInt(u?.ALTERID),
+    }));
+  }
+
+  /** See TallyCurrency's doc comment — VERIFIED live (3 real currencies:
+   *  INR/USD/UAE Dirham). */
+  mapCurrencies(rawXml: string): TallyCurrency[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'CURRENCY');
+    return items.map((c) => ({
+      name: readText(c?.NAME) ?? readText(c?.['@_NAME']) ?? '',
+      originalName: readText(c?.ORIGINALNAME),
+      expandedSymbol: readText(c?.EXPANDEDSYMBOL),
+      decimalPlaces: readInt(c?.DECIMALPLACES),
+      alterId: readInt(c?.ALTERID),
+    }));
+  }
+
+  /** See TallyGodown's doc comment — VERIFIED live (1 real Godown, the
+   *  Tally-created default "Main Location"). */
+  mapGodowns(rawXml: string): TallyGodown[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'GODOWN');
+    return items.map((g) => ({
+      name: readText(g?.NAME) ?? readText(g?.['@_NAME']) ?? '',
+      parent: readText(g?.PARENT),
+      alterId: readInt(g?.ALTERID),
+    }));
+  }
+
+  /** See TallyCostCategory's doc comment — VERIFIED live (1 real Cost
+   *  Category, the Tally-created default "Primary Cost Category"). */
+  mapCostCategories(rawXml: string): TallyCostCategory[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'COSTCATEGORY');
+    return items.map((c) => ({
+      name: readText(c?.NAME) ?? readText(c?.['@_NAME']) ?? '',
+      alterId: readInt(c?.ALTERID),
+    }));
+  }
+
+  /** See TallyVoucherType's doc comment — VERIFIED live (24 real Voucher
+   *  Types, every standard Tally type, no custom ones). */
+  mapVoucherTypes(rawXml: string): TallyVoucherType[] {
+    const { envelope, meta } = this.parse(rawXml);
+    if (meta.isEmpty) return [];
+
+    const items = this.collectionItems(envelope, 'VOUCHERTYPE');
+    return items.map((v) => ({
+      name: readText(v?.NAME) ?? readText(v?.['@_NAME']) ?? '',
+      parent: readText(v?.PARENT),
+      alterId: readInt(v?.ALTERID),
+    }));
+  }
+
   mapStockItems(rawXml: string): TallyStockItem[] {
     const { envelope, meta } = this.parse(rawXml);
     if (meta.isEmpty) return [];
@@ -267,7 +406,27 @@ export class TallyResponseParser {
       alias: readText(s?.ALIAS),
       hsnCode: this.readLatestHsn(s?.['HSNDETAILS.LIST']),
       ...this.readLatestGstDetails(s?.['GSTDETAILS.LIST']),
+      // See TallyStockItem.itemType's doc comment.
+      itemType: this.readItemType(s?.GSTTYPEOFSUPPLY),
+      // See TallyStockItem.inventoryValuationMethod/salesAccount/
+      // purchaseAccount's doc comments.
+      inventoryValuationMethod: readText(s?.COSTINGMETHOD),
+      // Reuses readPrimaryAccountLedger's "first entry's LEDGERNAME"
+      // convention — already independently verified live for
+      // ACCOUNTINGALLOCATIONS.LIST elsewhere in this file.
+      salesAccount: this.readPrimaryAccountLedger(s?.['SALESLIST.LIST']),
+      purchaseAccount: this.readPrimaryAccountLedger(s?.['PURCHASELIST.LIST']),
     }));
+  }
+
+  /** GSTTYPEOFSUPPLY — a flat scalar, "Goods"/"Services"/blank. See
+   *  TallyStockItem.itemType's doc comment for the live evidence. */
+  private readItemType(value: unknown): 'goods' | 'service' | null {
+    const text = readText(value);
+    if (!text) return null;
+    if (text.toLowerCase() === 'services') return 'service';
+    if (text.toLowerCase() === 'goods') return 'goods';
+    return null;
   }
 
   /**
@@ -440,6 +599,9 @@ export class TallyResponseParser {
       // export vouchers have a blank PlaceOfSupply but a populated
       // ConsigneeStateName (the GST e-invoice ship-to state).
       placeOfSupply: readText(v?.PLACEOFSUPPLY) ?? readText(v?.CONSIGNEESTATENAME),
+      // See TallyVoucher.partyGstRegistrationType/gstRegistration's doc comments.
+      partyGstRegistrationType: readText(v?.GSTREGISTRATIONTYPE),
+      gstRegistration: readText(v?.GSTREGISTRATION),
       currencyCode: currency.currencyCode,
       exchangeRate: currency.exchangeRate,
     };

@@ -101,6 +101,76 @@ describe('EnvelopeBuilder', () => {
     expect(xml).toContain('<NATIVEMETHOD>AlterID</NATIVEMETHOD>');
   });
 
+  describe('remaining master types (2026-09-19 comprehensive-extraction pass)', () => {
+    it('builds a lean stock group collection request', () => {
+      const xml = builder.buildStockGroupsRequest('ABC Ltd');
+      expect(xml).toContain('<TYPE>StockGroup</TYPE>');
+      expect(xml).toContain('<SVCURRENTCOMPANY>ABC Ltd</SVCURRENTCOMPANY>');
+      expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>Parent</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>AlterID</NATIVEMETHOD>');
+    });
+
+    it('builds a lean stock category collection request', () => {
+      const xml = builder.buildStockCategoriesRequest('ABC Ltd');
+      expect(xml).toContain('<TYPE>StockCategory</TYPE>');
+      expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>Parent</NATIVEMETHOD>');
+    });
+
+    it('builds a lean unit collection request', () => {
+      const xml = builder.buildUnitsRequest('ABC Ltd');
+      expect(xml).toContain('<TYPE>Unit</TYPE>');
+      expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>OriginalName</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>IsSimpleUnit</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>DecimalPlaces</NATIVEMETHOD>');
+    });
+
+    it('builds a lean currency collection request', () => {
+      const xml = builder.buildCurrenciesRequest('ABC Ltd');
+      expect(xml).toContain('<TYPE>Currency</TYPE>');
+      expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>OriginalName</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>ExpandedSymbol</NATIVEMETHOD>');
+    });
+
+    it('builds a lean godown collection request', () => {
+      const xml = builder.buildGodownsRequest('ABC Ltd');
+      expect(xml).toContain('<TYPE>Godown</TYPE>');
+      expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>Parent</NATIVEMETHOD>');
+    });
+
+    it('builds a lean cost category collection request', () => {
+      const xml = builder.buildCostCategoriesRequest('ABC Ltd');
+      expect(xml).toContain('<TYPE>CostCategory</TYPE>');
+      expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>AlterID</NATIVEMETHOD>');
+    });
+
+    it('builds a lean voucher type collection request', () => {
+      const xml = builder.buildVoucherTypesRequest('ABC Ltd');
+      expect(xml).toContain('<TYPE>VoucherType</TYPE>');
+      expect(xml).toContain('<NATIVEMETHOD>Name</NATIVEMETHOD>');
+      expect(xml).toContain('<NATIVEMETHOD>Parent</NATIVEMETHOD>');
+    });
+
+    it('every new request stays a single Collection per TDLMESSAGE — this Tally build has shown fragility with multiple <COLLECTION> blocks in one message', () => {
+      for (const xml of [
+        builder.buildStockGroupsRequest('ABC Ltd'),
+        builder.buildStockCategoriesRequest('ABC Ltd'),
+        builder.buildUnitsRequest('ABC Ltd'),
+        builder.buildCurrenciesRequest('ABC Ltd'),
+        builder.buildGodownsRequest('ABC Ltd'),
+        builder.buildCostCategoriesRequest('ABC Ltd'),
+        builder.buildVoucherTypesRequest('ABC Ltd'),
+      ]) {
+        expect(xml.match(/<COLLECTION /g)).toHaveLength(1);
+      }
+    });
+  });
+
   it('builds a lean group collection request scoped to a company', () => {
     const xml = builder.buildGroupsRequest('ABC Ltd');
     expect(xml).toContain('<TYPE>Group</TYPE>');

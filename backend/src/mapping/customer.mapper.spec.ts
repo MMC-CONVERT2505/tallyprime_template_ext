@@ -14,6 +14,8 @@ describe('CustomerMapper', () => {
     alterId: 1,
     reservedName: null,
     gstin: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
     panNumber: null,
     email: null,
     phone: null,
@@ -27,6 +29,8 @@ describe('CustomerMapper', () => {
     website: null,
     creditLimit: null,
     contactPersonName: null,
+    mailingName: null,
+    creditPeriod: null,
   };
 
   it('includes only ledgers resolving to Sundry Debtors', () => {
@@ -87,6 +91,50 @@ describe('CustomerMapper', () => {
   it('falls back to GST Treatment "consumer" when there is no GSTIN', () => {
     const [row] = mapper.toCustomerRows([baseLedger]);
     expect(row['GST Treatment']).toBe('consumer');
+  });
+
+  it('derives GST Treatment from the real GSTREGISTRATIONTYPE, not GSTIN presence alone — an unregistered BUSINESS is "business_none", not the "consumer" (retail individual) the old GSTIN-only heuristic produced', () => {
+    const [row] = mapper.toCustomerRows([
+      { ...baseLedger, gstRegistrationType: 'Unregistered/Consumer' },
+    ]);
+    expect(row['GST Treatment']).toBe('business_none');
+  });
+
+  it('falls back to "consumer" for a Tally "Unknown" registration type, matching Zoho\'s own tool\'s catch-all', () => {
+    const [row] = mapper.toCustomerRows([{ ...baseLedger, gstRegistrationType: 'Unknown' }]);
+    expect(row['GST Treatment']).toBe('consumer');
+  });
+
+  it('maps Place Of Contact/Billing Attention/Payment Terms/Contact First Name (2026-09-10 field-mapping pass)', () => {
+    const [row] = mapper.toCustomerRows([
+      {
+        ...baseLedger,
+        gstPlaceOfSupply: 'Uttar Pradesh',
+        mailingName: 'ABC Traders (Head Office)',
+        creditPeriod: '30',
+        contactPersonName: 'RR Patil',
+      },
+    ]);
+    expect(row['Place Of Contact']).toBe('Uttar Pradesh');
+    expect(row['Billing Attention']).toBe('ABC Traders (Head Office)');
+    expect(row['Payment Terms']).toBe(30);
+    expect(row['Payment Terms Label']).toBe('30 Days');
+    expect(row['Contact First Name']).toBe('RR Patil');
+  });
+
+  it('leaves Place Of Contact/Billing Attention/Payment Terms/Contact First Name blank rather than guessing when the ledger has none', () => {
+    const [row] = mapper.toCustomerRows([baseLedger]);
+    expect(row['Place Of Contact']).toBe('');
+    expect(row['Billing Attention']).toBe('');
+    expect(row['Payment Terms']).toBe('');
+    expect(row['Payment Terms Label']).toBe('');
+    expect(row['Contact First Name']).toBe('');
+  });
+
+  it('leaves Payment Terms blank for a credit period not in Tally\'s "Days" format, matching this project\'s documented limitation', () => {
+    const [row] = mapper.toCustomerRows([{ ...baseLedger, creditPeriod: 'Advance' }]);
+    expect(row['Payment Terms']).toBe('');
+    expect(row['Payment Terms Label']).toBe('');
   });
 
   it('takes the Opening Balance magnitude regardless of Tally Dr/Cr sign, with no separate Dr/Cr column', () => {

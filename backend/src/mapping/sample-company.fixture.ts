@@ -47,6 +47,10 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     website: null,
     creditLimit: null,
     contactPersonName: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
+    mailingName: null,
+    creditPeriod: null,
   },
   {
     name: 'Priya Distributors',
@@ -70,6 +74,10 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     website: null,
     creditLimit: null,
     contactPersonName: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
+    mailingName: null,
+    creditPeriod: null,
   },
   {
     name: 'Global Supplies Pvt Ltd',
@@ -93,6 +101,10 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     website: null,
     creditLimit: null,
     contactPersonName: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
+    mailingName: null,
+    creditPeriod: null,
   },
   {
     name: 'Office Rent',
@@ -116,6 +128,10 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     website: null,
     creditLimit: null,
     contactPersonName: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
+    mailingName: null,
+    creditPeriod: null,
   },
   {
     name: 'HDFC Bank Current A/c',
@@ -139,6 +155,10 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     website: null,
     creditLimit: null,
     contactPersonName: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
+    mailingName: null,
+    creditPeriod: null,
   },
 ];
 
@@ -158,6 +178,10 @@ export const SAMPLE_STOCK_ITEMS: TallyStockItem[] = [
     gstRate: 18,
     gstTaxability: 'Taxable',
     itcIneligible: false,
+    itemType: 'goods',
+    inventoryValuationMethod: 'Avg. Cost',
+    salesAccount: null,
+    purchaseAccount: null,
   },
   {
     name: 'Widget B',
@@ -174,6 +198,10 @@ export const SAMPLE_STOCK_ITEMS: TallyStockItem[] = [
     gstRate: 12,
     gstTaxability: 'Taxable',
     itcIneligible: false,
+    itemType: 'goods',
+    inventoryValuationMethod: 'Avg. Cost',
+    salesAccount: null,
+    purchaseAccount: null,
   },
   {
     name: 'Raw Material X',
@@ -190,6 +218,10 @@ export const SAMPLE_STOCK_ITEMS: TallyStockItem[] = [
     gstRate: 5,
     gstTaxability: 'Taxable',
     itcIneligible: false,
+    itemType: 'goods',
+    inventoryValuationMethod: 'Avg. Cost',
+    salesAccount: null,
+    purchaseAccount: null,
   },
 ];
 
@@ -214,6 +246,8 @@ export const SAMPLE_SALES_VOUCHER: TallyVoucher = {
   ],
   partyGstin: '27AABCU9603R1ZM',
   placeOfSupply: 'Maharashtra',
+  partyGstRegistrationType: null,
+  gstRegistration: null,
  currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_SALES_VOUCHER_2: TallyVoucher = {
@@ -228,6 +262,8 @@ export const SAMPLE_SALES_VOUCHER_2: TallyVoucher = {
   inventoryEntries: [{ stockItemName: 'Widget B', quantity: 20, rate: 380, amount: 7600 , discountPercent: null, accountLedgerName: null }],
   partyGstin: '19AACPD1122K1ZQ',
   placeOfSupply: 'West Bengal',
+  partyGstRegistrationType: null,
+  gstRegistration: null,
  currencyCode: null, exchangeRate: null };
 
 /** A genuine ledger-only Sales voucher — a service invoice recorded in
@@ -253,6 +289,8 @@ export const SAMPLE_LEDGER_ONLY_SALES_VOUCHER: TallyVoucher = {
   inventoryEntries: [],
   partyGstin: '27AABCU9603R1ZM',
   placeOfSupply: 'Maharashtra',
+  partyGstRegistrationType: null,
+  gstRegistration: null,
  currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_PURCHASE_VOUCHER: TallyVoucher = {
@@ -277,6 +315,8 @@ export const SAMPLE_PURCHASE_VOUCHER: TallyVoucher = {
   inventoryEntries: [{ stockItemName: 'Raw Material X', quantity: 200, rate: 100, amount: 20000 , discountPercent: null, accountLedgerName: null }],
   partyGstin: '29AAACG1234F1Z5',
   placeOfSupply: 'Karnataka',
+  partyGstRegistrationType: null,
+  gstRegistration: null,
  currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_CREDIT_NOTE_VOUCHER: TallyVoucher = {
@@ -291,6 +331,8 @@ export const SAMPLE_CREDIT_NOTE_VOUCHER: TallyVoucher = {
   inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 250, amount: 250 , discountPercent: null, accountLedgerName: null }],
   partyGstin: '27AABCU9603R1ZM',
   placeOfSupply: 'Maharashtra',
+  partyGstRegistrationType: null,
+  gstRegistration: null,
  currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_STOCK_JOURNAL_VOUCHER: TallyVoucher = {
@@ -308,6 +350,8 @@ export const SAMPLE_STOCK_JOURNAL_VOUCHER: TallyVoucher = {
   ],
   partyGstin: null,
   placeOfSupply: null,
+  partyGstRegistrationType: null,
+  gstRegistration: null,
  currencyCode: null, exchangeRate: null };
 
 export const SAMPLE_INVOICE_VOUCHERS: TallyVoucher[] = [

@@ -19,6 +19,10 @@ describe('StockItemMapper', () => {
     gstRate: null,
     gstTaxability: null,
     itcIneligible: null,
+    itemType: null,
+    inventoryValuationMethod: null,
+    salesAccount: null,
+    purchaseAccount: null,
     ...overrides,
   });
 
@@ -40,11 +44,15 @@ describe('StockItemMapper', () => {
       'Alias Name': '',
       Description: 'A widget',
       'HSN/SAC': '',
+      Account: '',
+      'Purchase Account': '',
+      'Inventory Valuation Method': '',
       'Usage unit': 'Nos',
       'Opening Stock': 100,
       'Opening Stock Value': 5000,
       'Stock On Hand': 80,
-      'Item Type': 'goods',
+      'Item Type': 'Sales and Purchases',
+      'Product Type': 'goods',
       Status: 'Active',
       Sellable: true,
       Purchasable: true,
@@ -73,11 +81,15 @@ describe('StockItemMapper', () => {
       'Alias Name': '',
       Description: '',
       'HSN/SAC': '',
+      Account: '',
+      'Purchase Account': '',
+      'Inventory Valuation Method': '',
       'Usage unit': '',
       'Opening Stock': '',
       'Opening Stock Value': '',
       'Stock On Hand': '',
-      'Item Type': 'goods',
+      'Item Type': 'Sales and Purchases',
+      'Product Type': 'goods',
       Status: 'Active',
       Sellable: true,
       Purchasable: true,
@@ -105,9 +117,38 @@ describe('StockItemMapper', () => {
     expect(unclassified['Taxability Type']).toBe('');
   });
 
-  it('always classifies a Stock Item as "goods" — Tally services live on ledgers, not stock items', () => {
+  it('always writes "Sales and Purchases" for Item Type — a usage-scope column, not goods/service (see Product Type below)', () => {
     const [row] = mapper.toItemRows([item({ name: 'Anything' })]);
-    expect(row['Item Type']).toBe('goods');
+    expect(row['Item Type']).toBe('Sales and Purchases');
+  });
+
+  it('reads Product Type (goods/service) from GSTTYPEOFSUPPLY, defaulting to goods when unclassified', () => {
+    const [goods] = mapper.toItemRows([item({ name: 'A Widget', itemType: 'goods' })]);
+    const [service] = mapper.toItemRows([item({ name: 'A Subscription', itemType: 'service' })]);
+    const [unclassified] = mapper.toItemRows([item({ name: 'Unclassified', itemType: null })]);
+    expect(goods['Product Type']).toBe('goods');
+    expect(service['Product Type']).toBe('service');
+    expect(unclassified['Product Type']).toBe('goods');
+  });
+
+  it('maps Account/Purchase Account/Inventory Valuation Method from the item master (2026-09-12 field-mapping pass)', () => {
+    const [row] = mapper.toItemRows([
+      item({
+        name: 'Widget A',
+        salesAccount: 'Sales Account',
+        purchaseAccount: 'Purchase Account',
+        inventoryValuationMethod: 'Avg. Cost',
+      }),
+    ]);
+    expect(row.Account).toBe('Sales Account');
+    expect(row['Purchase Account']).toBe('Purchase Account');
+    expect(row['Inventory Valuation Method']).toBe('Avg. Cost');
+  });
+
+  it('leaves Account/Purchase Account blank rather than guessing when the item has no default ledger configured', () => {
+    const [row] = mapper.toItemRows([item({ name: 'Widget A' })]);
+    expect(row.Account).toBe('');
+    expect(row['Purchase Account']).toBe('');
   });
 
   it('derives both Intra and Inter State tax name/rate/type from a single GST rate, matching the real template convention', () => {

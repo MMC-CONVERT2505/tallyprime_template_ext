@@ -3,6 +3,7 @@ import { GroupHierarchyResolver } from './group-hierarchy.resolver';
 import {
   resolveGstTreatment,
   resolveOpeningBalanceMagnitude,
+  resolvePaymentTerms,
   splitBillingAddress,
 } from './ledger-contact.shared';
 
@@ -19,6 +20,16 @@ import {
  * company's data (1/1409 ledgers), correct for any company that fills them
  * in. LedgerContact is a single free-text name — written to Display Name
  * only, not split into First/Last (Tally doesn't structure it that way).
+ *
+ * Place Of Contact/Billing Attention/Payment Terms/Payment Terms Label/
+ * Contact First Name (added 2026-09-10) — cross-referenced against Zoho's
+ * own official Tally migration tool, then VERIFIED live against real
+ * ledger data; see TallyLedger.gstPlaceOfSupply/mailingName/creditPeriod's
+ * doc comments for the exact field names/population counts. Contact First
+ * Name reuses the same LEDGERCONTACT value already written to "Conact
+ * Display Name" — matching Zoho's own official tool's convention of
+ * putting the whole flat name there rather than splitting it; Last Name
+ * stays blank (no split is performed).
  */
 export interface ZohoCustomerRow {
   'Display Name': string;
@@ -29,13 +40,18 @@ export interface ZohoCustomerRow {
    *  Limited", ...), not an individual; Tally's ledger master has no
    *  separate legal-entity-name field to distinguish the two. */
   'Company Name': string;
+  'Place Of Contact': string;
   'Currency Code': string;
+  'Contact First Name': string;
   EmailID: string;
   Phone: string;
   MobilePhone: string;
+  'Payment Terms': number | '';
+  'Payment Terms Label': string;
   'GST Treatment': string;
   'GST Identification Number (GSTIN)': string;
   'PAN Number': string;
+  'Billing Attention': string;
   'Billing Address': string;
   /** Added 2026-09-05 — Tally's ADDRESS.LIST is multi-line; the first line
    *  goes to Billing Address, everything after it here instead of being
@@ -55,6 +71,21 @@ export interface ZohoCustomerRow {
   'Conact Display Name': string;
 }
 
+/**
+ * Every Customer/Vendor row is hardcoded to INR — Zoho's own official Tally
+ * migration tool reads a ledger's real currency from a flat CURRENCYNAME
+ * field, but that field name was tried live 2026-09-12 (COREDGE.IO INDIA
+ * PRIVATE LIMITED) and does NOT resolve at the Ledger level: it came back as
+ * the literal string "?" (Tally's own sentinel for an unresolvable
+ * expression) for all 1,409 real ledgers, not blank/omitted the way a
+ * genuinely nonexistent NATIVEMETHOD does elsewhere in this project. A few
+ * plausible alternate names (LEDGERCURRENCYNAME, FORINGCURRNAME,
+ * USEFORFOREX) were also tried and silently ignored by Tally (not
+ * recognized at all). Left hardcoded rather than guessing a fourth name —
+ * this company's real ledgers are believed to be INR-denominated by
+ * default anyway (only specific vouchers, not ledgers, carry a foreign
+ * currency here — see TallyVoucher.currencyCode).
+ */
 const DEFAULT_CURRENCY_CODE = 'INR';
 
 export class CustomerMapper {
@@ -70,16 +101,22 @@ export class CustomerMapper {
 
   private toCustomerRow(ledger: TallyLedger): ZohoCustomerRow {
     const address = splitBillingAddress(ledger.billingAddress);
+    const paymentTerms = resolvePaymentTerms(ledger.creditPeriod);
     return {
       'Display Name': ledger.name,
       'Company Name': ledger.name,
+      'Place Of Contact': ledger.gstPlaceOfSupply ?? '',
       'Currency Code': DEFAULT_CURRENCY_CODE,
+      'Contact First Name': ledger.contactPersonName ?? '',
       EmailID: ledger.email ?? '',
       Phone: ledger.phone ?? '',
       MobilePhone: ledger.mobile ?? '',
-      'GST Treatment': resolveGstTreatment(ledger.gstin),
+      'Payment Terms': paymentTerms.days,
+      'Payment Terms Label': paymentTerms.label,
+      'GST Treatment': resolveGstTreatment(ledger.gstin, ledger.gstRegistrationType),
       'GST Identification Number (GSTIN)': ledger.gstin ?? '',
       'PAN Number': ledger.panNumber ?? '',
+      'Billing Attention': ledger.mailingName ?? '',
       'Billing Address': address.line1,
       'Billing Street2': address.line2,
       'Billing State': ledger.billingState ?? '',

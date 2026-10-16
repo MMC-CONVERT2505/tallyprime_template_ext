@@ -143,6 +143,34 @@ export class EnvelopeBuilder {
    * compared internally). A plain numeric ID has none of that ambiguity.
    * Omitted entirely for a small collection: byte-identical to the
    * unfiltered request that ran before batching existed.
+   *
+   * MAILINGNAME/BILLCREDITPERIOD added 2026-09-10, cross-referenced against
+   * Zoho's own official Tally migration tool (ZFMigrationTool-v1.9's
+   * xml_to_csv_config.yml maps these exact field names to Customer/Vendor
+   * "Billing Attention" and "Payment Terms"), then VERIFIED live against
+   * COREDGE.IO INDIA PRIVATE LIMITED:
+   *   - MAILINGNAME: a flat scalar, populated for 1,269 of 1,409 real
+   *     ledgers (differs from the ledger's own NAME in 4 real cases —
+   *     genuine data, not just a duplicate of Name).
+   *   - BILLCREDITPERIOD: also a flat scalar at this (ledger-master) level —
+   *     distinct from the per-voucher BILLALLOCATIONS.LIST -> BILLCREDITPERIOD
+   *     already fetched below inside AllLedgerEntries.List, which powers Due
+   *     Date. This is the ledger's own default credit period. Correctly
+   *     named (an earlier pass tried the wrong name, CREDITPERIOD, which
+   *     truly doesn't exist) but sparse — only 1 of 1,409 real ledgers has
+   *     it set ("Sachin", 20 days) — genuinely populated, not empty
+   *     everywhere.
+   *
+   * IMPORTANT (live-verified 2026-09-11): this Ledger collection's own
+   * <!-- --> comments inside the COLLECTION body have a real limit — TWO
+   * inline comments here work fine (both pre-existing, verified repeatedly),
+   * but adding a THIRD made Tally return the bare "Unknown Request, cannot
+   * be processed" error (not even a proper ENVELOPE) — reproduced and
+   * isolated by bisection: the exact same request with the third comment's
+   * TEXT moved out to this JSDoc instead (fields unchanged) succeeds. Same
+   * family of TDL-parser fragility as buildStockItemsRequest's doc comment
+   * below — any new field's rationale belongs here, in a real TS comment,
+   * never as a third inline XML comment in this specific collection.
    */
   buildLedgersRequest(
     company: string,
@@ -213,6 +241,8 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>WEBSITE</NATIVEMETHOD>
         <NATIVEMETHOD>CREDITLIMIT</NATIVEMETHOD>
         <NATIVEMETHOD>LEDGERCONTACT</NATIVEMETHOD>
+        <NATIVEMETHOD>MAILINGNAME</NATIVEMETHOD>
+        <NATIVEMETHOD>BILLCREDITPERIOD</NATIVEMETHOD>
         ${this.alterIdRangeFilterRef(alterIdRange)}
       </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(
@@ -281,6 +311,35 @@ export class EnvelopeBuilder {
    * how these are read back down to the single flat hsnCode/gstRate
    * TallyStockItem needs.
    *
+   * GSTTYPEOFSUPPLY added 2026-09-10 — VERIFIED live against Zoho's own
+   * official Tally migration tool (ZFMigrationTool-v1.9, whose
+   * xml_to_csv_config.yml maps this exact field to Zoho's Item "Product
+   * Type"), then confirmed against this company's real data: 28 of 35 real
+   * stock items are "Services", only 6 are "Goods" — a flat scalar field,
+   * not a list. This project previously hardcoded every item's Item Type to
+   * 'goods', which was wrong for the majority of this company's real items.
+   *
+   * COSTINGMETHOD/SALESLIST.LIST/PURCHASELIST.LIST added 2026-09-12, cross-
+   * referenced against Zoho's own official Tally migration tool (maps to
+   * Item.xlsx's "Inventory Valuation Method"/"Account"/"Purchase Account"),
+   * then VERIFIED live:
+   *   - COSTINGMETHOD: a flat scalar, populated for all 35 real items
+   *     ("Avg. Cost"). Powers "Inventory Valuation Method", previously blank.
+   *   - SALESLIST.LIST/PURCHASELIST.LIST: confirmed real, correctly-named,
+   *     repeating lists (no error, no silently-dropped tag) — but empty for
+   *     all 35 real items (no item on this company has a default Sales/
+   *     Purchase ledger configured), so their internal shape couldn't be
+   *     confirmed against a populated example. TallyResponseParser reads a
+   *     LEDGERNAME child from the first entry, by the same convention
+   *     already independently verified for ACCOUNTINGALLOCATIONS.LIST
+   *     elsewhere in this file — not a blind guess, but flagged here as the
+   *     one part of this addition not directly confirmed. This corrects an
+   *     earlier mix-up: this project's own docs previously attributed
+   *     Item.xlsx's blank "Account"/"Purchase Account" columns to the
+   *     unconfigured Price List fields (STANDARDPRICELIST.LIST/
+   *     STANDARDCOSTLIST.LIST) — a different Tally concept entirely from
+   *     these two default-ledger-allocation lists.
+   *
    * IMPORTANT: this fields list must NOT carry an inline XML comment inside
    * the <COLLECTION> body — confirmed live: a multi-line `<!-- ... -->`
    * comment placed between two <NATIVEMETHOD> tags here (an earlier version
@@ -315,6 +374,10 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>ALIAS</NATIVEMETHOD>
         <NATIVEMETHOD>HSNDETAILS.LIST</NATIVEMETHOD>
         <NATIVEMETHOD>GSTDETAILS.LIST</NATIVEMETHOD>
+        <NATIVEMETHOD>GSTTYPEOFSUPPLY</NATIVEMETHOD>
+        <NATIVEMETHOD>COSTINGMETHOD</NATIVEMETHOD>
+        <NATIVEMETHOD>SALESLIST.LIST</NATIVEMETHOD>
+        <NATIVEMETHOD>PURCHASELIST.LIST</NATIVEMETHOD>
         ${this.alterIdRangeFilterRef(alterIdRange)}
       </COLLECTION>${this.alterIdRangeFormula(alterIdRange)}`;
     return this.buildCollectionRequest(
@@ -350,6 +413,99 @@ export class EnvelopeBuilder {
         <NATIVEMETHOD>AlterID</NATIVEMETHOD>
       </COLLECTION>`;
     return this.buildCollectionRequest('Lean Cost Centres', collection, company);
+  }
+
+  /**
+   * Remaining standard master types (added 2026-09-19 for comprehensive
+   * extraction — see TallyStockGroup/StockCategory/Unit/Currency/Godown/
+   * CostCategory/VoucherType's doc comments). Every field name below was
+   * VERIFIED live against COREDGE.IO INDIA PRIVATE LIMITED, one Collection
+   * request per type (this Tally build's TDL parser has shown it can be
+   * fragile with multiple <COLLECTION> blocks in a single TDLMESSAGE — see
+   * buildLedgersRequest's doc comment on inline-comment fragility for the
+   * same family of issue — so each of these stays its own request, matching
+   * every other build*Request method in this file). None of these are large
+   * enough on any real company to need AlterID batching the way Ledgers/
+   * Stock Items do.
+   */
+  buildStockGroupsRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Stock Groups" ISINITIALIZE="Yes">
+        <TYPE>StockGroup</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>Parent</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Stock Groups', collection, company);
+  }
+
+  buildStockCategoriesRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Stock Categories" ISINITIALIZE="Yes">
+        <TYPE>StockCategory</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>Parent</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Stock Categories', collection, company);
+  }
+
+  buildUnitsRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Units" ISINITIALIZE="Yes">
+        <TYPE>Unit</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>OriginalName</NATIVEMETHOD>
+        <NATIVEMETHOD>IsSimpleUnit</NATIVEMETHOD>
+        <NATIVEMETHOD>DecimalPlaces</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Units', collection, company);
+  }
+
+  buildCurrenciesRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Currencies" ISINITIALIZE="Yes">
+        <TYPE>Currency</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>OriginalName</NATIVEMETHOD>
+        <NATIVEMETHOD>ExpandedSymbol</NATIVEMETHOD>
+        <NATIVEMETHOD>DecimalPlaces</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Currencies', collection, company);
+  }
+
+  buildGodownsRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Godowns" ISINITIALIZE="Yes">
+        <TYPE>Godown</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>Parent</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Godowns', collection, company);
+  }
+
+  buildCostCategoriesRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Cost Categories" ISINITIALIZE="Yes">
+        <TYPE>CostCategory</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Cost Categories', collection, company);
+  }
+
+  buildVoucherTypesRequest(company: string): string {
+    const collection = `
+      <COLLECTION NAME="Lean Voucher Types" ISINITIALIZE="Yes">
+        <TYPE>VoucherType</TYPE>
+        <NATIVEMETHOD>Name</NATIVEMETHOD>
+        <NATIVEMETHOD>Parent</NATIVEMETHOD>
+        <NATIVEMETHOD>AlterID</NATIVEMETHOD>
+      </COLLECTION>`;
+    return this.buildCollectionRequest('Lean Voucher Types', collection, company);
   }
 
   /**
@@ -445,6 +601,26 @@ export class EnvelopeBuilder {
           replacement — PlaceOfSupply wins when Tally does populate it.
         -->
         <FETCH>ConsigneeStateName</FETCH>
+        <!--
+          GSTRegistrationType/GSTRegistration added 2026-09-10, cross-
+          referenced against Zoho's own official Tally migration tool
+          (ZFMigrationTool-v1.9's xml_to_csv_config.yml maps these exact
+          fields to Invoice/Bill/Credit Note's "GST Treatment" and
+          "Branch"), then VERIFIED live against 602 real sampled vouchers:
+            - GSTRegistrationType: real distribution Regular (334)/
+              Unregistered-Consumer (113)/blank (123)/"Unknown" (31) — this
+              project's resolveGstTreatment previously ignored this and
+              inferred GST Treatment from PartyGSTIN presence alone, which
+              silently mapped every "Unregistered/Consumer" voucher to
+              Zoho's "consumer" instead of the correct "business_none".
+            - GSTRegistration: populated on 601/602 sampled vouchers,
+              always "Uttar Pradesh Registration" for this company (its one
+              GST registration/branch) — a real, correctly-scoped field,
+              unlike DispatchFromName (tried previously, always just
+              returns the company's legal name).
+        -->
+        <FETCH>GSTRegistrationType</FETCH>
+        <FETCH>GSTRegistration</FETCH>
         <FETCH>AllLedgerEntries.List</FETCH>
         <FETCH>AllInventoryEntries.List</FETCH>
         <FILTER>VoucherDateRangeFilter</FILTER>

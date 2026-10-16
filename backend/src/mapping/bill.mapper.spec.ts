@@ -22,6 +22,10 @@ describe('BillMapper', () => {
     gstRate: null,
     gstTaxability: null,
     itcIneligible: null,
+    itemType: null,
+    inventoryValuationMethod: null,
+    salesAccount: null,
+    purchaseAccount: null,
     ...overrides,
   });
 
@@ -37,6 +41,8 @@ describe('BillMapper', () => {
     inventoryEntries: [],
     partyGstin: null,
     placeOfSupply: null,
+    partyGstRegistrationType: null,
+    gstRegistration: null,
     currencyCode: null, exchangeRate: null, ...overrides,
   });
 
@@ -279,6 +285,39 @@ describe('BillMapper', () => {
       ]);
       expect(row['GST Treatment']).toBe('business_gst');
       expect(row['GST Identification Number (GSTIN)']).toBe('33AAAAA1111A1Z1');
+    });
+
+    it('derives GST Treatment from the real GSTREGISTRATIONTYPE, not GSTIN presence alone', () => {
+      const mapper = new BillMapper(buildStockItemIndex([]));
+      const [row] = mapper.toBillRows([
+        voucher({
+          partyGstRegistrationType: 'Unregistered/Consumer',
+          inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: 10, amount: 10, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['GST Treatment']).toBe('business_none');
+    });
+
+    it('maps Branch Name from the voucher\'s own GST registration', () => {
+      const mapper = new BillMapper(buildStockItemIndex([]));
+      const [row] = mapper.toBillRows([
+        voucher({
+          gstRegistration: 'Uttar Pradesh Registration',
+          inventoryEntries: [{ stockItemName: 'X', quantity: 1, rate: 10, amount: 10, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['Branch Name']).toBe('Uttar Pradesh Registration');
+    });
+
+    it('reads Item Type from the stock item\'s real Product Type classification, not a hardcoded "goods"', () => {
+      const itemIndex = buildStockItemIndex([item({ name: 'Support Plan', itemType: 'service' })]);
+      const mapper = new BillMapper(itemIndex);
+      const [row] = mapper.toBillRows([
+        voucher({
+          inventoryEntries: [{ stockItemName: 'Support Plan', quantity: 1, rate: 10, amount: 10, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['Item Type']).toBe('service');
     });
 
     it('maps Purchase Order Number from the voucher reference field', () => {

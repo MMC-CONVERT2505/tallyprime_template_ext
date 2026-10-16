@@ -82,4 +82,35 @@ describe('NotificationsService', () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  describe('sendPasswordResetOtp', () => {
+    it('logs the code at warn level (not silently, unlike sendExtractionComplete) when SMTP is unset — the only way to see a non-fixed code locally', async () => {
+      const service = new NotificationsService(makeConfig() as any);
+      const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+
+      await service.sendPasswordResetOtp('user@example.com', '4821');
+
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('4821'));
+    });
+
+    it('sends the code by email when SMTP is configured', async () => {
+      const service = new NotificationsService(makeConfig({ host: 'smtp.example.com' }) as any);
+
+      await service.sendPasswordResetOtp('user@example.com', '4821');
+
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      const call = sendMail.mock.calls[0][0];
+      expect(call.to).toBe('user@example.com');
+      expect(call.subject).toMatch(/reset/i);
+      expect(call.text).toContain('4821');
+    });
+
+    it('never throws even if the SMTP send itself fails', async () => {
+      sendMail.mockRejectedValueOnce(new Error('connection refused'));
+      const service = new NotificationsService(makeConfig({ host: 'smtp.example.com' }) as any);
+
+      await expect(service.sendPasswordResetOtp('user@example.com', '4821')).resolves.toBeUndefined();
+    });
+  });
 });

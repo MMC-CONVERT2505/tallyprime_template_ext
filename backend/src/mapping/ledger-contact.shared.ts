@@ -4,15 +4,78 @@
  */
 
 /**
- * Zoho's GST Treatment is a richer enum (business_gst / business_none /
- * business_registered_composition / consumer / overseas / ...) than Tally's
- * ledger master captures directly. A registered GSTIN is a reliable signal
- * of "business_gst"; composition-scheme/overseas/unregistered-business
- * detection would need fields this project doesn't extract — documented
- * simplification, not an oversight.
+ * Zoho's GST Treatment enum, keyed by Tally's own GSTREGISTRATIONTYPE value
+ * — cross-referenced against Zoho's own official Tally migration tool
+ * (ZFMigrationTool-v1.9's col_value_mapping.yml carries this exact table),
+ * then VERIFIED live against COREDGE.IO INDIA PRIVATE LIMITED: this
+ * company's real ledgers/vouchers actually carry "Regular" (business_gst),
+ * "Unregistered/Consumer" (business_none), and "Unknown" (falls to the
+ * catch-all below) — Composition/SEZ/Government-TDS/Deemed-Export/Export
+ * rows exist in the table for completeness (a real Tally option this
+ * company simply doesn't use) but aren't independently confirmed against
+ * this company's own data since it has none of those.
+ *
+ * This replaces an earlier, cruder version of this function that inferred
+ * GST Treatment from GSTIN presence alone (`gstin ? 'business_gst' :
+ * 'consumer'`) — that silently mapped every real "Unregistered/Consumer"
+ * ledger/voucher (470 of 1,409 ledgers; 113 of 602 sampled vouchers) to
+ * Zoho's "consumer" (an end retail individual) instead of the correct
+ * "business_none" (a registered business that just isn't GST-registered) —
+ * two different Zoho GST treatments with different tax/reporting
+ * implications.
  */
-export function resolveGstTreatment(gstin: string | null): string {
-  return gstin ? 'business_gst' : 'consumer';
+const GST_TREATMENT_BY_REGISTRATION_TYPE: Record<string, string> = {
+  Regular: 'business_gst',
+  Composition: 'business_registered_composition',
+  'Unregistered/Consumer': 'business_none',
+  'Government entity / TDS': 'tax_deductor',
+  'Regular - SEZ': 'business_sez',
+  'Regular-Deemed Exporter': 'deemed_export',
+  'Regular-Exports (EOU)': 'overseas',
+};
+
+/**
+ * `registrationType` is Tally's own GSTREGISTRATIONTYPE (see TallyLedger.
+ * gstRegistrationType/TallyVoucher.partyGstRegistrationType's doc
+ * comments) — the real classification, checked first. Falls back to the
+ * GSTIN-presence heuristic only when no registration type was found at all
+ * (a ledger/voucher with no LEDGSTREGDETAILS.LIST entry whatsoever), and
+ * finally to Zoho's own documented default ("consumer") for anything else,
+ * including Tally's literal "Unknown" registration type — matching Zoho's
+ * own tool's `_else: "consumer"` catch-all.
+ */
+export function resolveGstTreatment(
+  gstin: string | null,
+  registrationType: string | null,
+): string {
+  if (registrationType && GST_TREATMENT_BY_REGISTRATION_TYPE[registrationType]) {
+    return GST_TREATMENT_BY_REGISTRATION_TYPE[registrationType];
+  }
+  if (!registrationType && gstin) return 'business_gst';
+  return 'consumer';
+}
+
+/**
+ * Mirrors Zoho's own official tool's CxPmtTermsValueHandler: only a value
+ * in " Days" form is processed (VERIFIED live: TallyLedger.creditPeriod's
+ * one real example, "Sachin", came back as a bare "20" via this project's
+ * NATIVEMETHOD fetch — handled here as equivalent to "20 Days" — but
+ * Zoho's own reference handler explicitly strips a " Days" suffix too, so
+ * a differently-configured ledger/Tally build that emits it that way is
+ * also handled). Anything else (a specific date, "Advance", blank) is left
+ * blank on both columns rather than guessed — matching this project's
+ * "Unused by this company" / Zoho's own documented "we will process only
+ * Payment Terms with Days format" limitation.
+ */
+export function resolvePaymentTerms(creditPeriod: string | null): {
+  days: number | '';
+  label: string;
+} {
+  if (!creditPeriod) return { days: '', label: '' };
+  const match = /^(\d+)(?:\s*Days)?$/i.exec(creditPeriod.trim());
+  if (!match) return { days: '', label: '' };
+  const days = Number(match[1]);
+  return { days, label: `${days} Days` };
 }
 
 /**

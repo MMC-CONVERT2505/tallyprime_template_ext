@@ -18,6 +18,10 @@ describe('StockJournalMapper', () => {
     gstRate: null,
     gstTaxability: null,
     itcIneligible: null,
+    itemType: null,
+    inventoryValuationMethod: null,
+    salesAccount: null,
+    purchaseAccount: null,
     ...overrides,
   });
 
@@ -33,6 +37,8 @@ describe('StockJournalMapper', () => {
     inventoryEntries: [],
     partyGstin: null,
     placeOfSupply: null,
+    partyGstRegistrationType: null,
+    gstRegistration: null,
     currencyCode: null, exchangeRate: null, ...overrides,
   });
 

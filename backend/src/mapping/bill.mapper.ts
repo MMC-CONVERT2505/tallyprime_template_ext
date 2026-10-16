@@ -48,10 +48,18 @@ import {
  * LedgerTaxSummary.nonTaxLedgerName). This template has no per-line
  * "Discount" column (unlike Invoice.xlsx/Credit Note.xlsx), so
  * TallyInventoryEntry.discountPercent has nowhere to go here.
+ *
+ * Branch Name (added 2026-09-10) — voucher.gstRegistration, cross-referenced
+ * against Zoho's own official Tally migration tool, then VERIFIED live (see
+ * TallyVoucher.gstRegistration's doc comment). Item Type on the item-line
+ * branch (corrected 2026-09-10) previously hardcoded 'goods'; now reads
+ * TallyStockItem.itemType (GSTTYPEOFSUPPLY) — VERIFIED live that 28 of 35
+ * real items are actually "Services".
  */
 export interface ZohoBillRow {
   'Bill Date': Date | '';
   'Bill Number': string;
+  'Branch Name': string;
   'GST Treatment': string;
   'GST Identification Number (GSTIN)': string;
   'Vendor Name': string;
@@ -120,6 +128,7 @@ export class BillMapper {
       ZohoBillRow,
       | 'Bill Date'
       | 'Bill Number'
+      | 'Branch Name'
       | 'GST Treatment'
       | 'GST Identification Number (GSTIN)'
       | 'Vendor Name'
@@ -135,7 +144,8 @@ export class BillMapper {
     > = {
       'Bill Date': tallyDateToJsDate(voucher.date) ?? '',
       'Bill Number': voucher.voucherNumber ?? '',
-      'GST Treatment': resolveGstTreatment(voucher.partyGstin),
+      'Branch Name': voucher.gstRegistration ?? '',
+      'GST Treatment': resolveGstTreatment(voucher.partyGstin, voucher.partyGstRegistrationType),
       'GST Identification Number (GSTIN)': voucher.partyGstin ?? '',
       'Vendor Name': voucher.partyLedgerName ?? '',
       'Due Date': addDaysToTallyDate(voucher.date, summary.partyBillCreditPeriodDays),
@@ -180,7 +190,7 @@ export class BillMapper {
         'Usage unit': item?.baseUnit ?? '',
         Quantity: line.quantity ?? '',
         Rate: line.rate ?? '',
-        'Item Type': 'goods',
+        'Item Type': item?.itemType ?? 'goods',
         'Tax Name': tax.name,
         'Tax Percentage': tax.rate,
         'Tax Amount': taxAmount,

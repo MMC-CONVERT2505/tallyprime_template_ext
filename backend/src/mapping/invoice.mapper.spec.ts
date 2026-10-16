@@ -22,6 +22,10 @@ describe('InvoiceMapper', () => {
     gstRate: null,
     gstTaxability: null,
     itcIneligible: null,
+    itemType: null,
+    inventoryValuationMethod: null,
+    salesAccount: null,
+    purchaseAccount: null,
     ...overrides,
   });
 
@@ -37,6 +41,8 @@ describe('InvoiceMapper', () => {
     inventoryEntries: [],
     partyGstin: null,
     placeOfSupply: null,
+    partyGstRegistrationType: null,
+    gstRegistration: null,
     currencyCode: null, exchangeRate: null, ...overrides,
   });
 
@@ -116,6 +122,47 @@ describe('InvoiceMapper', () => {
       }),
     ]);
     expect(withoutGstin['GST Treatment']).toBe('consumer');
+  });
+
+  it('derives GST Treatment from the real GSTREGISTRATIONTYPE, not GSTIN presence alone — VERIFIED live: 113 of 602 real sampled vouchers are "Unregistered/Consumer" (a registered business, not a retail consumer), which the old GSTIN-only heuristic silently mapped to "consumer"', () => {
+    const mapper = new InvoiceMapper(buildStockItemIndex([]));
+    const [unregisteredBusiness] = mapper.toInvoiceRows([
+      voucher({
+        partyGstRegistrationType: 'Unregistered/Consumer',
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+      }),
+    ]);
+    expect(unregisteredBusiness['GST Treatment']).toBe('business_none');
+
+    const [unknownType] = mapper.toInvoiceRows([
+      voucher({
+        partyGstRegistrationType: 'Unknown',
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+      }),
+    ]);
+    expect(unknownType['GST Treatment']).toBe('consumer');
+  });
+
+  it('maps Branch Name from the voucher\'s own GST registration, not a caller default', () => {
+    const mapper = new InvoiceMapper(buildStockItemIndex([]));
+    const [row] = mapper.toInvoiceRows([
+      voucher({
+        gstRegistration: 'Uttar Pradesh Registration',
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+      }),
+    ]);
+    expect(row['Branch Name']).toBe('Uttar Pradesh Registration');
+  });
+
+  it('reads Item Type from the stock item\'s real Product Type classification, not a hardcoded "goods"', () => {
+    const itemIndex = buildStockItemIndex([item({ name: 'Support Plan', itemType: 'service' })]);
+    const mapper = new InvoiceMapper(itemIndex);
+    const [row] = mapper.toInvoiceRows([
+      voucher({
+        inventoryEntries: [{ stockItemName: 'Support Plan', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+      }),
+    ]);
+    expect(row['Item Type']).toBe('service');
   });
 
   describe('service/ledger-only invoices (no inventory lines) — regression coverage', () => {

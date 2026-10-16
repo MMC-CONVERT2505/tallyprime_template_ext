@@ -32,6 +32,10 @@ describe('buildStockItemIndex', () => {
         gstRate: 18,
         gstTaxability: 'Taxable',
         itcIneligible: false,
+        itemType: 'goods',
+        inventoryValuationMethod: null,
+        salesAccount: null,
+        purchaseAccount: null,
       },
     ]);
     expect(index.get('Widget A')?.alias).toBe('WGT-A');

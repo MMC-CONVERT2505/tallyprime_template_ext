@@ -861,6 +861,115 @@ describe('ExtractionsService', () => {
           service.getExcelResult('org-1', 'voucher-job', undefined, undefined, 'other-job'),
         ).rejects.toThrow('must reference a completed STOCK_ITEMS job');
       });
+
+      describe('CREDIT_NOTE — Associated Invoice Date cross-reference', () => {
+        const creditNoteRow = {
+          date: '20260415',
+          voucherType: 'Credit Note',
+          voucherNumber: 'CN-1',
+          partyLedgerName: 'ABC Traders',
+          narration: null,
+          reference: 'INV-1',
+          alterId: 2,
+          ledgerEntries: [],
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 }],
+          partyGstin: null,
+          placeOfSupply: null,
+        };
+
+        it('auto-resolves invoicesJobId to the most recent successful Sales-voucherType job for the same company, and uses it to populate Associated Invoice Date', async () => {
+          const jobsById: Record<string, any> = {
+            'cn-job': {
+              id: 'cn-job',
+              status: 'SUCCESS',
+              type: 'VOUCHERS',
+              company: 'ABC Ltd',
+              params: { voucherType: 'Credit Note' },
+            },
+            'items-job': { id: 'items-job', status: 'SUCCESS', type: 'STOCK_ITEMS' },
+            'auto-invoices-job': {
+              id: 'auto-invoices-job',
+              status: 'SUCCESS',
+              type: 'VOUCHERS',
+              company: 'ABC Ltd',
+              params: { voucherType: 'Sales' },
+            },
+          };
+          const resultsById: Record<string, unknown> = {
+            'cn-job': [creditNoteRow],
+            'items-job': [itemRow],
+            'auto-invoices-job': [voucherRow], // voucherRow.voucherNumber === 'INV-1'
+          };
+          const { service, prisma, excel } = makeDeps({
+            redisGet: jest.fn().mockImplementation((key: string) => {
+              const id = key.replace('extraction-result:', '');
+              return Promise.resolve(JSON.stringify(resultsById[id]));
+            }),
+          });
+          prisma.extractionJob.findFirst.mockImplementation(({ where }: any) => {
+            if (where.id) return Promise.resolve(jobsById[where.id] ?? null);
+            // The itemsJobId auto-resolve lookup (type: STOCK_ITEMS) has no
+            // params filter; the invoicesJobId one (type: VOUCHERS) does.
+            if (where.type === 'STOCK_ITEMS') return Promise.resolve({ id: 'items-job' });
+            expect(where).toMatchObject({
+              orgId: 'org-1',
+              company: 'ABC Ltd',
+              type: 'VOUCHERS',
+              status: 'SUCCESS',
+              params: { path: ['voucherType'], equals: 'Sales' },
+            });
+            return Promise.resolve({ id: 'auto-invoices-job' });
+          });
+
+          const result = await service.getExcelResult('org-1', 'cn-job');
+
+          expect(result.filename).toBe('credit-notes-cn-job.xlsx');
+          expect(excel.writeIntoTemplate.mock.calls[0][2]).toEqual([
+            expect.objectContaining({
+              'Associated Invoice Number': 'INV-1',
+              'Associated Invoice Date': new Date(Date.UTC(2025, 3, 15, 12)),
+            }),
+          ]);
+        });
+
+        it('still succeeds with Associated Invoice Date left blank when no Invoice job exists — optional, not required like itemsJobId/groupsJobId', async () => {
+          const jobsById: Record<string, any> = {
+            'cn-job': {
+              id: 'cn-job',
+              status: 'SUCCESS',
+              type: 'VOUCHERS',
+              company: 'ABC Ltd',
+              params: { voucherType: 'Credit Note' },
+            },
+            'items-job': { id: 'items-job', status: 'SUCCESS', type: 'STOCK_ITEMS' },
+          };
+          const resultsById: Record<string, unknown> = {
+            'cn-job': [creditNoteRow],
+            'items-job': [itemRow],
+          };
+          const { service, prisma, excel } = makeDeps({
+            redisGet: jest.fn().mockImplementation((key: string) => {
+              const id = key.replace('extraction-result:', '');
+              return Promise.resolve(JSON.stringify(resultsById[id]));
+            }),
+          });
+          prisma.extractionJob.findFirst.mockImplementation(({ where }: any) => {
+            if (where.id) return Promise.resolve(jobsById[where.id] ?? null);
+            if (where.type === 'STOCK_ITEMS') return Promise.resolve({ id: 'items-job' });
+            return Promise.resolve(null); // no Sales-voucherType job to auto-resolve
+          });
+
+          const result = await service.getExcelResult('org-1', 'cn-job');
+
+          expect(result.filename).toBe('credit-notes-cn-job.xlsx');
+          expect(excel.writeIntoTemplate.mock.calls[0][2]).toEqual([
+            expect.objectContaining({
+              'Associated Invoice Number': 'INV-1',
+              'Associated Invoice Date': '',
+            }),
+          ]);
+        });
+      });
     });
   });
 });

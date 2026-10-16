@@ -22,6 +22,10 @@ describe('CreditNoteMapper', () => {
     gstRate: null,
     gstTaxability: null,
     itcIneligible: null,
+    itemType: null,
+    inventoryValuationMethod: null,
+    salesAccount: null,
+    purchaseAccount: null,
     ...overrides,
   });
 
@@ -37,6 +41,8 @@ describe('CreditNoteMapper', () => {
     inventoryEntries: [],
     partyGstin: null,
     placeOfSupply: null,
+    partyGstRegistrationType: null,
+    gstRegistration: null,
     currencyCode: null, exchangeRate: null, ...overrides,
   });
 
@@ -81,6 +87,99 @@ describe('CreditNoteMapper', () => {
     ]);
     expect(row['Associated Invoice Number']).toBe('Coredge/25-26/27');
     expect(row['Reference#']).toBe('Coredge/25-26/27');
+  });
+
+  it('derives GST Treatment from the real GSTREGISTRATIONTYPE, not GSTIN presence alone', () => {
+    const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+    const [row] = mapper.toCreditNoteRows([
+      voucher({
+        partyGstRegistrationType: 'Unregistered/Consumer',
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+      }),
+    ]);
+    expect(row['GST Treatment']).toBe('business_none');
+  });
+
+  it('maps Branch from the voucher\'s own GST registration', () => {
+    const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+    const [row] = mapper.toCreditNoteRows([
+      voucher({
+        gstRegistration: 'Uttar Pradesh Registration',
+        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+      }),
+    ]);
+    expect(row.Branch).toBe('Uttar Pradesh Registration');
+  });
+
+  it('reads Item Type from the stock item\'s real Product Type classification, not a hardcoded "goods"', () => {
+    const itemIndex = buildStockItemIndex([item({ name: 'Support Plan', itemType: 'service' })]);
+    const mapper = new CreditNoteMapper(itemIndex);
+    const [row] = mapper.toCreditNoteRows([
+      voucher({
+        inventoryEntries: [{ stockItemName: 'Support Plan', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+      }),
+    ]);
+    expect(row['Item Type']).toBe('service');
+  });
+
+  describe('Reference Invoice Type — derived from this voucher\'s own GST Treatment, mirroring Zoho\'s own official migration tool', () => {
+    it('maps a registered business GST Treatment to "Registered"', () => {
+      const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+      const [row] = mapper.toCreditNoteRows([
+        voucher({
+          partyGstin: '33AAAAA1111A1Z1',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['Reference Invoice Type']).toBe('Registered');
+    });
+
+    it('falls back to "B2C Others" for an unregistered/consumer party, never guessing "B2C (Large)"', () => {
+      const mapper = new CreditNoteMapper(buildStockItemIndex([]));
+      const [row] = mapper.toCreditNoteRows([
+        voucher({
+          partyGstRegistrationType: 'Unregistered/Consumer',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['Reference Invoice Type']).toBe('B2C Others');
+    });
+  });
+
+  describe('Associated Invoice Date — a real cross-reference against a companion Invoice extraction, never guessed', () => {
+    it('looks up the date by Associated Invoice Number when a lookup map is supplied', () => {
+      const invoiceDatesByNumber = new Map([
+        ['Coredge/25-26/27', new Date(Date.UTC(2026, 2, 1, 12))],
+      ]);
+      const mapper = new CreditNoteMapper(buildStockItemIndex([]), invoiceDatesByNumber);
+      const [row] = mapper.toCreditNoteRows([
+        voucher({
+          reference: 'Coredge/25-26/27',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['Associated Invoice Date']).toEqual(new Date(Date.UTC(2026, 2, 1, 12)));
+    });
+
+    it('leaves it blank when no lookup map is supplied, or the number does not resolve, rather than guessing', () => {
+      const withoutMap = new CreditNoteMapper(buildStockItemIndex([]));
+      const [rowWithoutMap] = withoutMap.toCreditNoteRows([
+        voucher({
+          reference: 'Coredge/25-26/27',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(rowWithoutMap['Associated Invoice Date']).toBe('');
+
+      const withEmptyMap = new CreditNoteMapper(buildStockItemIndex([]), new Map());
+      const [rowWithEmptyMap] = withEmptyMap.toCreditNoteRows([
+        voucher({
+          reference: 'Coredge/25-26/27',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(rowWithEmptyMap['Associated Invoice Date']).toBe('');
+    });
   });
 
   it('returns nothing for a voucher with neither inventory lines nor ledger entries (genuinely empty)', () => {

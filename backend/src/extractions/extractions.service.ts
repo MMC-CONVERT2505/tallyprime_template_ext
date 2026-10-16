@@ -16,7 +16,7 @@ import { InvoiceMapper } from '../mapping/invoice.mapper';
 import { StockItemMapper } from '../mapping/stock-item.mapper';
 import { StockJournalMapper } from '../mapping/stock-journal.mapper';
 import { VendorMapper } from '../mapping/vendor.mapper';
-import { buildStockItemIndex } from '../mapping/voucher-line.shared';
+import { buildStockItemIndex, tallyDateToJsDate } from '../mapping/voucher-line.shared';
 import {
   ZOHO_ENTITIES,
   ZohoEntityKey,
@@ -367,6 +367,13 @@ export class ExtractionsService {
    * choice at all — it's fixed by which `voucherType` the job was fetched
    * with (stored on the job's own `params`), resolved via
    * zohoEntityForVoucherType.
+   *
+   * A CREDIT_NOTE export additionally accepts `invoicesJobId` — a
+   * completed VOUCHERS job for the same company's Sales/Invoice vouchers,
+   * auto-resolved the same way as groupsJobId/itemsJobId — used to look up
+   * "Associated Invoice Date" by invoice number (see credit-note.mapper.ts).
+   * Optional: a Credit Note export with none available still succeeds,
+   * just with that one column left blank rather than blocked entirely.
    */
   async getExcelResult(
     orgId: string,
@@ -374,6 +381,7 @@ export class ExtractionsService {
     groupsJobId?: string,
     ledgerEntity: 'COA' | 'CUSTOMER' | 'VENDOR' = 'COA',
     itemsJobId?: string,
+    invoicesJobId?: string,
   ): Promise<ExcelExportResult> {
     const job = await this.getStatus(orgId, id);
     this.assertSuccessful(job);
@@ -462,7 +470,38 @@ export class ExtractionsService {
         return this.writeZohoExport('BILL', rows, `bills-${id}.xlsx`);
       }
       if (entityKey === 'CREDIT_NOTE') {
-        const rows = new CreditNoteMapper(itemIndex).toCreditNoteRows(vouchers);
+        // Best-effort, not required: see this method's doc comment. A
+        // Credit Note export still succeeds with no Invoice companion job
+        // at all — "Associated Invoice Date" just stays blank, the same
+        // "real data or blank, never guessed" standard the mapper itself
+        // follows for a reference number that doesn't resolve.
+        const resolvedInvoicesJobId =
+          invoicesJobId ??
+          (await this.resolveLatestSuccessfulJobId(
+            orgId,
+            job.company,
+            'VOUCHERS',
+            ZOHO_ENTITIES.INVOICE.voucherType,
+          ));
+        let invoiceDatesByNumber: Map<string, Date> | undefined;
+        if (resolvedInvoicesJobId) {
+          const invoicesJob = await this.getStatus(orgId, resolvedInvoicesJobId);
+          if (invoicesJob.status === 'SUCCESS' && invoicesJob.type === 'VOUCHERS') {
+            const invoiceVouchers = (await this.loadResultData(
+              resolvedInvoicesJobId,
+            )) as TallyVoucher[];
+            invoiceDatesByNumber = new Map();
+            for (const voucher of invoiceVouchers) {
+              const date = tallyDateToJsDate(voucher.date);
+              if (voucher.voucherNumber && date) {
+                invoiceDatesByNumber.set(voucher.voucherNumber, date);
+              }
+            }
+          }
+        }
+        const rows = new CreditNoteMapper(itemIndex, invoiceDatesByNumber).toCreditNoteRows(
+          vouchers,
+        );
         return this.writeZohoExport('CREDIT_NOTE', rows, `credit-notes-${id}.xlsx`);
       }
       const rows = new StockJournalMapper(itemIndex).toStockJournalRows(vouchers);
@@ -485,10 +524,26 @@ export class ExtractionsService {
     orgId: string,
     company: string | null,
     type: ExtractionType,
+    /**
+     * Added 2026-09-10 for the CREDIT_NOTE -> invoicesJobId dependency: a
+     * company can have several completed VOUCHERS jobs (Sales/Invoice,
+     * Purchase/Bill, Credit Note, …), distinguished only by their own
+     * `params.voucherType`, not by `type` alone (every one of them is
+     * `type: 'VOUCHERS'`). Filtering here — rather than in the caller —
+     * keeps the "most recent successful match" auto-resolve semantics
+     * identical to the existing groupsJobId/itemsJobId lookups.
+     */
+    voucherType?: string,
   ): Promise<string | undefined> {
     if (!company) return undefined;
     const job = await this.prisma.extractionJob.findFirst({
-      where: { orgId, company, type, status: 'SUCCESS' },
+      where: {
+        orgId,
+        company,
+        type,
+        status: 'SUCCESS',
+        ...(voucherType ? { params: { path: ['voucherType'], equals: voucherType } } : {}),
+      },
       orderBy: { createdAt: 'desc' },
       select: { id: true },
     });

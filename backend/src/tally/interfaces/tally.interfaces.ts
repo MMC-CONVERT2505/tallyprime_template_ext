@@ -44,6 +44,26 @@ export interface TallyLedger {
    * fixing; everything else was already right).
    */
   gstin: string | null;
+  /**
+   * LEDGSTREGDETAILS.LIST -> GSTREGISTRATIONTYPE, read from the same entry
+   * `gstin` resolves to (or, when no entry has a GSTIN at all, the last
+   * entry that at least has a registration type) — added 2026-09-10, cross-
+   * referenced against Zoho's own official Tally migration tool, then
+   * VERIFIED live: real values "Regular" (616 ledgers)/"Unregistered/
+   * Consumer" (470)/"Unknown" (32) across 1,409 real ledgers. Powers the
+   * corrected resolveGstTreatment (see ledger-contact.shared.ts) — this
+   * project previously inferred GST Treatment from GSTIN presence alone,
+   * which silently mapped every "Unregistered/Consumer" ledger to Zoho's
+   * "consumer" instead of the correct "business_none".
+   */
+  gstRegistrationType: string | null;
+  /**
+   * LEDGSTREGDETAILS.LIST -> PLACEOFSUPPLY, same source entry as gstin/
+   * gstRegistrationType — added 2026-09-10, VERIFIED live: populated for
+   * 1,048 of 1,409 real ledgers. Powers Customer.xlsx's "Place Of Contact"
+   * and Vendor.xlsx's "Source Of Supply", both previously blank.
+   */
+  gstPlaceOfSupply: string | null;
   panNumber: string | null;
   email: string | null;
   phone: string | null;
@@ -79,6 +99,29 @@ export interface TallyLedger {
   website: string | null;
   creditLimit: number | null;
   contactPersonName: string | null;
+  /**
+   * Flat MAILINGNAME field — added 2026-09-10, cross-referenced against
+   * Zoho's own official Tally migration tool (maps to Customer/Vendor
+   * "Billing Attention"), then VERIFIED live: populated for 1,269 of 1,409
+   * real ledgers, and genuinely differs from the ledger's own `name` in 4
+   * real cases (not just a duplicate — real, independently-settable data).
+   */
+  mailingName: string | null;
+  /**
+   * Flat BILLCREDITPERIOD field on the LEDGER master itself — the party's
+   * own *default* credit period, distinct from TallyLedgerEntry.
+   * billCreditPeriodDays (a per-voucher override read from
+   * BILLALLOCATIONS.LIST). Added 2026-09-10, cross-referenced against
+   * Zoho's own official Tally migration tool (maps to Customer/Vendor
+   * "Payment Terms"/"Payment Terms Label"), then VERIFIED live: a real,
+   * correctly-named field (an earlier pass tried "CREDITPERIOD", which
+   * truly doesn't exist) but sparse — only 1 of 1,409 real ledgers
+   * ("Sachin") has it set, to "20". Kept as raw text rather than parsed to
+   * a number here — see resolvePaymentTerms in ledger-contact.shared.ts,
+   * which mirrors Zoho's own tool's "only process a ' Days' suffix, leave
+   * anything else blank" handling.
+   */
+  creditPeriod: string | null;
 }
 
 /** A Group is Tally's account-hierarchy node — never a Zoho entity on its own,
@@ -94,6 +137,81 @@ export interface TallyGroup {
 /** A Cost Centre is Tally's project/department/branch-style allocation tag —
  *  maps to Zoho Books' "Reporting Tag" (Master and Invoice or Bill/Class.xlsx). */
 export interface TallyCostCentre {
+  name: string;
+  parent: string | null;
+  alterId: number | null;
+}
+
+/**
+ * The remaining standard Tally master types beyond Ledger/Group/StockItem/
+ * CostCentre — added 2026-09-19 for comprehensive extraction (every master
+ * this project's TDL Collection mechanism can reach, not just the ones the
+ * current 9 Zoho templates need). Field names for all of these were VERIFIED
+ * live against COREDGE.IO INDIA PRIVATE LIMITED before being added — see
+ * EnvelopeBuilder's corresponding build*Request doc comments.
+ */
+export interface TallyStockGroup {
+  name: string;
+  parent: string | null;
+  alterId: number | null;
+}
+
+export interface TallyStockCategory {
+  name: string;
+  parent: string | null;
+  alterId: number | null;
+}
+
+/** VERIFIED live: 7 real units on this company (Nos, Kg, Years, TB, ...). */
+export interface TallyUnit {
+  name: string;
+  /** Tally's own display/report name — can differ from `name` (its internal
+   *  symbol), e.g. NAME "TB" / ORIGINALNAME "TBRaw" confirmed live. */
+  originalName: string | null;
+  isSimpleUnit: boolean | null;
+  decimalPlaces: number | null;
+  alterId: number | null;
+}
+
+/** VERIFIED live: 3 real currencies configured on this company (INR, USD,
+ *  UAE Dirham) — this company genuinely transacts in more than one currency,
+ *  confirmed independently by TallyVoucher.currencyCode's own USD findings. */
+export interface TallyCurrency {
+  name: string;
+  originalName: string | null;
+  /** The real currency code/name Zoho's own tool reads this from — e.g. "USD",
+   *  "INR" — despite the field name, this is NOT a stock-item-style symbol. */
+  expandedSymbol: string | null;
+  decimalPlaces: number | null;
+  alterId: number | null;
+}
+
+/** VERIFIED live: 1 real Godown ("Main Location", the Tally-created default) —
+ *  matches this project's existing finding that Godowns are unused by this
+ *  company beyond the single default location. */
+export interface TallyGodown {
+  name: string;
+  parent: string | null;
+  alterId: number | null;
+}
+
+/** VERIFIED live: 1 real Cost Category ("Primary Cost Category", the
+ *  Tally-created default) — this company's Cost Centres (already extracted
+ *  via TallyCostCentre) all roll up to this one category. */
+export interface TallyCostCategory {
+  name: string;
+  alterId: number | null;
+}
+
+/** VERIFIED live: 24 real Voucher Types configured on this company — every
+ *  standard Tally type (Sales/Purchase/Payment/Receipt/Journal/Contra/Credit
+ *  Note/Debit Note/Sales Order/Purchase Order/Stock Journal/Physical Stock/
+ *  Delivery Note/Receipt Note/Rejections In-Out/Job Work In-Out Order/
+ *  Material In-Out/Memorandum/Reversing Journal/Attendance/Payroll), no
+ *  custom ones. This is the MASTER list (what's configured) — distinct from
+ *  what actually appears in TallyVoucher.voucherType across real vouchers
+ *  (what's actually used). */
+export interface TallyVoucherType {
   name: string;
   parent: string | null;
   alterId: number | null;
@@ -174,6 +292,40 @@ export interface TallyStockItem {
    * ITC-INeligible, Zoho asks for ITC-Eligible).
    */
   itcIneligible: boolean | null;
+  /**
+   * Flat GSTTYPEOFSUPPLY field — added 2026-09-10, cross-referenced against
+   * Zoho's own official Tally migration tool (maps to Item.xlsx's "Product
+   * Type"), then VERIFIED live: of 35 real stock items, 28 are "Services"
+   * and only 6 are "Goods" (1 blank). This project previously hardcoded
+   * every item's Item Type to 'goods' everywhere it's written (Item.xlsx
+   * and every Invoice/Bill/Credit Note line item), which was wrong for the
+   * majority of this company's real items.
+   */
+  itemType: 'goods' | 'service' | null;
+  /**
+   * Flat COSTINGMETHOD field — added 2026-09-12, cross-referenced against
+   * Zoho's own official Tally migration tool (maps to Item.xlsx's
+   * "Inventory Valuation Method"), then VERIFIED live: populated for all 35
+   * real items ("Avg. Cost"). Passed through as Tally's own text, not
+   * mapped to a guessed Zoho enum.
+   */
+  inventoryValuationMethod: string | null;
+  /**
+   * SALESLIST.LIST/PURCHASELIST.LIST -> first entry's LEDGERNAME — the
+   * item's own default Sales/Purchase account allocation. Added 2026-09-12,
+   * cross-referenced against Zoho's own official Tally migration tool (maps
+   * to Item.xlsx's "Account"/"Purchase Account" — corrects an earlier mix-up
+   * that attributed those blank columns to the unconfigured Price List
+   * fields, STANDARDPRICELIST.LIST/STANDARDCOSTLIST.LIST, a different Tally
+   * concept). VERIFIED live that these lists are real and correctly fetched
+   * (no error) but empty for all 35 real items — this company has no
+   * default Sales/Purchase ledger configured on any Stock Item. The
+   * LEDGERNAME child-field read here follows the same convention already
+   * independently verified for ACCOUNTINGALLOCATIONS.LIST elsewhere in this
+   * project, not a confirmed example of this specific list populated.
+   */
+  salesAccount: string | null;
+  purchaseAccount: string | null;
 }
 
 export interface TallyInventoryEntry {
@@ -223,6 +375,28 @@ export interface TallyVoucher {
    */
   partyGstin: string | null;
   placeOfSupply: string | null;
+  /**
+   * Flat GSTREGISTRATIONTYPE field — added 2026-09-10, cross-referenced
+   * against Zoho's own official Tally migration tool (maps to Invoice/
+   * Bill/Credit Note's "GST Treatment"), then VERIFIED live against 602
+   * real sampled vouchers: "Regular" (334)/"Unregistered/Consumer" (113)/
+   * blank (123)/"Unknown" (31). This project previously inferred GST
+   * Treatment from partyGstin presence alone (see resolveGstTreatment in
+   * ledger-contact.shared.ts), which silently mapped every "Unregistered/
+   * Consumer" voucher to Zoho's "consumer" instead of "business_none".
+   */
+  partyGstRegistrationType: string | null;
+  /**
+   * Flat GSTREGISTRATION field (the GST registration/branch a voucher was
+   * recorded against) — added 2026-09-10, cross-referenced against Zoho's
+   * own official Tally migration tool (maps to "Branch"/"Branch Name"),
+   * then VERIFIED live: populated on 601 of 602 sampled vouchers, always
+   * "Uttar Pradesh Registration" for this company (its one GST
+   * registration). Replaces the previously-tried DispatchFromName, which
+   * this project's own docs already flag as always returning just the
+   * company's legal name rather than a real branch.
+   */
+  gstRegistration: string | null;
   /**
    * Detected from the party ledger entry's own AMOUNT text — added
    * 2026-09-05 alongside parseTallyForeignAmount. Null (meaning "assume

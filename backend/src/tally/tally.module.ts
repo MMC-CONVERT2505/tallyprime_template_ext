@@ -4,7 +4,11 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TallyConfig } from '../config/configuration';
 import { PrismaService } from '../database/prisma.service';
+import { ExcelModule } from '../excel/excel.module';
 import { EXTRACTION_QUEUE, EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS } from '../extractions/extractions.constants';
+import { TallyFullSyncExportService } from './extraction/full-sync-export.service';
+import { TallyFullSyncMappingService } from './extraction/full-sync-mapping.service';
+import { TallyFullSyncService } from './extraction/full-sync.service';
 import { MasterExtractionService } from './extraction/master-extraction.service';
 import { TransactionExtractionService } from './extraction/transaction-extraction.service';
 import { TALLY_CONNECTOR } from './tally-connector.interface';
@@ -67,11 +71,15 @@ const tallyConnectorProvider = {
     // jobs (POST /tally/jobs, via TallyJobsService) would silently get none
     // of the retry/backoff policy agent-mode jobs get.
     BullModule.registerQueue({ name: EXTRACTION_QUEUE, defaultJobOptions: EXTRACTION_QUEUE_DEFAULT_JOB_OPTIONS }),
+    ExcelModule,
   ],
   controllers: [TallyController],
   providers: [
     MasterExtractionService,
     TransactionExtractionService,
+    TallyFullSyncService,
+    TallyFullSyncMappingService,
+    TallyFullSyncExportService,
     TallyDiagnosticsService,
     TallyHttpClient,
     tallyConnectorProvider,
@@ -83,6 +91,9 @@ const tallyConnectorProvider = {
   exports: [
     MasterExtractionService,
     TransactionExtractionService,
+    TallyFullSyncService,
+    TallyFullSyncMappingService,
+    TallyFullSyncExportService,
     TallyDiagnosticsService,
     TallyHttpClient,
     EnvelopeBuilder,

@@ -10,6 +10,46 @@ import {
 } from './voucher-tax.shared';
 
 /**
+ * Mirrors Zoho's own official Tally migration tool's ReferenceTypeValueHandler:
+ * derived from the credit note's OWN GST Treatment (not a re-lookup of the
+ * referenced invoice), cross-checked against GST law's return-filing
+ * categories.
+ *
+ * business_gst/business_registered_composition -> "Registered" (a B2B sale
+ * to another GST-registered party). business_sez -> SEZ With/Without
+ * Payment, overseas -> Export With/Without Payment, deemed_export ->
+ * "Deemed Export" — all keyed on whether any GST was actually posted on
+ * this voucher (`hasGst`), matching Zoho's own handler exactly.
+ *
+ * business_none/consumer/tax_deductor (an unregistered or retail buyer) map
+ * to "B2C Others" unconditionally here, NOT split against "B2C (Large)".
+ * Zoho's own reference distinguishes the two by whether the sale is
+ * inter-state AND exceeds a GST-return threshold (₹1,00,000 under current
+ * GSTR-1 rules) — but that needs the seller's own home state, which this
+ * project doesn't extract (Tally's live instance went unreachable mid-
+ * verification before this specific piece could be confirmed against real
+ * data, and it has zero real SEZ/overseas/B2C credit notes to check
+ * against regardless). "B2C Others" is the correct, common-case bucket and
+ * never wrong in a way that fabricates data; add the inter-state/threshold
+ * split later if a company's real data ever needs it.
+ */
+function resolveReferenceInvoiceType(gstTreatment: string, hasGst: boolean): string {
+  switch (gstTreatment) {
+    case 'business_gst':
+    case 'business_registered_composition':
+      return 'Registered';
+    case 'business_sez':
+      return hasGst ? 'SEZ With Payment' : 'SEZ Without Payment';
+    case 'overseas':
+      return hasGst ? 'Export With Payment' : 'Export Without Payment';
+    case 'deemed_export':
+      return 'Deemed Export';
+    default:
+      return 'B2C Others';
+  }
+}
+
+/**
  * Zoho Books "Credit Note" import columns actually populated by this project
  * — taken from the real template (Master and Invoice or Bill/Credit
  * Note.xlsx, sheet "Credit Note"). Same shape/simplification rules as
@@ -36,17 +76,37 @@ import {
  * (e.g. REFERENCE "Coredge/25-26/27" on a Credit Note against a customer who
  * has a real Sales invoice by that exact number). One real Tally field
  * legitimately answers two different Zoho questions here, the same pattern
- * as Item.xlsx's SKU/Alias Name. "Associated Invoice Date" has no equivalent
- * source — cross-referencing the original invoice's own date would mean
- * looking it up by number in a separate extraction this mapper doesn't have
- * access to, so it stays blank rather than guessed.
+ * as Item.xlsx's SKU/Alias Name.
+ *
+ * Associated Invoice Date (added 2026-09-10) — a genuine cross-reference,
+ * not a Tally field: looked up by "Associated Invoice Number" against a
+ * `invoiceDatesByNumber` map built from the SAME company's separately-
+ * extracted Invoice vouchers (see extractions.service.ts's `invoicesJobId`
+ * plumbing) — real data this project already has elsewhere in the
+ * pipeline, not a guess. Left blank when the number doesn't resolve to a
+ * real invoice (e.g. the map wasn't supplied, or the reference is
+ * freeform text rather than a real invoice number), never fabricated.
+ *
+ * Branch (added 2026-09-10) — voucher.gstRegistration, cross-referenced
+ * against Zoho's own official Tally migration tool, then VERIFIED live
+ * (see TallyVoucher.gstRegistration's doc comment).
+ *
+ * Reference Invoice Type (added 2026-09-10) — see
+ * resolveReferenceInvoiceType's doc comment above.
+ *
+ * Item Type on the item-line branch (corrected 2026-09-10) previously
+ * hardcoded 'goods'; now reads TallyStockItem.itemType (GSTTYPEOFSUPPLY) —
+ * VERIFIED live that 28 of 35 real items are actually "Services".
  */
 export interface ZohoCreditNoteRow {
   'Credit Note Number': string;
   'Credit Note Date': Date | '';
   'Associated Invoice Number': string;
+  'Associated Invoice Date': Date | '';
+  'Reference Invoice Type': string;
   'Reference#': string;
   'Customer Name': string;
+  Branch: string;
   'GST Treatment': string;
   'GST Identification Number (GSTIN)': string;
   'Place of Supply': string;
@@ -72,7 +132,16 @@ export interface ZohoCreditNoteRow {
 }
 
 export class CreditNoteMapper {
-  constructor(private readonly itemIndex: StockItemIndex) {}
+  /**
+   * `invoiceDatesByNumber` — optional Invoice-Number -> Invoice-Date lookup
+   * built from a companion Invoice extraction (see extractions.service.ts).
+   * Omitted (or a number with no entry) leaves "Associated Invoice Date"
+   * blank rather than guessed — see the interface doc comment.
+   */
+  constructor(
+    private readonly itemIndex: StockItemIndex,
+    private readonly invoiceDatesByNumber?: ReadonlyMap<string, Date>,
+  ) {}
 
   toCreditNoteRows(vouchers: TallyVoucher[]): ZohoCreditNoteRow[] {
     return vouchers.flatMap((voucher) => this.toCreditNoteRowsForVoucher(voucher));
@@ -81,14 +150,22 @@ export class CreditNoteMapper {
   private toCreditNoteRowsForVoucher(voucher: TallyVoucher): ZohoCreditNoteRow[] {
     const summary = summarizeLedgerEntries(voucher.ledgerEntries, voucher.partyLedgerName);
     const currency = resolveVoucherCurrency(voucher);
+    const gstTreatment = resolveGstTreatment(voucher.partyGstin, voucher.partyGstRegistrationType);
+    const associatedInvoiceNumber = voucher.reference ?? '';
+    const associatedInvoiceDate: Date | '' =
+      (associatedInvoiceNumber ? this.invoiceDatesByNumber?.get(associatedInvoiceNumber) : undefined) ??
+      '';
 
     const common: Pick<
       ZohoCreditNoteRow,
       | 'Credit Note Number'
       | 'Credit Note Date'
       | 'Associated Invoice Number'
+      | 'Associated Invoice Date'
+      | 'Reference Invoice Type'
       | 'Reference#'
       | 'Customer Name'
+      | 'Branch'
       | 'GST Treatment'
       | 'GST Identification Number (GSTIN)'
       | 'Place of Supply'
@@ -100,10 +177,16 @@ export class CreditNoteMapper {
     > = {
       'Credit Note Number': voucher.voucherNumber ?? '',
       'Credit Note Date': tallyDateToJsDate(voucher.date) ?? '',
-      'Associated Invoice Number': voucher.reference ?? '',
+      'Associated Invoice Number': associatedInvoiceNumber,
+      'Associated Invoice Date': associatedInvoiceDate,
+      'Reference Invoice Type': resolveReferenceInvoiceType(
+        gstTreatment,
+        summary.gstAmount !== null,
+      ),
       'Reference#': voucher.reference ?? '',
       'Customer Name': voucher.partyLedgerName ?? '',
-      'GST Treatment': resolveGstTreatment(voucher.partyGstin),
+      Branch: voucher.gstRegistration ?? '',
+      'GST Treatment': gstTreatment,
       'GST Identification Number (GSTIN)': voucher.partyGstin ?? '',
       'Place of Supply': voucher.placeOfSupply ?? '',
       'Currency Code': currency.currencyCode,
@@ -127,7 +210,7 @@ export class CreditNoteMapper {
           'Item Name': line.stockItemName,
           SKU: item?.alias ?? '',
           'Item Desc': item?.description ?? '',
-          'Item Type': 'goods',
+          'Item Type': item?.itemType ?? 'goods',
           'HSN/SAC': item?.hsnCode ?? '',
           Quantity: line.quantity ?? '',
           'Usage unit': item?.baseUnit ?? '',

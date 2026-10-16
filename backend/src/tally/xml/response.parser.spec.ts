@@ -73,6 +73,8 @@ describe('TallyResponseParser', () => {
       expect(ledgers).toHaveLength(2);
       const enrichmentFieldsBlank = {
         gstin: null,
+        gstRegistrationType: null,
+        gstPlaceOfSupply: null,
         panNumber: null,
         email: null,
         phone: null,
@@ -86,6 +88,8 @@ describe('TallyResponseParser', () => {
         website: null,
         creditLimit: null,
         contactPersonName: null,
+        mailingName: null,
+        creditPeriod: null,
       };
       expect(ledgers[0]).toEqual({
         name: 'Cash',
@@ -299,6 +303,85 @@ describe('TallyResponseParser', () => {
     });
   });
 
+  describe('remaining master types (2026-09-19 comprehensive-extraction pass)', () => {
+    it('mapStockGroups parses name/parent/alterId, and treats an empty Collection as zero records rather than an error — VERIFIED live: this company genuinely has none', () => {
+      const populated =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<STOCKGROUP><NAME>Finished Goods</NAME><PARENT>Primary</PARENT><ALTERID>10</ALTERID></STOCKGROUP>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      expect(parser.mapStockGroups(populated)).toEqual([
+        { name: 'Finished Goods', parent: 'Primary', alterId: 10 },
+      ]);
+
+      const empty = '<ENVELOPE><BODY><DATA><COLLECTION>   </COLLECTION></DATA></BODY></ENVELOPE>';
+      expect(parser.mapStockGroups(empty)).toEqual([]);
+    });
+
+    it('mapStockCategories parses name/parent/alterId', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<STOCKCATEGORY><NAME>Electronics</NAME><PARENT>Primary</PARENT><ALTERID>20</ALTERID></STOCKCATEGORY>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      expect(parser.mapStockCategories(xml)).toEqual([
+        { name: 'Electronics', parent: 'Primary', alterId: 20 },
+      ]);
+    });
+
+    it('mapUnits parses name/originalName/isSimpleUnit/decimalPlaces/alterId — VERIFIED live: NAME can differ from ORIGINALNAME (e.g. "TB"/"TBRaw")', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<UNIT><NAME>TB</NAME><ORIGINALNAME>TBRaw</ORIGINALNAME><ISSIMPLEUNIT>Yes</ISSIMPLEUNIT>' +
+        '<DECIMALPLACES>0</DECIMALPLACES><ALTERID>6291</ALTERID></UNIT>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      expect(parser.mapUnits(xml)).toEqual([
+        { name: 'TB', originalName: 'TBRaw', isSimpleUnit: true, decimalPlaces: 0, alterId: 6291 },
+      ]);
+    });
+
+    it('mapCurrencies parses name/originalName/expandedSymbol/decimalPlaces/alterId — VERIFIED live: this company has 3 real currencies (INR/USD/UAE Dirham)', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<CURRENCY><NAME>$</NAME><ORIGINALNAME>$</ORIGINALNAME><EXPANDEDSYMBOL>USD</EXPANDEDSYMBOL>' +
+        '<DECIMALPLACES>2</DECIMALPLACES><ALTERID>6495</ALTERID></CURRENCY>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      expect(parser.mapCurrencies(xml)).toEqual([
+        { name: '$', originalName: '$', expandedSymbol: 'USD', decimalPlaces: 2, alterId: 6495 },
+      ]);
+    });
+
+    it('mapGodowns parses name/parent/alterId — VERIFIED live: this company has exactly 1, the Tally-created default "Main Location"', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<GODOWN><NAME>Main Location</NAME><PARENT>Primary</PARENT><ALTERID>5202</ALTERID></GODOWN>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      expect(parser.mapGodowns(xml)).toEqual([
+        { name: 'Main Location', parent: 'Primary', alterId: 5202 },
+      ]);
+    });
+
+    it('mapCostCategories parses name/alterId (no Parent field — Cost Categories are flat)', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<COSTCATEGORY><NAME>Primary Cost Category</NAME><ALTERID>5201</ALTERID></COSTCATEGORY>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      expect(parser.mapCostCategories(xml)).toEqual([
+        { name: 'Primary Cost Category', alterId: 5201 },
+      ]);
+    });
+
+    it('mapVoucherTypes parses name/parent/alterId — VERIFIED live: 24 real types configured, every standard Tally one', () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION>' +
+        '<VOUCHERTYPE><NAME>Sales</NAME><PARENT>Sales</PARENT><ALTERID>100</ALTERID></VOUCHERTYPE>' +
+        '<VOUCHERTYPE><NAME>Credit Note</NAME><PARENT>Credit Note</PARENT><ALTERID>101</ALTERID></VOUCHERTYPE>' +
+        '</COLLECTION></DATA></BODY></ENVELOPE>';
+      expect(parser.mapVoucherTypes(xml)).toEqual([
+        { name: 'Sales', parent: 'Sales', alterId: 100 },
+        { name: 'Credit Note', parent: 'Credit Note', alterId: 101 },
+      ]);
+    });
+  });
+
   describe('mapStockItems', () => {
     it('parses quantity/value fields (stripping the unit suffix) and AlterID, tolerating omitted tags', () => {
       const xml =
@@ -325,6 +408,10 @@ describe('TallyResponseParser', () => {
         gstRate: null,
         gstTaxability: null,
         itcIneligible: null,
+        itemType: null,
+        inventoryValuationMethod: null,
+        salesAccount: null,
+        purchaseAccount: null,
       });
       expect(items[1]).toEqual({
         name: 'Widget B',
@@ -341,6 +428,10 @@ describe('TallyResponseParser', () => {
         gstRate: null,
         gstTaxability: null,
         itcIneligible: null,
+        itemType: null,
+        inventoryValuationMethod: null,
+        salesAccount: null,
+        purchaseAccount: null,
       });
     });
 

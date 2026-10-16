@@ -69,6 +69,14 @@ const EXTRACTABLE_TYPES: ExtractableType[] = [
 ];
 const MASTER_TYPES: MasterType[] = ['COMPANIES', 'LEDGERS', 'STOCK_ITEMS', 'GROUPS', 'COST_CENTRES'];
 
+/** `<input type="date">` always yields "YYYY-MM-DD" — every backend DTO here
+ *  (FetchMasterDto, BulkExportDto) requires the separator-free "YYYYMMDD"
+ *  shape instead. Live-confirmed bug: both date-scoped forms below sent the
+ *  hyphenated value straight through and got a 400 back on every submit. */
+function toTallyDate(isoDate: string): string {
+  return isoDate.replaceAll('-', '');
+}
+
 /** Fires a downloaded Blob as a file save — shared by the job-status card's
  *  "Download Excel" and the job list's per-row quick-download. */
 function saveBlob(blob: Blob, filename: string): void {
@@ -292,8 +300,8 @@ export function ExtractionsPanel() {
       const res = await extractionsApi.fetchMaster({
         companyName,
         masterType,
-        fromDate: fromDate || undefined,
-        toDate: toDate || undefined,
+        fromDate: fromDate ? toTallyDate(fromDate) : undefined,
+        toDate: toDate ? toTallyDate(toDate) : undefined,
       });
       trackNewJob(res.id);
     } catch (err) {
@@ -317,8 +325,8 @@ export function ExtractionsPanel() {
     try {
       const res = await bulkExportApi.start({
         companyName,
-        fromDate: bulkFromDate,
-        toDate: bulkToDate,
+        fromDate: toTallyDate(bulkFromDate),
+        toDate: toTallyDate(bulkToDate),
       });
       await refreshBulkExports();
       setExpandedBulkIds((prev) => new Set(prev).add(res.id));

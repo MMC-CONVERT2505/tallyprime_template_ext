@@ -236,6 +236,15 @@ export const authApi = {
   login: (body: { email: string; password: string }) =>
     request<AuthResult>('POST', '/auth/login', { body, auth: false }),
   me: () => request<{ sub: string; email: string; orgId: string }>('GET', '/auth/me'),
+  /** Always resolves with the same generic message whether or not `email`
+   *  matched a real account — the backend never reveals which (see
+   *  AuthService.requestPasswordReset's doc comment). Emails a 4-digit code
+   *  (in local dev, always "0000" — see AuthService.DEV_FIXED_OTP) rather
+   *  than a clickable link, verified inline below. */
+  requestPasswordReset: (email: string) =>
+    request<{ message: string }>('POST', '/auth/request-password-reset', { body: { email }, auth: false }),
+  resetPassword: (body: { email: string; otp: string; newPassword: string }) =>
+    request<{ message: string }>('POST', '/auth/reset-password', { body, auth: false }),
 };
 
 // ── Connections (manual) ─────────────────────────────────────────────────
@@ -364,6 +373,87 @@ export const bulkExportApi = {
   /** Removes an export from history (record + its .zip on disk). The
    *  backend refuses this while the export is still PENDING/RUNNING. */
   remove: (id: string) => request<{ deleted: true }>('DELETE', `/extractions/bulk-export/${id}`),
+};
+
+// ── Full Sync Explorer (raw extraction + Zoho mapping preview + debug export) ─
+
+export type FullSyncRunStatus = 'NOT_STARTED' | 'RUNNING' | 'SUCCESS' | 'FAILED';
+
+export interface FullSyncManifest {
+  company: string;
+  extractedAt: string;
+  dateRange: { from: string; to: string };
+  /** Record count per master type, plus a `VOUCHERS` total. */
+  entityCounts: Record<string, number>;
+  voucherTypeBreakdown: Record<string, number>;
+  ttlSeconds: number;
+}
+
+export interface FullSyncStatus {
+  status: FullSyncRunStatus;
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+  manifest?: FullSyncManifest;
+}
+
+/** Mirrors backend zoho-entity.map.ts's ZohoEntityKey — the 9 Zoho templates
+ *  this project can build. */
+export type ZohoEntityKey =
+  | 'COA'
+  | 'CUSTOMER'
+  | 'VENDOR'
+  | 'ITEM'
+  | 'COST_CENTRE'
+  | 'INVOICE'
+  | 'BILL'
+  | 'CREDIT_NOTE'
+  | 'STOCK_JOURNAL';
+
+export interface MappedZohoEntity {
+  /** The real Zoho template's full header list — includes columns nothing
+   *  populates, not just the keys a mapped row happens to set. */
+  headers: string[];
+  rows: Array<Record<string, unknown>>;
+}
+
+/**
+ * The `/tally/full-sync/*` family: extract every Tally master/voucher type
+ * straight into Redis (raw, no Zoho shape yet), browse it, map it into the 9
+ * Zoho templates for a field-coverage preview, and export one combined debug
+ * workbook — see backend TallyFullSyncService's doc comment. Same
+ * unauthenticated, direct-to-Tally posture as tallyApi/tallyJobsApi above (no
+ * connectionId, no bridge).
+ */
+export const fullSyncApi = {
+  /** Fire-and-forget — poll status() until it leaves RUNNING. A real run
+   *  against a large company can take several minutes (verified live: ~8min
+   *  for 13k+ vouchers). */
+  start: (params: { company?: string; fromDate?: string; toDate?: string }) =>
+    request<{ status: 'RUNNING' }>('POST', `/tally/full-sync?${qs(params)}`),
+  status: (company: string) =>
+    request<FullSyncStatus>('GET', `/tally/full-sync/status?${qs({ company })}`),
+  /** `entityType` must be one of status().manifest's entityCounts keys, or
+   *  `VOUCHERS:<type>` from its voucherTypeBreakdown, or `COMPANY`. */
+  data: (params: { company: string; entityType: string }) =>
+    request<unknown>('GET', `/tally/full-sync/data?${qs(params)}`),
+  /** Computes and caches all 9 Zoho entities in one call — synchronous
+   *  (pure in-memory transform over already-cached data, not a Tally call). */
+  map: (company: string) =>
+    request<Record<ZohoEntityKey, MappedZohoEntity>>(
+      'POST',
+      `/tally/full-sync/map?${qs({ company })}`,
+    ),
+  mappedData: (params: { company: string; entity: ZohoEntityKey }) =>
+    request<MappedZohoEntity>('GET', `/tally/full-sync/mapped-data?${qs(params)}`),
+  /** One Zoho entity's mapped rows written into its real template file —
+   *  the per-function counterpart to excel() below. */
+  mappedDataExcel: (params: { company: string; entity: ZohoEntityKey }) =>
+    request<Blob>('GET', `/tally/full-sync/mapped-data/excel?${qs(params)}`, { raw: true }),
+  /** One combined .xlsx: a sheet per raw function plus a sheet per Zoho
+   *  template (computed on the fly if map() hasn't been run yet). */
+  excel: (company: string) =>
+    request<Blob>('POST', `/tally/full-sync/excel?${qs({ company })}`, { raw: true }),
 };
 
 export const healthApi = {

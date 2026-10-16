@@ -71,11 +71,32 @@ export function IconExtract(props: IconProps) {
   );
 }
 
+/** A stack of layers — used for the Full Sync Explorer tab (extract, then
+ *  map, then export: layered steps over the same cached data). */
+export function IconLayers(props: IconProps) {
+  return (
+    <svg {...base} width="18" height="18" {...props}>
+      <path d="M12 3 21 8l-9 5-9-5Z" />
+      <path d="M3 12l9 5 9-5" />
+      <path d="M3 16l9 5 9-5" />
+    </svg>
+  );
+}
+
 export function IconCopy(props: IconProps) {
   return (
     <svg {...base} width="15" height="15" {...props}>
       <rect x="8.5" y="8.5" width="11.5" height="11.5" rx="1.8" />
       <path d="M4.5 15.5v-10a1.5 1.5 0 0 1 1.5-1.5h10" />
+    </svg>
+  );
+}
+
+export function IconDownload(props: IconProps) {
+  return (
+    <svg {...base} width="14" height="14" {...props}>
+      <path d="M12 3v12M7 10.5 12 15.5 17 10.5" />
+      <path d="M4.5 18.5h15" />
     </svg>
   );
 }

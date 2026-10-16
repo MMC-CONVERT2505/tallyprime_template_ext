@@ -7,16 +7,18 @@ import { ConnectionsPanel } from './components/ConnectionsPanel';
 import { DevicePairingPanel } from './components/DevicePairingPanel';
 import { TallyDirectPanel } from './components/TallyDirectPanel';
 import { ExtractionsPanel } from './components/ExtractionsPanel';
-import { LogoMark, IconConnections, IconPairing, IconDatabase, IconExtract } from './components/Icons';
+import { FullSyncPanel } from './components/FullSyncPanel';
+import { LogoMark, IconConnections, IconPairing, IconDatabase, IconExtract, IconLayers } from './components/Icons';
 import { API_BASE_URL } from './api';
 
-type Tab = 'connections' | 'pairing' | 'tally' | 'extractions';
+type Tab = 'connections' | 'pairing' | 'tally' | 'extractions' | 'fullSync';
 
 const TABS: { id: Tab; label: string; icon: (p: { className?: string }) => ReactElement }[] = [
   { id: 'connections', label: 'Connections', icon: IconConnections },
   { id: 'pairing', label: 'Device Pairing', icon: IconPairing },
   { id: 'tally', label: 'Tally Direct', icon: IconDatabase },
   { id: 'extractions', label: 'Extractions', icon: IconExtract },
+  { id: 'fullSync', label: 'Full Sync', icon: IconLayers },
 ];
 
 function Console() {
@@ -67,6 +69,7 @@ function Console() {
         {tab === 'pairing' && <DevicePairingPanel onPaired={() => setTab('extractions')} />}
         {tab === 'tally' && <TallyDirectPanel />}
         {tab === 'extractions' && <ExtractionsPanel />}
+        {tab === 'fullSync' && <FullSyncPanel />}
       </main>
     </div>
   );

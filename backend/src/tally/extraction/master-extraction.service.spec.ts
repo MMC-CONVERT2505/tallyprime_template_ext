@@ -215,6 +215,91 @@ describe('MasterExtractionService', () => {
     });
   });
 
+  describe('remaining master types (2026-09-19 comprehensive-extraction pass)', () => {
+    it('getStockGroups resolves the company and returns the mapped stock groups', async () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><STOCKGROUP><NAME>Finished Goods</NAME><PARENT>Primary</PARENT><ALTERID>10</ALTERID></STOCKGROUP></COLLECTION></DATA></BODY></ENVELOPE>';
+      const { service } = makeService({ connectorPost: jest.fn().mockResolvedValue(xml) });
+
+      const result = await service.getStockGroups('ABC Ltd');
+
+      expect(result).toEqual([{ name: 'Finished Goods', parent: 'Primary', alterId: 10 }]);
+    });
+
+    it('getStockCategories resolves the company and returns the mapped stock categories', async () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><STOCKCATEGORY><NAME>Electronics</NAME><PARENT>Primary</PARENT><ALTERID>20</ALTERID></STOCKCATEGORY></COLLECTION></DATA></BODY></ENVELOPE>';
+      const { service } = makeService({ connectorPost: jest.fn().mockResolvedValue(xml) });
+
+      const result = await service.getStockCategories('ABC Ltd');
+
+      expect(result).toEqual([{ name: 'Electronics', parent: 'Primary', alterId: 20 }]);
+    });
+
+    it('getUnits resolves the company and returns the mapped units', async () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><UNIT><NAME>TB</NAME><ORIGINALNAME>TBRaw</ORIGINALNAME><ISSIMPLEUNIT>Yes</ISSIMPLEUNIT><DECIMALPLACES>0</DECIMALPLACES><ALTERID>6291</ALTERID></UNIT></COLLECTION></DATA></BODY></ENVELOPE>';
+      const { service } = makeService({ connectorPost: jest.fn().mockResolvedValue(xml) });
+
+      const result = await service.getUnits('ABC Ltd');
+
+      expect(result).toEqual([
+        { name: 'TB', originalName: 'TBRaw', isSimpleUnit: true, decimalPlaces: 0, alterId: 6291 },
+      ]);
+    });
+
+    it('getCurrencies resolves the company and returns the mapped currencies', async () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><CURRENCY><NAME>$</NAME><ORIGINALNAME>$</ORIGINALNAME><EXPANDEDSYMBOL>USD</EXPANDEDSYMBOL><DECIMALPLACES>2</DECIMALPLACES><ALTERID>6495</ALTERID></CURRENCY></COLLECTION></DATA></BODY></ENVELOPE>';
+      const { service } = makeService({ connectorPost: jest.fn().mockResolvedValue(xml) });
+
+      const result = await service.getCurrencies('ABC Ltd');
+
+      expect(result).toEqual([
+        { name: '$', originalName: '$', expandedSymbol: 'USD', decimalPlaces: 2, alterId: 6495 },
+      ]);
+    });
+
+    it('getGodowns resolves the company and returns the mapped godowns', async () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><GODOWN><NAME>Main Location</NAME><PARENT>Primary</PARENT><ALTERID>5202</ALTERID></GODOWN></COLLECTION></DATA></BODY></ENVELOPE>';
+      const { service } = makeService({ connectorPost: jest.fn().mockResolvedValue(xml) });
+
+      const result = await service.getGodowns('ABC Ltd');
+
+      expect(result).toEqual([{ name: 'Main Location', parent: 'Primary', alterId: 5202 }]);
+    });
+
+    it('getCostCategories resolves the company and returns the mapped cost categories', async () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><COSTCATEGORY><NAME>Primary Cost Category</NAME><ALTERID>5201</ALTERID></COSTCATEGORY></COLLECTION></DATA></BODY></ENVELOPE>';
+      const { service } = makeService({ connectorPost: jest.fn().mockResolvedValue(xml) });
+
+      const result = await service.getCostCategories('ABC Ltd');
+
+      expect(result).toEqual([{ name: 'Primary Cost Category', alterId: 5201 }]);
+    });
+
+    it('getVoucherTypes resolves the company and returns the mapped voucher types', async () => {
+      const xml =
+        '<ENVELOPE><BODY><DATA><COLLECTION><VOUCHERTYPE><NAME>Sales</NAME><PARENT>Sales</PARENT><ALTERID>100</ALTERID></VOUCHERTYPE></COLLECTION></DATA></BODY></ENVELOPE>';
+      const { service } = makeService({ connectorPost: jest.fn().mockResolvedValue(xml) });
+
+      const result = await service.getVoucherTypes('ABC Ltd');
+
+      expect(result).toEqual([{ name: 'Sales', parent: 'Sales', alterId: 100 }]);
+    });
+
+    it('falls back to the configured default company when none is supplied (spot-check on one of the seven)', async () => {
+      const connectorPost = jest.fn().mockResolvedValue('<ENVELOPE></ENVELOPE>');
+      const { service } = makeService({ connectorPost, defaultCompany: 'Default Co' });
+
+      await service.getUnits();
+
+      expect(connectorPost).toHaveBeenCalledWith(expect.stringContaining('Default Co'));
+    });
+  });
+
   describe('getCompanies', () => {
     it('caches the result and does not call the connector again on a cache hit', async () => {
       const cached = [{ name: 'Cached Co' }];

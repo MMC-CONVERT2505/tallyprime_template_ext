@@ -48,7 +48,9 @@ import { StockItemMapper } from '../src/mapping/stock-item.mapper';
 import { CostCentreMapper } from '../src/mapping/cost-centre.mapper';
 import { InvoiceMapper } from '../src/mapping/invoice.mapper';
 import { BillMapper } from '../src/mapping/bill.mapper';
-import { buildStockItemIndex } from '../src/mapping/voucher-line.shared';
+import { CreditNoteMapper } from '../src/mapping/credit-note.mapper';
+import { StockJournalMapper } from '../src/mapping/stock-journal.mapper';
+import { buildStockItemIndex, tallyDateToJsDate } from '../src/mapping/voucher-line.shared';
 import { ExcelGeneratorService } from '../src/excel/excel-generator.service';
 import { templatePathFor, ZOHO_ENTITIES } from '../src/mapping/zoho-entity.map';
 import * as ExcelJS from 'exceljs';
@@ -178,6 +180,10 @@ async function main() {
   const norm = (s: string) => s.trim().toLowerCase();
   const salesVouchers = allVouchers.filter((v) => norm(v.voucherType ?? '') === 'sales');
   const purchaseVouchers = allVouchers.filter((v) => norm(v.voucherType ?? '') === 'purchase');
+  const creditNoteVouchers = allVouchers.filter((v) => norm(v.voucherType ?? '') === 'credit note');
+  const stockJournalVouchers = allVouchers.filter(
+    (v) => norm(v.voucherType ?? '') === 'stock journal',
+  );
 
   console.log('\n[7/7] Running real mappers + writing into real Zoho templates...');
   const hierarchy = new GroupHierarchyResolver(groups);
@@ -190,6 +196,17 @@ async function main() {
   const reportingTagRows = new CostCentreMapper().toReportingTagRows(costCentres);
   const invoiceRows = new InvoiceMapper(itemIndex).toInvoiceRows(salesVouchers);
   const billRows = new BillMapper(itemIndex).toBillRows(purchaseVouchers);
+  const invoiceDatesByNumber = new Map<string, Date>();
+  for (const v of salesVouchers) {
+    const date = tallyDateToJsDate(v.date);
+    if (v.voucherNumber && date) invoiceDatesByNumber.set(v.voucherNumber, date);
+  }
+  const creditNoteRows = new CreditNoteMapper(itemIndex, invoiceDatesByNumber).toCreditNoteRows(
+    creditNoteVouchers,
+  );
+  const stockJournalRows = new StockJournalMapper(itemIndex).toStockJournalRows(
+    stockJournalVouchers,
+  );
 
   // ── Dependency sanity checks ──────────────────────────────────────────
   console.log('\n=== Dependency resolution sanity checks ===');
@@ -275,6 +292,8 @@ async function main() {
     COST_CENTRE: reportingTagRows,
     INVOICE: invoiceRows,
     BILL: billRows,
+    CREDIT_NOTE: creditNoteRows,
+    STOCK_JOURNAL: stockJournalRows,
   };
 
   console.log(`\n=== Writing real Zoho templates to ${outDir} ===`);

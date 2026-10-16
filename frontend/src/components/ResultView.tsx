@@ -148,11 +148,19 @@ function DataTable({ rows }: { rows: Row[] }) {
  * memory by the time this renders, so this is just about not asking the DOM
  * to hold thousands of rows at once, not about re-fetching.
  */
-export function ResultView({ value }: { value: unknown }) {
+/**
+ * `disableRawView` hides the "Raw JSON" toggle for a result too large for
+ * JsonView's unguarded `JSON.stringify` to handle without visibly freezing
+ * the tab (e.g. the Full Sync Explorer's combined "All vouchers" view,
+ * thousands of full nested voucher objects) — the table above still
+ * paginates fine at that size, only the raw-dump escape hatch is the problem.
+ */
+export function ResultView({ value, disableRawView = false }: { value: unknown; disableRawView?: boolean }) {
   const [showRaw, setShowRaw] = useState(false);
   const tabular = isTabular(value);
 
   if (!tabular) return <JsonView value={value} />;
+  if (disableRawView) return <DataTable rows={value} />;
 
   return (
     <div>

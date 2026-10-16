@@ -14,6 +14,8 @@ describe('VendorMapper', () => {
     alterId: 1,
     reservedName: null,
     gstin: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
     panNumber: null,
     email: null,
     phone: null,
@@ -27,6 +29,8 @@ describe('VendorMapper', () => {
     website: null,
     creditLimit: null,
     contactPersonName: null,
+    mailingName: null,
+    creditPeriod: null,
   };
 
   it('includes only ledgers resolving to Sundry Creditors', () => {
@@ -52,6 +56,38 @@ describe('VendorMapper', () => {
     const [withoutGstin] = mapper.toVendorRows([baseLedger]);
     expect(withGstin['GST Treatment']).toBe('business_gst');
     expect(withoutGstin['GST Treatment']).toBe('consumer');
+  });
+
+  it('derives GST Treatment from the real GSTREGISTRATIONTYPE, not GSTIN presence alone, same fix as CustomerMapper', () => {
+    const [row] = mapper.toVendorRows([
+      { ...baseLedger, gstRegistrationType: 'Unregistered/Consumer' },
+    ]);
+    expect(row['GST Treatment']).toBe('business_none');
+  });
+
+  it('maps Source Of Supply/Billing Attention/Payment Terms/Contact First Name (2026-09-10 field-mapping pass)', () => {
+    const [row] = mapper.toVendorRows([
+      {
+        ...baseLedger,
+        gstPlaceOfSupply: 'Uttar Pradesh',
+        mailingName: 'Reliable Supplies Co (Warehouse)',
+        creditPeriod: '20 Days',
+        contactPersonName: 'Sachin',
+      },
+    ]);
+    expect(row['Source Of Supply']).toBe('Uttar Pradesh');
+    expect(row['Billing Attention']).toBe('Reliable Supplies Co (Warehouse)');
+    expect(row['Payment Terms']).toBe(20);
+    expect(row['Payment Terms Label']).toBe('20 Days');
+    expect(row['Contact First Name']).toBe('Sachin');
+  });
+
+  it('leaves Source Of Supply/Billing Attention/Payment Terms/Contact First Name blank rather than guessing when the ledger has none', () => {
+    const [row] = mapper.toVendorRows([baseLedger]);
+    expect(row['Source Of Supply']).toBe('');
+    expect(row['Billing Attention']).toBe('');
+    expect(row['Payment Terms']).toBe('');
+    expect(row['Contact First Name']).toBe('');
   });
 
   it('takes the Opening Balance magnitude regardless of Tally Dr/Cr sign', () => {

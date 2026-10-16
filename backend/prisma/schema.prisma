@@ -17,6 +17,14 @@ enum ExtractionType {
   STOCK_ITEMS
   GROUPS
   COST_CENTRES
+  STOCK_GROUPS
+  STOCK_CATEGORIES
+  UNITS
+  CURRENCIES
+  GODOWNS
+  COST_CATEGORIES
+  VOUCHER_TYPES
+  FULL_SYNC
 }
 
 enum ExtractionStatus {
@@ -155,14 +163,42 @@ model DeviceAuthorization {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  passwordHash String
-  name         String?
-  org          Org      @relation(fields: [orgId], references: [id])
-  orgId        String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                String            @id @default(uuid())
+  email             String            @unique
+  passwordHash      String
+  name              String?
+  org               Org               @relation(fields: [orgId], references: [id])
+  orgId             String
+  passwordResetOtp  PasswordResetOtp?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 
   @@map("users")
+}
+
+/// "Forgot password" flow — a short numeric code emailed to the user (see
+/// NotificationsService.sendPasswordResetOtp), not a clickable link: verified
+/// inline on the login screen (email + otp + newPassword all submitted
+/// together), no separate landing page needed. `userId` is unique — at most
+/// one outstanding OTP per user; AuthService.requestPasswordReset upserts
+/// this row, so requesting a new code invalidates whatever was issued before
+/// it. `otp` is stored in PLAINTEXT (deliberately, per explicit instruction —
+/// unlike passwords/connection tokens elsewhere in this codebase, which are
+/// always hashed) — acceptable here because a 4-digit code is already a weak
+/// secret with a 10-minute lifetime and a 5-attempt lockout
+/// (AuthService.RESET_OTP_MAX_ATTEMPTS); a DB read grants nothing an online
+/// guess couldn't already get in a handful of tries. Deleted outright on a
+/// successful reset (see AuthService.resetPassword) — no separate "used"
+/// flag needed since a re-submitted, already-consumed code then finds no row
+/// at all.
+model PasswordResetOtp {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String   @unique
+  otp       String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("password_reset_otps")
 }

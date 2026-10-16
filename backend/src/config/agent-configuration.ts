@@ -20,8 +20,11 @@ export interface AgentConfig {
   /**
    * Per-install device credential for the gateway tunnel. Optional: if unset,
    * the agent pairs itself automatically on first boot (AgentPairingService)
-   * and persists the token it's issued back into this same .env — no human
-   * ever needs to copy one in manually. See docs/connector-bridge-setup-guide.md.
+   * and persists the token it's issued to a local state file
+   * (`.tally-bridge-state.json`, see bridge-state.util.ts) — deliberately
+   * NEVER back into this env var/`.env` file, and never printed to the
+   * console either. No human ever needs to copy one in manually. See
+   * docs/connector-bridge-setup-guide.md §2.3.
    */
   agentToken: string;
   /**

@@ -6,13 +6,11 @@ import { deriveInterStateTax, deriveIntraStateTax } from './gst-rate.shared';
  * — taken from the real template (Master and Invoice or Bill/Item.xlsx,
  * sheet "Item"), which has 67 columns total; only the subset Tally's
  * currently-extracted StockItem fields can genuinely supply is listed here.
- * Everything else (Rate, Account, Purchase Rate/Account — Tally doesn't
- * expose a selling-rate or sales-ledger per stock item on this project's
- * test company; Tally DOES have a Price List feature that could supply Rate/
- * Purchase Rate, confirmed live 2026-09-05 to genuinely be unconfigured
- * — STANDARDPRICELIST.LIST/STANDARDCOSTLIST.LIST came back empty for every
- * item, a real field with no data rather than a wrong one) is left blank at
- * write time rather than guessed.
+ * Rate/Purchase Rate are left blank rather than guessed — Tally DOES have a
+ * Price List feature that could supply them, confirmed live 2026-09-05 to
+ * genuinely be unconfigured on this company (STANDARDPRICELIST.LIST/
+ * STANDARDCOSTLIST.LIST came back empty for every item, a real field with no
+ * data rather than a wrong one).
  *
  * SKU (added 2026-09-05) — the template has both a "SKU" and a separate
  * "Alias Name" column; both get the same TallyStockItem.alias value. Not a
@@ -20,6 +18,20 @@ import { deriveInterStateTax, deriveIntraStateTax } from './gst-rate.shared';
  * credit-note.mapper.ts already treat this exact field as each of THEIR
  * templates' own "SKU" column, so leaving Item.xlsx's own "SKU" blank while
  * "Alias Name" carries the same value was the actual inconsistency.
+ *
+ * Account/Purchase Account/Inventory Valuation Method (added 2026-09-12) —
+ * see TallyStockItem.salesAccount/purchaseAccount/inventoryValuationMethod's
+ * doc comments. An earlier pass wrongly attributed Account/Purchase Account
+ * to the unconfigured Price List fields above — they're actually a
+ * different Tally concept (SALESLIST.LIST/PURCHASELIST.LIST, the item's
+ * default ledger allocation), confirmed real but likewise unconfigured for
+ * every item on this company.
+ *
+ * "Exemption Reason" investigated 2026-09-12, confirmed genuinely absent:
+ * fetched GSTDETAILS.LIST's FULL structure live for a real Exempt item
+ * (TAXABILITY/SRCOFGSTDETAILS/GSTINELIGIBLEITC/STATEWISEDETAILS.LIST) — no
+ * free-text or coded exemption-reason field exists anywhere in it, unlike
+ * the sibling fields this project already reads from the same list.
  */
 export interface ZohoItemRow {
   'Item Name': string;
@@ -27,14 +39,39 @@ export interface ZohoItemRow {
   'Alias Name': string;
   Description: string;
   'HSN/SAC': string;
+  Account: string;
+  'Purchase Account': string;
+  'Inventory Valuation Method': string;
   'Usage unit': string;
   'Opening Stock': number | '';
   'Opening Stock Value': number | '';
   'Stock On Hand': number | '';
-  /** Every Tally Stock Item represents physical inventory by construction
-   *  (services live on ledgers, not stock items) — 'goods' is a correct
-   *  inference here, not a guess. */
+  /**
+   * Zoho's real "Item Type" column on this template is a *usage-scope*
+   * concept ("Sales and Purchases" / "Sales" / "Purchases"), not goods/
+   * service — confirmed against Zoho's own official Tally migration tool
+   * (ZFMigrationTool-v1.9's xml_to_csv_config.yml defaults this exact
+   * column to `"Sales and Purchases"`) and against the real template's own
+   * two separate columns (this one at column 60, "Product Type" below at
+   * column 27 — easy to conflate since Tally has no such usage-scope
+   * concept at all). An earlier version of this mapper wrote 'goods' here,
+   * which was never a valid value for this column. No per-item Sales-only/
+   * Purchases-only signal exists in TallyStockItem (Account/Purchase
+   * Account are confirmed unconfigured for every item on this company —
+   * see the class doc comment), so "Sales and Purchases" is the correct,
+   * Zoho-documented default rather than a guess.
+   */
   'Item Type': string;
+  /**
+   * Added 2026-09-10 — the real goods/service classification, from
+   * TallyStockItem.itemType (GSTTYPEOFSUPPLY). Previously entirely
+   * unmapped (this template column was missed by an earlier audit that
+   * conflated it with the "Item Type" column above). VERIFIED live: 28 of
+   * 35 real items are "Services", only 6 "Goods" — defaults to 'goods' for
+   * the remainder, matching Zoho's own tool's documented default for a
+   * blank GSTTYPEOFSUPPLY.
+   */
+  'Product Type': string;
   /** No per-item active/inactive flag exists in TallyStockItem yet; a stock
    *  item just extracted from a live company is overwhelmingly likely to be
    *  in current use, so 'Active' is a reasonable default rather than an
@@ -57,8 +94,9 @@ export interface ZohoItemRow {
   'Inter State Tax Type': string;
   /**
    * Added 2026-09-05 — operational defaults, not fabricated facts: every
-   * Tally Stock Item is already asserted 'goods' (see 'Item Type' above),
-   * and Zoho's own item-creation UI defaults a new item to sellable,
+   * Tally Stock Item, goods or service (see 'Product Type' above), is
+   * usable in both sales and purchase transactions by construction, and
+   * Zoho's own item-creation UI defaults a new item to sellable,
    * purchasable, and inventory-tracked unless a user explicitly unchecks
    * one — the same "least surprising assumption absent contrary
    * information" reasoning 'Status: Active' already uses. TallyStockItem
@@ -84,6 +122,9 @@ export class StockItemMapper {
       'Alias Name': item.alias ?? '',
       Description: item.description ?? '',
       'HSN/SAC': item.hsnCode ?? '',
+      Account: item.salesAccount ?? '',
+      'Purchase Account': item.purchaseAccount ?? '',
+      'Inventory Valuation Method': item.inventoryValuationMethod ?? '',
       'Usage unit': item.baseUnit ?? '',
       'Opening Stock': item.openingBalance ?? '',
       'Opening Stock Value': item.openingValue ?? '',
@@ -92,7 +133,8 @@ export class StockItemMapper {
       // this mapper, so wiring it here is a pure gap-fill, not a behavior
       // change to anything already relying on it.
       'Stock On Hand': item.closingBalance ?? '',
-      'Item Type': 'goods',
+      'Item Type': 'Sales and Purchases',
+      'Product Type': item.itemType ?? 'goods',
       Status: 'Active',
       Taxable: item.gstTaxability ? item.gstTaxability.toLowerCase() === 'taxable' : '',
       'Taxability Type': item.gstTaxability ?? '',

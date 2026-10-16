@@ -176,7 +176,10 @@ export class ExtractionsController {
    * to pick which of the 3 possible exports that same ledger set produces;
    * omitted defaults to COA. Which of Invoice/Bill/Credit Note/Stock Journal
    * a VOUCHERS job produces is fixed by the job's own voucherType, not a
-   * caller choice.
+   * caller choice. A Credit Note export also accepts ?invoicesJobId= (a
+   * completed VOUCHERS/Sales job, auto-resolved like the others) to
+   * populate "Associated Invoice Date" — optional, see
+   * ExtractionsService.getExcelResult's doc comment.
    */
   @Get(':id/excel')
   async excel(
@@ -185,6 +188,7 @@ export class ExtractionsController {
     @Query('groupsJobId') groupsJobId: string | undefined,
     @Query('ledgerEntity') ledgerEntity: string | undefined,
     @Query('itemsJobId') itemsJobId: string | undefined,
+    @Query('invoicesJobId') invoicesJobId: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
     if (ledgerEntity && !['COA', 'CUSTOMER', 'VENDOR'].includes(ledgerEntity)) {
@@ -196,6 +200,7 @@ export class ExtractionsController {
       groupsJobId,
       ledgerEntity as 'COA' | 'CUSTOMER' | 'VENDOR' | undefined,
       itemsJobId,
+      invoicesJobId,
     );
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

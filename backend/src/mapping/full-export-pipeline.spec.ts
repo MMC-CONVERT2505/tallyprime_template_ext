@@ -246,7 +246,12 @@ describe('full Tally -> Zoho export pipeline (all 9 templates)', () => {
       expect(cell(sheet, 2, 'Opening Stock')).toBe(100);
       expect(cell(sheet, 2, 'Opening Stock Value')).toBe(25000);
       expect(cell(sheet, 2, 'Stock On Hand')).toBe(80);
-      expect(cell(sheet, 2, 'Item Type')).toBe('goods');
+      // "Item Type" is Zoho's usage-scope column (Sales/Purchases), not
+      // goods/service — "Product Type" (added 2026-09-10, from
+      // TallyStockItem.itemType/GSTTYPEOFSUPPLY) is the real classification.
+      // See stock-item.mapper.ts's doc comment.
+      expect(cell(sheet, 2, 'Item Type')).toBe('Sales and Purchases');
+      expect(cell(sheet, 2, 'Product Type')).toBe('goods');
       expect(cell(sheet, 2, 'Status')).toBe('Active');
       expect(cell(sheet, 2, 'Intra State Tax Name')).toBe('GST18');
       expect(cell(sheet, 2, 'Intra State Tax Rate')).toBe(18);

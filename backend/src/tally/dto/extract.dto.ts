@@ -1,5 +1,18 @@
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { ZohoEntityKey } from '../../mapping/zoho-entity.map';
+
+const ZOHO_ENTITY_KEYS: ZohoEntityKey[] = [
+  'COA',
+  'CUSTOMER',
+  'VENDOR',
+  'ITEM',
+  'COST_CENTRE',
+  'INVOICE',
+  'BILL',
+  'CREDIT_NOTE',
+  'STOCK_JOURNAL',
+];
 
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
@@ -55,6 +68,36 @@ export class ExtractVouchersDto {
   @MaxLength(255)
   @Transform(trim)
   voucherType?: string;
+}
+
+export class FullSyncDataQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  @Transform(trim)
+  company?: string;
+
+  /**
+   * One of the strings TallyFullSyncService.listKnownEntityTypes returns for
+   * this company right now (e.g. "LEDGERS", "VOUCHERS:Sales") — validated
+   * against that live list server-side, not against a fixed enum here, since
+   * the voucher-type-derived keys are free-form and company-specific.
+   */
+  @IsString()
+  @MaxLength(255)
+  @Transform(trim)
+  entityType!: string;
+}
+
+export class FullSyncMappedQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  @Transform(trim)
+  company?: string;
+
+  @IsIn(ZOHO_ENTITY_KEYS)
+  entity!: ZohoEntityKey;
 }
 
 export class RawReportDto {

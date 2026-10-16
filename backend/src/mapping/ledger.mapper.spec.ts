@@ -11,6 +11,8 @@ describe('LedgerMapper', () => {
 
   const enrichmentFieldsBlank = {
     gstin: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
     panNumber: null,
     email: null,
     phone: null,
@@ -24,6 +26,8 @@ describe('LedgerMapper', () => {
     website: null,
     creditLimit: null,
     contactPersonName: null,
+    mailingName: null,
+    creditPeriod: null,
   };
 
   const ledger = (overrides: Partial<TallyLedger>): TallyLedger => ({

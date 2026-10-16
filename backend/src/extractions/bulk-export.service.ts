@@ -973,12 +973,18 @@ export class BulkExportService implements OnApplicationBootstrap {
       undefined,
       itemsJobId,
     );
+    // invoicesJobId passed explicitly (this bulk run's own just-completed
+    // Sales job) rather than left to auto-resolve — see credit-note.mapper.ts's
+    // "Associated Invoice Date" doc comment for why a Credit Note export
+    // wants the Invoice data from the very same run, not just "whatever's
+    // latest in the DB".
     const creditNote = await this.extractions.getExcelResult(
       orgId,
       jobIds.VOUCHERS_CREDIT_NOTE,
       undefined,
       undefined,
       itemsJobId,
+      jobIds.VOUCHERS_SALES,
     );
     const stockJournal = await this.extractions.getExcelResult(
       orgId,

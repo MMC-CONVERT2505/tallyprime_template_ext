@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtSignOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { AuthConfig } from '../config/configuration';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -10,6 +11,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 @Module({
   imports: [
     PassportModule,
+    NotificationsModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {

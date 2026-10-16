@@ -63,11 +63,20 @@ import {
  * identical columns reading off the identical ALLLEDGERENTRIES.LIST data
  * Bill.xlsx already used; "TDS Section Code" has no Tally source in either
  * template and stays blank.
+ *
+ * Branch Name (added 2026-09-10) — voucher.gstRegistration, cross-
+ * referenced against Zoho's own official Tally migration tool, then
+ * VERIFIED live (see TallyVoucher.gstRegistration's doc comment). Item
+ * Type (corrected 2026-09-10) previously hardcoded 'goods' for every
+ * inventory line; now reads the item master's own real classification
+ * (TallyStockItem.itemType, GSTTYPEOFSUPPLY) — VERIFIED live that 28 of 35
+ * real items are actually "Services".
  */
 export interface ZohoInvoiceRow {
   'Invoice Number': string;
   'Invoice Date': Date | '';
   'Customer Name': string;
+  'Branch Name': string;
   'GST Treatment': string;
   'TCS Tax Name': string;
   'TCS Percentage': number | '';
@@ -112,6 +121,7 @@ export class InvoiceMapper {
       | 'Invoice Number'
       | 'Invoice Date'
       | 'Customer Name'
+      | 'Branch Name'
       | 'GST Treatment'
       | 'GST Identification Number (GSTIN)'
       | 'Place of Supply'
@@ -127,7 +137,8 @@ export class InvoiceMapper {
       'Invoice Number': voucher.voucherNumber ?? '',
       'Invoice Date': tallyDateToJsDate(voucher.date) ?? '',
       'Customer Name': voucher.partyLedgerName ?? '',
-      'GST Treatment': resolveGstTreatment(voucher.partyGstin),
+      'Branch Name': voucher.gstRegistration ?? '',
+      'GST Treatment': resolveGstTreatment(voucher.partyGstin, voucher.partyGstRegistrationType),
       'GST Identification Number (GSTIN)': voucher.partyGstin ?? '',
       'Place of Supply': voucher.placeOfSupply ?? '',
       'Due Date': addDaysToTallyDate(voucher.date, summary.partyBillCreditPeriodDays),
@@ -158,7 +169,7 @@ export class InvoiceMapper {
           'Item Name': line.stockItemName,
           SKU: item?.alias ?? '',
           'Item Desc': item?.description ?? '',
-          'Item Type': 'goods',
+          'Item Type': item?.itemType ?? 'goods',
           'HSN/SAC': item?.hsnCode ?? '',
           Quantity: line.quantity ?? '',
           'Usage unit': item?.baseUnit ?? '',

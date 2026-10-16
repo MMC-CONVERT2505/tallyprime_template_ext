@@ -9,6 +9,12 @@ import * as ExcelJS from 'exceljs';
  */
 @Injectable()
 export class ExcelGeneratorService {
+  /** Template files never change at runtime — cached by
+   *  `${templatePath}::${sheetName}` so repeated calls (one per debug-workbook
+   *  build, one per mapped-data preview request) don't re-parse the same
+   *  xlsx from disk every time. */
+  private readonly headerCache = new Map<string, string[]>();
+
   /**
    * Loads `templatePath` fresh from disk (never mutates the file itself —
    * every call gets its own in-memory copy), removes every existing row
@@ -72,6 +78,65 @@ export class ExcelGeneratorService {
    */
   async assertTemplateReadable(templatePath: string, sheetName: string): Promise<void> {
     await this.loadSheet(templatePath, sheetName);
+  }
+
+  /**
+   * The template's REAL, ordered header row — every column Zoho actually
+   * defines for this entity, whether or not any mapper ever populates it.
+   * Used by the Full Sync debug feature (FullSyncMappingService/
+   * FullSyncExportService) to show/export a Zoho-mapped sheet with every
+   * real column visible, including ones that stay blank for every row —
+   * exactly the "what columns are we missing" signal that feature exists for.
+   * Deliberately doesn't reuse writeIntoTemplate's private readHeaderRow
+   * (a Map, not an ordered array, and not worth changing its return type
+   * for a caller that predates it) — this just reads the same row again.
+   */
+  async getTemplateHeaders(templatePath: string, sheetName: string): Promise<string[]> {
+    const cacheKey = `${templatePath}::${sheetName}`;
+    const cached = this.headerCache.get(cacheKey);
+    if (cached) return cached;
+
+    const sheet = await this.loadSheet(templatePath, sheetName);
+    const headers: string[] = [];
+    sheet.getRow(1).eachCell({ includeEmpty: false }, (cell) => {
+      const header = String(cell.value ?? '').trim();
+      if (header) headers.push(header);
+    });
+    if (headers.length === 0) {
+      throw new Error(`Sheet "${sheetName}" has no header row to read.`);
+    }
+    this.headerCache.set(cacheKey, headers);
+    return headers;
+  }
+
+  /**
+   * A plain, from-scratch workbook (NOT a real Zoho template) for the Full
+   * Sync debug export — one worksheet per `sheets` entry, header row bold +
+   * frozen, one data row per array entry written by header order (a header
+   * with no matching row key is left blank, same "don't fabricate" standard
+   * as writeIntoTemplate). Sheet names are pre-sanitized/de-duplicated by the
+   * caller (see sanitizeSheetName in full-sync-export.service.ts) — this
+   * method trusts them as-is since ExcelJS throws synchronously on a
+   * colliding/invalid name and there's no useful recovery to do here.
+   */
+  async buildDebugWorkbook(
+    sheets: Array<{ name: string; headers: string[]; rows: Array<Record<string, unknown>> }>,
+  ): Promise<Buffer> {
+    const workbook = new ExcelJS.Workbook();
+    for (const sheet of sheets) {
+      const worksheet = workbook.addWorksheet(sheet.name);
+      worksheet.addRow(sheet.headers);
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+      for (const row of sheet.rows) {
+        worksheet.addRow(sheet.headers.map((header) => (row[header] ?? null) as ExcelJS.CellValue));
+      }
+      worksheet.columns.forEach((column) => {
+        column.width = 18;
+      });
+    }
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
   }
 
   private async loadSheet(templatePath: string, sheetName: string): Promise<ExcelJS.Worksheet> {
