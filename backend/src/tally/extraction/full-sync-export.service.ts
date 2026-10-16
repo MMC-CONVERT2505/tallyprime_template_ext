@@ -2,7 +2,8 @@ import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/commo
 import Redis from 'ioredis';
 import { ExcelGeneratorService } from '../../excel/excel-generator.service';
 import { sanitizeSheetName } from '../../excel/sheet-name.util';
-import { ZOHO_ENTITIES, ZohoEntityKey } from '../../mapping/zoho-entity.map';
+import { ZipEntry, ZipService } from '../../excel/zip.service';
+import { ZOHO_ENTITIES, ZohoEntityKey, templatePathFor } from '../../mapping/zoho-entity.map';
 import { withLock } from '../../redis/lock.util';
 import { REDIS_CLIENT } from '../../redis/redis.module';
 import { FULL_SYNC_QUICK_LOCK_TTL_MS } from './full-sync.constants';
@@ -28,6 +29,7 @@ export class TallyFullSyncExportService {
     private readonly fullSync: TallyFullSyncService,
     private readonly mapping: TallyFullSyncMappingService,
     private readonly excel: ExcelGeneratorService,
+    private readonly zip: ZipService,
     @Optional() @Inject(REDIS_CLIENT) private readonly redis?: Redis,
   ) {}
 
@@ -88,6 +90,50 @@ export class TallyFullSyncExportService {
     }
 
     return this.excel.buildDebugWorkbook(sheets);
+  }
+
+  /**
+   * All 9 Zoho entities, each written into its own real template file (same
+   * layout as the "Master and Invoice or Bill" source templates), bundled
+   * into one .zip — "download every function at once" instead of clicking
+   * the per-entity download 9 times. Same filenames the production bulk
+   * export's zip uses (ZOHO_ENTITIES[key].templateFile — see
+   * BulkExportService.generateAllTemplates) so the two zips look identical
+   * aside from where the data came from.
+   */
+  async buildMappedZip(company: string): Promise<Buffer> {
+    if (!this.redis) {
+      throw new BadRequestException('Redis is not configured — the Excel export requires it.');
+    }
+
+    const result = await withLock(
+      this.redis,
+      this.fullSync.getLockKey(company),
+      FULL_SYNC_QUICK_LOCK_TTL_MS,
+      () => this.doBuildMappedZip(company),
+    );
+    if (result === null) {
+      throw new BadRequestException(
+        `A full sync for "${company}" is currently running — wait for it to finish (GET ` +
+          '/tally/full-sync/status) before generating the Zoho export.',
+      );
+    }
+    return result;
+  }
+
+  private async doBuildMappedZip(company: string): Promise<Buffer> {
+    const mapped = await this.getOrComputeMapped(company);
+    const entries: ZipEntry[] = await Promise.all(
+      (Object.keys(ZOHO_ENTITIES) as ZohoEntityKey[]).map(async (key) => ({
+        filename: ZOHO_ENTITIES[key].templateFile,
+        buffer: await this.excel.writeIntoTemplate(
+          templatePathFor(key),
+          ZOHO_ENTITIES[key].sheetName,
+          mapped[key].rows,
+        ),
+      })),
+    );
+    return this.zip.buildZip(entries);
   }
 
   private async getOrComputeMapped(company: string) {

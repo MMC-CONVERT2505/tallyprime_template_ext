@@ -1,6 +1,7 @@
 import * as ExcelJS from 'exceljs';
 import { BadRequestException } from '@nestjs/common';
 import { ExcelGeneratorService } from '../../excel/excel-generator.service';
+import { ZipService } from '../../excel/zip.service';
 import {
   SAMPLE_BILL_VOUCHERS,
   SAMPLE_COST_CENTRES,
@@ -125,7 +126,7 @@ function makeServices(redis: any) {
   const fullSync = makeFullSync(redis);
   const excel = new ExcelGeneratorService();
   const mapping = new TallyFullSyncMappingService(fullSync, excel, redis);
-  const exportService = new TallyFullSyncExportService(fullSync, mapping, excel, redis);
+  const exportService = new TallyFullSyncExportService(fullSync, mapping, excel, new ZipService(), redis);
   return { fullSync, mapping, exportService };
 }
 
@@ -133,6 +134,26 @@ async function loadWorkbook(buffer: Buffer): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
   return workbook;
+}
+
+/** Mirrors zip.service.spec.ts's readZipEntryNames — a cheap structural
+ *  check (every zip local file header starts with PK\x03\x04 followed by a
+ *  fixed header then the filename) without pulling in a zip-reading package
+ *  just for this test. */
+async function readZipEntryNames(buffer: Buffer): Promise<string[]> {
+  const names: string[] = [];
+  let offset = 0;
+  const SIG = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+  while (offset < buffer.length) {
+    const idx = buffer.indexOf(SIG, offset);
+    if (idx === -1) break;
+    const nameLen = buffer.readUInt16LE(idx + 26);
+    const extraLen = buffer.readUInt16LE(idx + 28);
+    const name = buffer.toString('utf-8', idx + 30, idx + 30 + nameLen);
+    names.push(name);
+    offset = idx + 30 + nameLen + extraLen;
+  }
+  return names;
 }
 
 describe('TallyFullSyncExportService', () => {
@@ -207,7 +228,65 @@ describe('TallyFullSyncExportService', () => {
     const fullSync = makeFullSync(undefined);
     const excel = new ExcelGeneratorService();
     const mapping = new TallyFullSyncMappingService(fullSync, excel, undefined);
-    const exportService = new TallyFullSyncExportService(fullSync, mapping, excel, undefined);
+    const exportService = new TallyFullSyncExportService(
+      fullSync,
+      mapping,
+      excel,
+      new ZipService(),
+      undefined,
+    );
     await expect(exportService.buildWorkbook(COMPANY)).rejects.toThrow(BadRequestException);
+  });
+
+  describe('buildMappedZip', () => {
+    it('bundles all 9 Zoho entities, each under its real template filename', async () => {
+      const redis = makeFakeRedis();
+      seed(redis);
+      const { exportService } = makeServices(redis);
+
+      const buffer = await exportService.buildMappedZip(COMPANY);
+      const names = await readZipEntryNames(buffer);
+
+      expect(names).toEqual([
+        'COA.xlsx',
+        'Customer.xlsx',
+        'Vendor.xlsx',
+        'Item.xlsx',
+        'Class.xlsx',
+        'Invoice.xlsx',
+        'Bill.xlsx',
+        'Credit Note.xlsx',
+        'Stock Journal.xlsx',
+      ]);
+    });
+
+    it('throws when Redis is not configured', async () => {
+      const fullSync = makeFullSync(undefined);
+      const excel = new ExcelGeneratorService();
+      const mapping = new TallyFullSyncMappingService(fullSync, excel, undefined);
+      const exportService = new TallyFullSyncExportService(
+        fullSync,
+        mapping,
+        excel,
+        new ZipService(),
+        undefined,
+      );
+      await expect(exportService.buildMappedZip(COMPANY)).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws when full sync has never run for this company', async () => {
+      const redis = makeFakeRedis();
+      const { exportService } = makeServices(redis);
+      await expect(exportService.buildMappedZip(COMPANY)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects while a full sync is currently running for the same company (shared lock)', async () => {
+      const redis = makeFakeRedis();
+      seed(redis);
+      redis.store.set(`tally:full:lock:${COMPANY}`, 'held-by-the-running-sync');
+      const { exportService } = makeServices(redis);
+
+      await expect(exportService.buildMappedZip(COMPANY)).rejects.toThrow(/currently running/);
+    });
   });
 });

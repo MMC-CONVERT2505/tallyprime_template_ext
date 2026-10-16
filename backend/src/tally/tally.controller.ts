@@ -240,6 +240,26 @@ export class TallyController {
   }
 
   /**
+   * All 9 Zoho entities at once, each its own real template file, bundled
+   * into one .zip — the "download every function in one go" counterpart to
+   * the single-entity route above (computed on the fly if POST .../map
+   * hasn't been run yet, same as the combined debug workbook below).
+   */
+  @Get('full-sync/mapped-data/excel-all')
+  async fullSyncMappedDataExcelAll(
+    @Query() query: ExtractLedgersDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const company = this.fullSync.resolveCompany(query.company);
+    const buffer = await this.fullSyncExport.buildMappedZip(company);
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${this.sanitizeFilename(company)}-zoho-mapped.zip"`,
+    });
+    return new StreamableFile(buffer);
+  }
+
+  /**
    * The combined debug workbook: one sheet per raw cached entity plus one
    * sheet per Zoho template (computed on the fly if POST .../map hasn't
    * been run yet) — see TallyFullSyncExportService's doc comment.

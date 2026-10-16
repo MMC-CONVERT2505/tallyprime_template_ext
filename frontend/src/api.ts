@@ -450,6 +450,10 @@ export const fullSyncApi = {
    *  the per-function counterpart to excel() below. */
   mappedDataExcel: (params: { company: string; entity: ZohoEntityKey }) =>
     request<Blob>('GET', `/tally/full-sync/mapped-data/excel?${qs(params)}`, { raw: true }),
+  /** All 9 Zoho entities at once, each its own real template file, bundled
+   *  into one .zip — download every function in one go instead of one at a time. */
+  mappedDataExcelAll: (company: string) =>
+    request<Blob>('GET', `/tally/full-sync/mapped-data/excel-all?${qs({ company })}`, { raw: true }),
   /** One combined .xlsx: a sheet per raw function plus a sheet per Zoho
    *  template (computed on the fly if map() hasn't been run yet). */
   excel: (company: string) =>

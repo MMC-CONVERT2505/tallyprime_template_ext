@@ -98,6 +98,7 @@ export function FullSyncPanel() {
 
   const [excelBusy, setExcelBusy] = useState(false);
   const [downloadingEntity, setDownloadingEntity] = useState<ZohoEntityKey | null>(null);
+  const [downloadingAll, setDownloadingAll] = useState(false);
 
   const refreshStatus = async (forCompany: string) => {
     if (!forCompany) return;
@@ -216,6 +217,22 @@ export function FullSyncPanel() {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
       setDownloadingEntity(null);
+    }
+  };
+
+  /** All 9 Zoho entities at once, each its own real template file, bundled
+   *  into one .zip — instead of clicking the per-entity download 9 times. */
+  const downloadAllMappedExcel = async () => {
+    if (!company || downloadingAll) return;
+    setDownloadingAll(true);
+    setError(null);
+    try {
+      const blob = await fullSyncApi.mappedDataExcelAll(company);
+      saveBlob(blob, `${company}-zoho-mapped.zip`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setDownloadingAll(false);
     }
   };
 
@@ -372,6 +389,18 @@ export function FullSyncPanel() {
               {mapBusy && <Spinner />}
               {mapBusy ? 'Mapping…' : mapped ? 'Re-run Zoho Mapping' : 'Generate Zoho Mapping'}
             </button>
+            {mapped && (
+              <button
+                onClick={() => void downloadAllMappedExcel()}
+                disabled={downloadingAll}
+                type="button"
+                className="ghost"
+                title="Downloads all 9 Zoho templates at once, bundled into one .zip"
+              >
+                {downloadingAll ? <Spinner /> : <IconDownload />}
+                {downloadingAll ? 'Zipping…' : 'Download All (.zip)'}
+              </button>
+            )}
           </div>
           {mapped && (
             <div className="chip-row" style={{ marginTop: 12 }}>
