@@ -15,6 +15,7 @@ describe('TransactionExtractionService', () => {
       voucherChunkDays?: number;
       chunkDelayMs?: number;
       jobs?: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
+      resolveDateRange?: jest.Mock;
     } = {},
   ) {
     const builder = new EnvelopeBuilder();
@@ -32,8 +33,21 @@ describe('TransactionExtractionService', () => {
         chunkDelayMs: overrides.chunkDelayMs ?? 0,
       }),
     };
+    // Stands in for MasterExtractionService.resolveDateRange — every
+    // existing test below already passes explicit from/to, so this default
+    // just mirrors the real short-circuit (both given -> returned unchanged)
+    // without needing its own describe block to override it.
+    const masters = {
+      resolveDateRange:
+        overrides.resolveDateRange ??
+        jest.fn(async (_company: string, from?: string, to?: string) => ({
+          from: from ?? '20000101',
+          to: to ?? '20261231',
+        })),
+    };
 
     const service = new TransactionExtractionService(
+      masters as any,
       builder,
       connector as any,
       parser,
@@ -41,7 +55,7 @@ describe('TransactionExtractionService', () => {
       overrides.jobs as any,
       undefined,
     );
-    return { service, buildVouchersRequest, connector };
+    return { service, buildVouchersRequest, connector, masters };
   }
 
   /** Bare-minimum ExtractionJobRepository double — see the analogous helper
@@ -74,6 +88,58 @@ describe('TransactionExtractionService', () => {
       service.getVouchers({ company: 'ABC Ltd', from: '20260430', to: '20260401' }),
     ).rejects.toThrow(BadRequestException);
     expect(connector.post).not.toHaveBeenCalled();
+  });
+
+  describe('auto-resolving an omitted date range', () => {
+    it('resolves the company before asking MasterExtractionService for the range', async () => {
+      const resolveDateRange = jest.fn().mockResolvedValue({ from: '20200401', to: '20261016' });
+      const { service, masters } = makeService({ resolveDateRange });
+
+      await service.getVouchers({ company: 'ABC Ltd' });
+
+      expect(resolveDateRange).toHaveBeenCalledWith('ABC Ltd', undefined, undefined);
+      expect(masters.resolveDateRange).toHaveBeenCalledTimes(1);
+    });
+
+    it('builds the Tally request with the RESOLVED range, not the (missing) dto dates', async () => {
+      const resolveDateRange = jest.fn().mockResolvedValue({ from: '20200401', to: '20261016' });
+      const { service, buildVouchersRequest } = makeService({ resolveDateRange });
+
+      await service.getVouchers({ company: 'ABC Ltd', voucherType: 'Sales' });
+
+      expect(buildVouchersRequest).toHaveBeenCalledWith('ABC Ltd', '20200401', '20261016', 'Sales');
+    });
+
+    it('still calls through to resolveDateRange when only one of from/to is given, letting it fill in the other', async () => {
+      const resolveDateRange = jest.fn().mockResolvedValue({ from: '20260401', to: '20261016' });
+      const { service, buildVouchersRequest } = makeService({ resolveDateRange });
+
+      await service.getVouchers({ company: 'ABC Ltd', from: '20260401' });
+
+      expect(resolveDateRange).toHaveBeenCalledWith('ABC Ltd', '20260401', undefined);
+      expect(buildVouchersRequest).toHaveBeenCalledWith('ABC Ltd', '20260401', '20261016', undefined);
+    });
+
+    it('never reaches the connector when the resolved range is still invalid (from after to)', async () => {
+      const resolveDateRange = jest.fn().mockResolvedValue({ from: '20261016', to: '20260401' });
+      const { service, connector } = makeService({ resolveDateRange });
+
+      await expect(service.getVouchers({ company: 'ABC Ltd' })).rejects.toThrow(BadRequestException);
+      expect(connector.post).not.toHaveBeenCalled();
+    });
+
+    it('does NOT call resolveDateRange a second time per chunk — resolved once, reused for every chunk', async () => {
+      const resolveDateRange = jest.fn().mockResolvedValue({ from: '20260401', to: '20260415' });
+      const connectorPost = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('whole-range unavailable'))
+        .mockResolvedValue('<ENVELOPE></ENVELOPE>');
+      const { service } = makeService({ resolveDateRange, connectorPost, voucherChunkDays: 7 });
+
+      await service.getVouchers({ company: 'ABC Ltd' }); // 15-day range -> 3 chunks
+
+      expect(resolveDateRange).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('returns the mapped vouchers from a real Day Book response shape', async () => {

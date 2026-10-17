@@ -350,6 +350,88 @@ describe('MasterExtractionService', () => {
     });
   });
 
+  describe('resolveDateRange', () => {
+    function makeServiceWithCachedCompanies(
+      cached: Array<{ name: string; startingFrom?: string | null }>,
+    ) {
+      const connector = { post: jest.fn() };
+      const builder = new EnvelopeBuilder();
+      const parser = new TallyResponseParser();
+      const config = { getOrThrow: () => ({ defaultCompany: '' }) };
+      const redis = { get: jest.fn().mockResolvedValue(JSON.stringify(cached)), set: jest.fn() };
+      return new MasterExtractionService(
+        builder,
+        connector as any,
+        parser,
+        config as any,
+        undefined,
+        redis as any,
+      );
+    }
+
+    it('returns an explicit range unchanged, without even looking up the company', async () => {
+      const connector = { post: jest.fn() };
+      const builder = new EnvelopeBuilder();
+      const parser = new TallyResponseParser();
+      const config = { getOrThrow: () => ({ defaultCompany: '' }) };
+      const service = new MasterExtractionService(
+        builder,
+        connector as any,
+        parser,
+        config as any,
+        undefined,
+        undefined,
+      );
+
+      const result = await service.resolveDateRange('ABC Ltd', '20250101', '20250630');
+
+      expect(result).toEqual({ from: '20250101', to: '20250630' });
+      expect(connector.post).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the company's own StartingFrom through today when both dates are omitted", async () => {
+      const service = makeServiceWithCachedCompanies([{ name: 'ABC Ltd', startingFrom: '20240401' }]);
+
+      const result = await service.resolveDateRange('ABC Ltd');
+
+      expect(result.from).toBe('20240401');
+      expect(result.to).toBe(new Date().toISOString().slice(0, 10).replace(/-/g, ''));
+    });
+
+    it('falls back to 20000101 when the matched company has no StartingFrom on record', async () => {
+      const service = makeServiceWithCachedCompanies([{ name: 'ABC Ltd', startingFrom: null }]);
+
+      const result = await service.resolveDateRange('ABC Ltd');
+
+      expect(result.from).toBe('20000101');
+    });
+
+    it('falls back to 20000101 when no company matches at all', async () => {
+      const service = makeServiceWithCachedCompanies([{ name: 'A Totally Different Co' }]);
+
+      const result = await service.resolveDateRange('ABC Ltd');
+
+      expect(result.from).toBe('20000101');
+    });
+
+    it('resolves from/to independently — an explicit fromDate with no toDate still defaults the end to today', async () => {
+      const service = makeServiceWithCachedCompanies([{ name: 'ABC Ltd', startingFrom: '20240401' }]);
+
+      const result = await service.resolveDateRange('ABC Ltd', '20250101');
+
+      expect(result.from).toBe('20250101');
+      expect(result.to).toBe(new Date().toISOString().slice(0, 10).replace(/-/g, ''));
+    });
+
+    it('matches the company name case/whitespace-insensitively', async () => {
+      const service = makeServiceWithCachedCompanies([{ name: '  ABC LTD  ', startingFrom: '20240401' }]);
+
+      const result = await service.resolveDateRange('abc ltd');
+
+      expect(result.from).toBe('20240401');
+    });
+  });
+
   describe('batching a large ledger collection', () => {
     it('stays a single request when the collection fits within masterBatchSize (no behavior change)', async () => {
       const connectorPost = jest

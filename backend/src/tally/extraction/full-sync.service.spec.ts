@@ -6,8 +6,34 @@ import { TransactionExtractionService } from './transaction-extraction.service';
 
 describe('TallyFullSyncService', () => {
   function makeMasters(overrides: Partial<Record<string, jest.Mock>> = {}) {
+    const getCompanies =
+      overrides.getCompanies ??
+      jest.fn().mockResolvedValue([{ name: 'ABC Ltd', startingFrom: '20240401' }]);
+    // Mirrors the real MasterExtractionService.resolveDateRange — doFullSync
+    // now delegates to it instead of resolving dates inline, so this must
+    // behave the same way (explicit range wins outright; otherwise falls
+    // back to the cached company's startingFrom / today, resolved against
+    // whichever getCompanies mock is in effect, including overrides).
+    const resolveDateRange =
+      overrides.resolveDateRange ??
+      jest.fn(async (company: string, fromDate?: string, toDate?: string) => {
+        if (fromDate && toDate) return { from: fromDate, to: toDate };
+        const companies = (await getCompanies()) as Array<{
+          name: string;
+          startingFrom?: string | null;
+        }>;
+        const companyInfo = companies.find(
+          (c) => c.name.trim().toLowerCase() === company.trim().toLowerCase(),
+        );
+        return {
+          from: fromDate ?? companyInfo?.startingFrom ?? '20000101',
+          to: toDate ?? new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+        };
+      });
+
     return {
-      getCompanies: jest.fn().mockResolvedValue([{ name: 'ABC Ltd', startingFrom: '20240401' }]),
+      getCompanies,
+      resolveDateRange,
       getGroups: jest.fn().mockResolvedValue([{ name: 'G1' }]),
       getLedgers: jest.fn().mockResolvedValue([{ name: 'L1' }]),
       getStockItems: jest.fn().mockResolvedValue([{ name: 'SI1' }]),

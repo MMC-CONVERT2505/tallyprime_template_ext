@@ -21,8 +21,17 @@ export interface ExtractionDispatchServices {
  * reach) differ, so this is the one place that logic needs to live.
  *
  * No manual DTO validation here (unlike the HTTP controllers, which get it
- * for free from the global ValidationPipe) — both callers' inputs already
- * passed through their own validation before reaching this point.
+ * for free from the global ValidationPipe) — the local-mode job processor's
+ * payload did pass through a DTO first, but the agent-tunnel path
+ * (AgentTunnelClient dispatching a command straight off the WebSocket) never
+ * runs it through class-validator at all; `payload as unknown as X` below is
+ * a bare cast, not a validated conversion. In practice this has been safe
+ * for VOUCHERS specifically because TransactionExtractionService.getVouchers
+ * now tolerates (and auto-resolves) a missing `from`/`to` itself rather than
+ * assuming upstream validation guaranteed they're present — see that
+ * method's doc comment. A genuinely malformed payload for any other action
+ * can still reach its target method's own argument validation instead of a
+ * DTO's.
  */
 export function dispatchExtraction(
   action: TunnelAction,

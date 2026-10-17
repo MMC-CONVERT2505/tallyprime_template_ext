@@ -350,14 +350,18 @@ export class TallyFullSyncService implements OnApplicationBootstrap {
     const entityCounts: Record<string, number> = {};
 
     // Resolve the real date range from Tally's own company record when not
-    // given explicitly — same "StartingFrom .. today" default
-    // scripts/live-extraction-audit.ts already uses.
+    // given explicitly — see MasterExtractionService.resolveDateRange's doc
+    // comment (shared with TransactionExtractionService/bulk export, not
+    // duplicated here anymore).
     const companies = await this.masters.getCompanies();
     const companyInfo = companies.find(
       (c) => c.name.trim().toLowerCase() === company.trim().toLowerCase(),
     );
-    const resolvedFrom = fromDate ?? companyInfo?.startingFrom ?? '20000101';
-    const resolvedTo = toDate ?? this.today();
+    const { from: resolvedFrom, to: resolvedTo } = await this.masters.resolveDateRange(
+      company,
+      fromDate,
+      toDate,
+    );
     await this.writeSnapshot(company, 'COMPANY', companyInfo ?? { name: company });
 
     // ── Masters — unscoped (no fromDate/toDate) for Ledgers/Stock Items, on
@@ -531,10 +535,6 @@ export class TallyFullSyncService implements OnApplicationBootstrap {
     } catch (err) {
       this.logger.warn(`Could not clear stale keys matching "${pattern}": ${String(err)}`);
     }
-  }
-
-  private today(): string {
-    return new Date().toISOString().slice(0, 10).replace(/-/g, '');
   }
 
   private async pace(): Promise<void> {

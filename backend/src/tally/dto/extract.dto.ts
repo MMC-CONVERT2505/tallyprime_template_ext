@@ -54,13 +54,23 @@ export class ExtractVouchersDto {
   @Transform(trim)
   company?: string;
 
+  /**
+   * Optional — omit to fetch the company's complete real history (its own
+   * Tally "StartingFrom" date through today, see
+   * MasterExtractionService.resolveDateRange), the same full-history default
+   * Full Sync uses. A manually-guessed range that's narrower than the
+   * company's real books used to silently return fewer/zero vouchers instead
+   * of erroring; omitting both dates avoids that risk entirely.
+   */
+  @IsOptional()
   @IsString()
   @Matches(TALLY_DATE, { message: 'from must be in YYYYMMDD format, e.g. 20250401' })
-  from!: string;
+  from?: string;
 
+  @IsOptional()
   @IsString()
   @Matches(TALLY_DATE, { message: 'to must be in YYYYMMDD format, e.g. 20250430' })
-  to!: string;
+  to?: string;
 
   /** e.g. Sales, Purchase, Payment, Receipt, Journal. Omit for all types. */
   @IsOptional()

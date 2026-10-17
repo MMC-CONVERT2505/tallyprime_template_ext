@@ -45,6 +45,45 @@ export class MasterExtractionService extends TallyExtractionServiceBase {
     return result;
   }
 
+  /**
+   * Resolves the real date range to fetch for `company`: an explicit
+   * fromDate/toDate always wins (returned unchanged, without even looking up
+   * the company), otherwise falls back to Tally's own company record
+   * (StartingFrom) through today. This is the exact "StartingFrom .. today"
+   * default TallyFullSyncService.doFullSync and scripts/live-extraction-audit.ts
+   * already relied on inline — pulled out here so every caller (full sync,
+   * voucher extraction, bulk export) shares one answer to "what does 'full
+   * history' mean for this company" instead of each guessing independently.
+   * Each side resolves independently: an explicit fromDate with no toDate
+   * still defaults the end to today, not the other way around.
+   *
+   * Existing to fix a real gap, not a hypothetical one: TransactionExtractionService.
+   * getVouchers previously required from/to and would otherwise fetch a
+   * narrow/wrong manually-guessed range (or, via the agent-tunnel dispatch
+   * path, crash deep in the date-range chunker when they were omitted
+   * entirely) — see that class's doc comment.
+   */
+  async resolveDateRange(
+    company: string,
+    fromDate?: string,
+    toDate?: string,
+  ): Promise<{ from: string; to: string }> {
+    if (fromDate && toDate) return { from: fromDate, to: toDate };
+
+    const companies = await this.getCompanies();
+    const companyInfo = companies.find(
+      (c) => c.name.trim().toLowerCase() === company.trim().toLowerCase(),
+    );
+    return {
+      from: fromDate ?? companyInfo?.startingFrom ?? '20000101',
+      to: toDate ?? this.today(),
+    };
+  }
+
+  private today(): string {
+    return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  }
+
   async getLedgers(
     company?: string,
     fromDate?: string,

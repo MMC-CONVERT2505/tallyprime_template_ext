@@ -16,7 +16,7 @@ type NewExtractionJob = Pick<ExtractionJob, 'type' | 'company' | 'status'> & {
   params: Prisma.InputJsonValue;
 };
 
-interface ExtractionJobRepository {
+export interface ExtractionJobRepository {
   create(data: NewExtractionJob): NewExtractionJob;
   save(entity: NewExtractionJob): Promise<ExtractionJob>;
   update(

@@ -1,9 +1,21 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ExtractionJob } from '@prisma/client';
+import Redis from 'ioredis';
+import { REDIS_CLIENT } from '../../redis/redis.module';
 import { chunkDateRange } from '../date-range-chunker';
 import { ExtractVouchersDto } from '../dto/extract.dto';
 import { TallyVoucher } from '../interfaces/tally.interfaces';
-import { ExtractionType, TallyExtractionServiceBase } from './tally-extraction.base';
+import { TALLY_CONNECTOR, TallyConnector } from '../tally-connector.interface';
+import { EnvelopeBuilder } from '../xml/envelope.builder';
+import { TallyResponseParser } from '../xml/response.parser';
+import { MasterExtractionService } from './master-extraction.service';
+import { ExtractionJobRepository, ExtractionType, TallyExtractionServiceBase } from './tally-extraction.base';
+
+/** `ExtractVouchersDto` with from/to already resolved to concrete dates —
+ *  what every private fetch helper below actually works with, so they never
+ *  have to re-handle the "maybe still missing" case `getVouchers` already resolved. */
+type ResolvedVouchersDto = Omit<ExtractVouchersDto, 'from' | 'to'> & { from: string; to: string };
 
 /**
  * Transactional (voucher) extraction, kept separate from
@@ -37,19 +49,46 @@ import { ExtractionType, TallyExtractionServiceBase } from './tally-extraction.b
  */
 @Injectable()
 export class TransactionExtractionService extends TallyExtractionServiceBase {
+  constructor(
+    @Inject(MasterExtractionService) private readonly masters: MasterExtractionService,
+    @Inject(EnvelopeBuilder) builder: EnvelopeBuilder,
+    @Inject(TALLY_CONNECTOR) connector: TallyConnector,
+    @Inject(TallyResponseParser) parser: TallyResponseParser,
+    @Inject(ConfigService) config: ConfigService,
+    @Optional() @Inject('EXTRACTION_JOB_REPOSITORY') jobs: ExtractionJobRepository | undefined,
+    @Optional() @Inject(REDIS_CLIENT) redis: Redis | undefined,
+  ) {
+    super(builder, connector, parser, config, jobs, redis);
+  }
+
+  /**
+   * `dto.from`/`dto.to` are optional — when either is omitted, this resolves
+   * it against the company's real date range (see
+   * MasterExtractionService.resolveDateRange) instead of requiring a manual
+   * guess. This closes two real gaps, not a hypothetical one: (1) a
+   * narrower-than-reality manually-typed range used to silently return fewer
+   * (or zero) vouchers instead of erroring or falling back, the exact class
+   * of bug Full Sync's own date handling was fixed for; (2) the agent-tunnel
+   * dispatch path (dispatchExtraction) never actually runs this DTO through
+   * class-validator, so an omitted from/to previously reached here as
+   * `undefined` and crashed deep inside the date-range chunker instead of
+   * resolving to something sane.
+   */
   async getVouchers(
     dto: ExtractVouchersDto,
     signal?: AbortSignal,
     externalJobId?: string,
   ): Promise<TallyVoucher[]> {
     const resolved = this.resolveCompany(dto.company);
-    this.assertDateRange(dto.from, dto.to);
+    const { from, to } = await this.masters.resolveDateRange(resolved, dto.from, dto.to);
+    this.assertDateRange(from, to);
+    const resolvedDto: ResolvedVouchersDto = { ...dto, from, to };
 
     return this.runExtraction(
       ExtractionType.VOUCHERS,
       resolved,
-      { company: resolved, from: dto.from, to: dto.to, voucherType: dto.voucherType ?? null },
-      (job) => this.fetchVouchersChunked(resolved, dto, signal, job),
+      { company: resolved, from, to, voucherType: dto.voucherType ?? null },
+      (job) => this.fetchVouchersChunked(resolved, resolvedDto, signal, job),
       externalJobId,
     );
   }
@@ -75,7 +114,7 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
    */
   private async fetchVouchersChunked(
     company: string,
-    dto: ExtractVouchersDto,
+    dto: ResolvedVouchersDto,
     signal?: AbortSignal,
     job?: ExtractionJob | null,
   ): Promise<TallyVoucher[]> {
@@ -156,7 +195,7 @@ export class TransactionExtractionService extends TallyExtractionServiceBase {
    */
   private async tryWholeRangeFetch(
     company: string,
-    dto: ExtractVouchersDto,
+    dto: ResolvedVouchersDto,
     signal: AbortSignal | undefined,
     job: ExtractionJob | null | undefined,
   ): Promise<TallyVoucher[] | null> {
