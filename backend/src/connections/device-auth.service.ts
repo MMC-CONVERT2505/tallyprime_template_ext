@@ -8,7 +8,8 @@ import {
 } from '@nestjs/common';
 import { DeviceAuthorization, DeviceAuthorizationStatus } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
-import { ConnectionsService } from './connections.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { ConnectionsService, NewConnectionResult } from './connections.service';
 import { ApproveDeviceDto } from './dto/approve-device.dto';
 
 export interface DeviceStartResult {
@@ -77,6 +78,7 @@ export class DeviceAuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly connections: ConnectionsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Called by an unauthenticated bridge on first boot — it has no identity yet. */
@@ -286,6 +288,7 @@ export class DeviceAuthService {
     this.logger.log(
       `Pairing consumed — connection ${result.id} (${label})${result.reused ? ' [reused existing]' : ''}.`,
     );
+    this.emailTokenToOrg(row.orgId, result);
     return {
       status: 'approved',
       id: result.id,
@@ -294,6 +297,38 @@ export class DeviceAuthService {
       reused: result.reused,
       defaultCompany: row.defaultCompany,
     };
+  }
+
+  /**
+   * Fire-and-forget — never awaited, so a slow/failed send can't delay the
+   * bridge's poll response. Device-flow pairing is the one mint path with no
+   * authenticated human in this specific request to email directly (the
+   * bridge itself is polling, anonymously) — so this reaches every user in
+   * the approving org instead of one specific address. See
+   * NotificationsService.sendConnectorToken's doc comment for why this
+   * exists at all: it's the only durable record of the token for a bridge
+   * running headless/as a service, where the console banner may never be
+   * seen.
+   */
+  private emailTokenToOrg(orgId: string, result: NewConnectionResult): void {
+    // Wrapped in an async IIFE (not a bare .then chain) so even a
+    // synchronous failure reaching for this.prisma.user becomes a rejected
+    // promise the trailing .catch can actually see, rather than throwing
+    // straight out of poll() and turning a notification problem into a
+    // failed pairing.
+    void (async () => {
+      const users = await this.prisma.user.findMany({ where: { orgId }, select: { email: true } });
+      await Promise.all(
+        users.map((u) =>
+          this.notifications.sendConnectorToken(u.email, {
+            label: result.label,
+            defaultCompany: result.defaultCompany,
+            token: result.token,
+            connectionId: result.id,
+          }),
+        ),
+      );
+    })().catch((err) => this.logger.warn(`Could not email connector token for org ${orgId}: ${String(err)}`));
   }
 
   private async markExpired(id: string): Promise<void> {

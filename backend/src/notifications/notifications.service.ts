@@ -74,6 +74,49 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * A durable, findable copy of a connector's bearer token — sent any time
+   * one is minted or rotated (manual Connections-tab create/rotate, or a
+   * device-pairing flow completing). Exists because the token is otherwise
+   * shown exactly once (browser UI) or printed only to a console that may
+   * not be visible (headless/service install, closed terminal window) — the
+   * exact gap that made a lost/never-seen token this project's single
+   * biggest pairing support cost. Still best-effort, same as
+   * sendExtractionComplete: a failed/unconfigured send never blocks minting
+   * the token itself, since the token is already returned to the caller
+   * through its normal channel regardless.
+   */
+  async sendConnectorToken(
+    to: string,
+    info: { label: string; defaultCompany?: string | null; token: string; connectionId: string },
+  ): Promise<void> {
+    if (!this.transporter) {
+      // Unlike sendPasswordResetOtp, this is never the ONLY way to see the
+      // token (it's always also returned to whoever/whatever just minted
+      // it) — a quiet debug log, same tone as sendExtractionComplete.
+      this.logger.debug(`SMTP not configured — skipping connector token email for ${to}.`);
+      return;
+    }
+
+    const companyLine = info.defaultCompany ? ` for "${info.defaultCompany}"` : ' (not pinned to a company)';
+    const subject = `Connector token — ${info.label}`;
+    const body =
+      `A connector token was just created/rotated${companyLine}.\n\n` +
+      `  Label: ${info.label}\n` +
+      `  Connection ID: ${info.connectionId}\n\n` +
+      `Token (keep this private — it lets a connector authenticate as your organization):\n` +
+      `${info.token}\n\n` +
+      `Put it in the connector's AGENT_TOKEN (its .env file) and start it — it connects immediately, ` +
+      `no pairing code needed.\n\n` +
+      `Didn't expect this? Revoke it immediately from the Connections tab.`;
+
+    try {
+      await this.transporter.sendMail({ from: this.from, to, subject, text: body });
+    } catch (err) {
+      this.logger.warn(`Could not send connector token email to ${to}: ${String(err)}`);
+    }
+  }
+
   async sendExtractionComplete(to: string, notice: ExtractionCompleteNotice): Promise<void> {
     if (!this.transporter) {
       this.logger.debug(`SMTP not configured — skipping notification for job ${notice.jobId}.`);

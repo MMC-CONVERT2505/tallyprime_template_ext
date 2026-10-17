@@ -14,7 +14,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtPayload } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TallyTunnelGateway } from '../gateway/tally-tunnel.gateway';
-import { ConnectionsService } from './connections.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { ConnectionsService, NewConnectionResult } from './connections.service';
 import { CreateConnectionDto } from './dto/create-connection.dto';
 
 @Controller('connections')
@@ -23,6 +24,7 @@ export class ConnectionsController {
   constructor(
     private readonly connections: ConnectionsService,
     private readonly tunnel: TallyTunnelGateway,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -30,11 +32,17 @@ export class ConnectionsController {
    * Safe to re-run for a company you've already paired: if an active connection already exists for
    * `defaultCompany` within this org, its token is rotated and `reused: true` is returned instead of
    * inserting a duplicate row — see ConnectionsService.upsertForCompany.
+   *
+   * Also emails the token to the acting admin (best-effort, never blocks this
+   * response) — see NotificationsService.sendConnectorToken's doc comment for
+   * why: "shown exactly once in the browser" is exactly how a token gets lost.
    */
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  create(@CurrentUser() user: JwtPayload, @Body() dto: CreateConnectionDto) {
-    return this.connections.create(user.orgId, dto);
+  async create(@CurrentUser() user: JwtPayload, @Body() dto: CreateConnectionDto) {
+    const result = await this.connections.create(user.orgId, dto);
+    this.emailToken(user.email, result);
+    return result;
   }
 
   /**
@@ -71,6 +79,7 @@ export class ConnectionsController {
   async rotateToken(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
     const result = await this.connections.rotateToken(user.orgId, id);
     this.tunnel.disconnectAgent(id, 'token rotated');
+    this.emailToken(user.email, result);
     return result;
   }
 
@@ -86,5 +95,24 @@ export class ConnectionsController {
     await this.connections.delete(user.orgId, id);
     this.tunnel.disconnectAgent(id, 'connection deleted');
     return { deleted: true };
+  }
+
+  /**
+   * Fire-and-forget — see NotificationsService.sendConnectorToken's doc
+   * comment. Never awaited: a slow/failed send must never delay or break the
+   * response carrying the token through its normal channel. The trailing
+   * .catch is deliberate even though sendConnectorToken already swallows its
+   * own errors internally — this call site shouldn't have to trust that;
+   * an unhandled rejection here would crash the process, not just this request.
+   */
+  private emailToken(to: string, result: NewConnectionResult): void {
+    this.notifications
+      .sendConnectorToken(to, {
+        label: result.label,
+        defaultCompany: result.defaultCompany,
+        token: result.token,
+        connectionId: result.id,
+      })
+      .catch(() => undefined);
   }
 }

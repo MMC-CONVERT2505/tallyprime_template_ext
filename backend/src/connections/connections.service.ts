@@ -13,6 +13,7 @@ export interface NewConnectionResult {
   token: string;
   /** True when this reused an existing row (see upsertForCompany) instead of inserting a new one. */
   reused: boolean;
+  defaultCompany?: string | null;
 }
 
 /**
@@ -60,7 +61,7 @@ export class ConnectionsService {
         where: { orgId, defaultCompany, isActive: true },
       });
       if (existing) {
-        return this.reuseExisting(existing.id, label, tokenHash, secret);
+        return this.reuseExisting(existing.id, label, tokenHash, secret, existing.defaultCompany);
       }
     }
 
@@ -69,7 +70,7 @@ export class ConnectionsService {
       await this.prisma.tallyConnection.create({
         data: { id, label, defaultCompany, tokenHash, orgId },
       });
-      return { id, label, token: formatConnectionToken(id, secret), reused: false };
+      return { id, label, token: formatConnectionToken(id, secret), reused: false, defaultCompany };
     } catch (err) {
       if (
         defaultCompany &&
@@ -80,7 +81,7 @@ export class ConnectionsService {
           where: { orgId, defaultCompany, isActive: true },
         });
         if (winner) {
-          return this.reuseExisting(winner.id, label, tokenHash, secret);
+          return this.reuseExisting(winner.id, label, tokenHash, secret, winner.defaultCompany);
         }
       }
       throw err;
@@ -92,6 +93,7 @@ export class ConnectionsService {
     label: string,
     tokenHash: string,
     secret: string,
+    defaultCompany?: string | null,
   ): Promise<NewConnectionResult> {
     await this.prisma.tallyConnection.update({
       where: { id: existingId },
@@ -102,6 +104,7 @@ export class ConnectionsService {
       label,
       token: formatConnectionToken(existingId, secret),
       reused: true,
+      defaultCompany,
     };
   }
 
@@ -170,6 +173,7 @@ export class ConnectionsService {
       label: existing.label,
       token: formatConnectionToken(existing.id, secret),
       reused: true,
+      defaultCompany: existing.defaultCompany,
     };
   }
 

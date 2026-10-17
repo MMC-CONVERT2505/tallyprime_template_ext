@@ -77,6 +77,7 @@ describe('ConnectionsService', () => {
       expect(create).not.toHaveBeenCalled();
       expect(result.id).toBe('conn-existing');
       expect(result.reused).toBe(true);
+      expect(result.defaultCompany).toBe('ABC Ltd');
       const parsed = parseConnectionToken(result.token);
       expect(parsed!.id).toBe('conn-existing');
       expect(update).toHaveBeenCalledWith({
@@ -102,6 +103,7 @@ describe('ConnectionsService', () => {
         defaultCompany: 'New Co',
       });
       expect(result.reused).toBe(false);
+      expect(result.defaultCompany).toBe('New Co');
     });
 
     it('loses a concurrent first-time-pairing race gracefully: reuses the winner\'s row instead of crashing on the unique-index violation', async () => {
@@ -140,6 +142,7 @@ describe('ConnectionsService', () => {
       });
       expect(result.id).toBe('conn-winner');
       expect(result.reused).toBe(true);
+      expect(result.defaultCompany).toBe('New Co');
     });
 
     it('rethrows the original error if the post-conflict recheck still finds nothing (a genuinely different failure)', async () => {
@@ -197,7 +200,13 @@ describe('ConnectionsService', () => {
   });
 
   describe('rotateToken', () => {
-    const EXISTING = { id: 'conn-1', label: 'My Dev Machine', orgId: 'org-1', isActive: true };
+    const EXISTING = {
+      id: 'conn-1',
+      label: 'My Dev Machine',
+      orgId: 'org-1',
+      isActive: true,
+      defaultCompany: 'ABC Ltd',
+    };
 
     it('mints a new token for the same connection id/label, without creating a new row', async () => {
       const findFirst = jest.fn().mockResolvedValue(EXISTING);
@@ -211,6 +220,7 @@ describe('ConnectionsService', () => {
       expect(result.id).toBe('conn-1');
       expect(result.label).toBe('My Dev Machine');
       expect(result.reused).toBe(true);
+      expect(result.defaultCompany).toBe('ABC Ltd');
       const parsed = parseConnectionToken(result.token);
       expect(parsed!.id).toBe('conn-1');
       expect(create).not.toHaveBeenCalled();

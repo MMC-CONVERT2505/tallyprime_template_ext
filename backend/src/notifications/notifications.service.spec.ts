@@ -113,4 +113,52 @@ describe('NotificationsService', () => {
       await expect(service.sendPasswordResetOtp('user@example.com', '4821')).resolves.toBeUndefined();
     });
   });
+
+  describe('sendConnectorToken', () => {
+    const info = {
+      label: 'Accounts PC',
+      defaultCompany: 'ABC Ltd',
+      token: 'conn-id.secret',
+      connectionId: 'conn-id',
+    };
+
+    it('logs at debug level (not warn — the token is always visible elsewhere too) when SMTP is unset', async () => {
+      const service = new NotificationsService(makeConfig() as any);
+      const debugSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation(() => undefined);
+
+      await service.sendConnectorToken('user@example.com', info);
+
+      expect(sendMail).not.toHaveBeenCalled();
+      expect(debugSpy).toHaveBeenCalled();
+    });
+
+    it('sends the token and connection details by email when SMTP is configured', async () => {
+      const service = new NotificationsService(makeConfig({ host: 'smtp.example.com' }) as any);
+
+      await service.sendConnectorToken('user@example.com', info);
+
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      const call = sendMail.mock.calls[0][0];
+      expect(call.to).toBe('user@example.com');
+      expect(call.subject).toContain('Accounts PC');
+      expect(call.text).toContain('conn-id.secret');
+      expect(call.text).toContain('ABC Ltd');
+    });
+
+    it('still mentions the connection when no company is pinned', async () => {
+      const service = new NotificationsService(makeConfig({ host: 'smtp.example.com' }) as any);
+
+      await service.sendConnectorToken('user@example.com', { ...info, defaultCompany: null });
+
+      const call = sendMail.mock.calls[0][0];
+      expect(call.text).toContain('not pinned to a company');
+    });
+
+    it('never throws even if the SMTP send itself fails', async () => {
+      sendMail.mockRejectedValueOnce(new Error('connection refused'));
+      const service = new NotificationsService(makeConfig({ host: 'smtp.example.com' }) as any);
+
+      await expect(service.sendConnectorToken('user@example.com', info)).resolves.toBeUndefined();
+    });
+  });
 });
