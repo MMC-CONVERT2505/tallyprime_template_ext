@@ -44,6 +44,8 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: '400001',
     bankName: null,
     bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
     website: null,
     creditLimit: null,
     contactPersonName: null,
@@ -71,6 +73,8 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: '700016',
     bankName: null,
     bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
     website: null,
     creditLimit: null,
     contactPersonName: null,
@@ -98,6 +102,8 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: '560001',
     bankName: 'HDFC Bank',
     bankAccountNumber: '50100123456789',
+    ifscCode: 'HDFC0000123',
+    accountHolderName: 'Global Supplies Pvt Ltd',
     website: null,
     creditLimit: null,
     contactPersonName: null,
@@ -125,6 +131,8 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
     website: null,
     creditLimit: null,
     contactPersonName: null,
@@ -152,6 +160,66 @@ export const SAMPLE_LEDGERS: TallyLedger[] = [
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
+    mailingName: null,
+    creditPeriod: null,
+  },
+  {
+    name: 'Cash',
+    parent: 'Cash-in-Hand',
+    description: null,
+    openingBalance: -15000,
+    closingBalance: -9500,
+    alterId: 105,
+    reservedName: null,
+    gstin: null,
+    panNumber: null,
+    email: null,
+    phone: null,
+    mobile: null,
+    billingAddress: null,
+    billingState: null,
+    billingCountry: null,
+    billingPincode: null,
+    bankName: null,
+    bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
+    mailingName: null,
+    creditPeriod: null,
+  },
+  {
+    name: 'ICICI Bank Savings A/c',
+    parent: 'Current Bank Accounts',
+    description: null,
+    openingBalance: -500000,
+    closingBalance: -680000,
+    alterId: 106,
+    reservedName: null,
+    gstin: null,
+    panNumber: null,
+    email: null,
+    phone: null,
+    mobile: null,
+    billingAddress: null,
+    billingState: null,
+    billingCountry: null,
+    billingPincode: null,
+    bankName: null,
+    bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
     website: null,
     creditLimit: null,
     contactPersonName: null,
@@ -282,9 +350,9 @@ export const SAMPLE_LEDGER_ONLY_SALES_VOUCHER: TallyVoucher = {
   reference: null,
   alterId: 406,
   ledgerEntries: [
-    { ledgerName: 'Consulting Income', amount: -5000, isDeemedPositive: true, isDebit: false , billCreditPeriodDays: null },
-    { ledgerName: 'Output IGST', amount: -900, isDeemedPositive: true, isDebit: false , billCreditPeriodDays: null },
-    { ledgerName: 'Rohan Traders', amount: 5900, isDeemedPositive: false, isDebit: true , billCreditPeriodDays: null },
+    { ledgerName: 'Consulting Income', amount: -5000, isDeemedPositive: true, isDebit: false , billCreditPeriodDays: null, billAllocations: [] },
+    { ledgerName: 'Output IGST', amount: -900, isDeemedPositive: true, isDebit: false , billCreditPeriodDays: null, billAllocations: [] },
+    { ledgerName: 'Rohan Traders', amount: 5900, isDeemedPositive: false, isDebit: true , billCreditPeriodDays: null, billAllocations: [] },
   ],
   inventoryEntries: [],
   partyGstin: '27AABCU9603R1ZM',
@@ -304,13 +372,13 @@ export const SAMPLE_PURCHASE_VOUCHER: TallyVoucher = {
   // TDS deducted at source (2% of the 20000 item value) — exercises
   // Bill.xlsx's ledger-derived TDS Name/Amount/Percentage columns.
   ledgerEntries: [
-    { ledgerName: 'TDS on Contractor', amount: 400, isDeemedPositive: false, isDebit: false , billCreditPeriodDays: null },
+    { ledgerName: 'TDS on Contractor', amount: 400, isDeemedPositive: false, isDebit: false , billCreditPeriodDays: null, billAllocations: [] },
     {
       ledgerName: 'Global Supplies Pvt Ltd',
       amount: -20600,
       isDeemedPositive: false,
       isDebit: false,
-     billCreditPeriodDays: null },
+     billCreditPeriodDays: null, billAllocations: [] },
   ],
   inventoryEntries: [{ stockItemName: 'Raw Material X', quantity: 200, rate: 100, amount: 20000 , discountPercent: null, accountLedgerName: null }],
   partyGstin: '29AAACG1234F1Z5',
@@ -362,3 +430,166 @@ export const SAMPLE_INVOICE_VOUCHERS: TallyVoucher[] = [
 export const SAMPLE_BILL_VOUCHERS: TallyVoucher[] = [SAMPLE_PURCHASE_VOUCHER];
 export const SAMPLE_CREDIT_NOTE_VOUCHERS: TallyVoucher[] = [SAMPLE_CREDIT_NOTE_VOUCHER];
 export const SAMPLE_STOCK_JOURNAL_VOUCHERS: TallyVoucher[] = [SAMPLE_STOCK_JOURNAL_VOUCHER];
+
+/** A Receipt against Rohan Traders' own INV-1001 (SAMPLE_SALES_VOUCHER) —
+ *  the party entry's billAllocations exercises
+ *  customer-payment.mapper.ts's one-row-per-allocation expansion. */
+export const SAMPLE_RECEIPT_VOUCHER: TallyVoucher = {
+  date: '20260425',
+  voucherType: 'Receipt',
+  voucherNumber: 'RCPT-5001',
+  partyLedgerName: 'Rohan Traders',
+  narration: 'Payment received against INV-1001',
+  reference: 'RCPT-REF-01',
+  alterId: 501,
+  ledgerEntries: [
+    { ledgerName: 'HDFC Bank Current A/c', amount: 4500, isDeemedPositive: false, isDebit: true, billCreditPeriodDays: null, billAllocations: [] },
+    { ledgerName: 'Rohan Traders', amount: -4500, isDeemedPositive: true, isDebit: false, billCreditPeriodDays: null, billAllocations: [{ name: 'INV-1001', amount: 4500 }] },
+  ],
+  inventoryEntries: [],
+  partyGstin: '27AABCU9603R1ZM',
+  placeOfSupply: 'Maharashtra',
+  partyGstRegistrationType: null,
+  gstRegistration: null,
+ currencyCode: null, exchangeRate: null };
+
+/** Pays Global Supplies Pvt Ltd (Sundry Creditors) against its own
+ *  PUR-2001 (SAMPLE_PURCHASE_VOUCHER) — VendorPaymentMapper keeps this row;
+ *  ExpenseMapper drops it. */
+export const SAMPLE_PAYMENT_VOUCHER_VENDOR: TallyVoucher = {
+  date: '20260426',
+  voucherType: 'Payment',
+  voucherNumber: 'PAY-6001',
+  partyLedgerName: 'Global Supplies Pvt Ltd',
+  narration: 'Payment against PUR-2001',
+  reference: 'PAY-REF-01',
+  alterId: 502,
+  ledgerEntries: [
+    { ledgerName: 'Global Supplies Pvt Ltd', amount: -20600, isDeemedPositive: false, isDebit: true, billCreditPeriodDays: null, billAllocations: [{ name: 'PUR-2001', amount: 20600 }] },
+    { ledgerName: 'ICICI Bank Savings A/c', amount: 20600, isDeemedPositive: true, isDebit: false, billCreditPeriodDays: null, billAllocations: [] },
+  ],
+  inventoryEntries: [],
+  partyGstin: '29AAACG1234F1Z5',
+  placeOfSupply: 'Karnataka',
+  partyGstRegistrationType: null,
+  gstRegistration: null,
+ currencyCode: null, exchangeRate: null };
+
+/** A direct/ad-hoc expense payment — the party ('Office Rent') is a plain
+ *  expense ledger, not a registered vendor, so ExpenseMapper keeps this row
+ *  and VendorPaymentMapper drops it — the exact complementary split. */
+export const SAMPLE_PAYMENT_VOUCHER_EXPENSE: TallyVoucher = {
+  date: '20260427',
+  voucherType: 'Payment',
+  voucherNumber: 'PAY-6002',
+  partyLedgerName: 'Office Rent',
+  narration: 'Monthly office rent payment',
+  reference: null,
+  alterId: 503,
+  ledgerEntries: [
+    { ledgerName: 'Office Rent', amount: -10000, isDeemedPositive: false, isDebit: true, billCreditPeriodDays: null, billAllocations: [] },
+    { ledgerName: 'Cash', amount: 10000, isDeemedPositive: true, isDebit: false, billCreditPeriodDays: null, billAllocations: [] },
+  ],
+  inventoryEntries: [],
+  partyGstin: null,
+  placeOfSupply: null,
+  partyGstRegistrationType: null,
+  gstRegistration: null,
+ currencyCode: null, exchangeRate: null };
+
+/** A purchase return against Global Supplies Pvt Ltd — the Debit Note
+ *  mirror of SAMPLE_CREDIT_NOTE_VOUCHER. */
+export const SAMPLE_DEBIT_NOTE_VOUCHER: TallyVoucher = {
+  date: '20260428',
+  voucherType: 'Debit Note',
+  voucherNumber: 'DN-7001',
+  partyLedgerName: 'Global Supplies Pvt Ltd',
+  narration: 'Purchase return - defective material',
+  reference: 'PUR-2001',
+  alterId: 504,
+  ledgerEntries: [],
+  inventoryEntries: [{ stockItemName: 'Raw Material X', quantity: 5, rate: 100, amount: 500, discountPercent: null, accountLedgerName: null }],
+  partyGstin: '29AAACG1234F1Z5',
+  placeOfSupply: 'Karnataka',
+  partyGstRegistrationType: null,
+  gstRegistration: null,
+ currencyCode: null, exchangeRate: null };
+
+/** A plain multi-line Journal voucher (depreciation) — no party, no
+ *  inventory, exactly the shape journal.mapper.ts expects. */
+export const SAMPLE_JOURNAL_VOUCHER: TallyVoucher = {
+  date: '20260429',
+  voucherType: 'Journal',
+  voucherNumber: 'JRNL-8001',
+  partyLedgerName: null,
+  narration: 'Depreciation adjustment',
+  reference: 'DEP-01',
+  alterId: 505,
+  ledgerEntries: [
+    { ledgerName: 'Depreciation Expense', amount: -5000, isDeemedPositive: false, isDebit: true, billCreditPeriodDays: null, billAllocations: [] },
+    { ledgerName: 'Accumulated Depreciation', amount: 5000, isDeemedPositive: true, isDebit: false, billCreditPeriodDays: null, billAllocations: [] },
+  ],
+  inventoryEntries: [],
+  partyGstin: null,
+  placeOfSupply: null,
+  partyGstRegistrationType: null,
+  gstRegistration: null,
+ currencyCode: null, exchangeRate: null };
+
+/** Cash deposited into the ICICI account — DepositMapper keeps this row
+ *  (one side resolves to Cash-in-Hand); BankTransferMapper drops it. */
+export const SAMPLE_CONTRA_VOUCHER_DEPOSIT: TallyVoucher = {
+  date: '20260430',
+  voucherType: 'Contra',
+  voucherNumber: 'CONT-9001',
+  partyLedgerName: null,
+  narration: 'Cash deposited into bank',
+  reference: null,
+  alterId: 506,
+  ledgerEntries: [
+    { ledgerName: 'ICICI Bank Savings A/c', amount: 8000, isDeemedPositive: true, isDebit: true, billCreditPeriodDays: null, billAllocations: [] },
+    { ledgerName: 'Cash', amount: -8000, isDeemedPositive: false, isDebit: false, billCreditPeriodDays: null, billAllocations: [] },
+  ],
+  inventoryEntries: [],
+  partyGstin: null,
+  placeOfSupply: null,
+  partyGstRegistrationType: null,
+  gstRegistration: null,
+ currencyCode: null, exchangeRate: null };
+
+/** A bank-to-bank transfer — BankTransferMapper keeps this row (both sides
+ *  resolve to Bank Accounts); DepositMapper drops it. */
+export const SAMPLE_CONTRA_VOUCHER_TRANSFER: TallyVoucher = {
+  date: '20260501',
+  voucherType: 'Contra',
+  voucherNumber: 'CONT-9002',
+  partyLedgerName: null,
+  narration: 'Transfer to ICICI from HDFC',
+  reference: null,
+  alterId: 507,
+  ledgerEntries: [
+    { ledgerName: 'ICICI Bank Savings A/c', amount: 50000, isDeemedPositive: true, isDebit: true, billCreditPeriodDays: null, billAllocations: [] },
+    { ledgerName: 'HDFC Bank Current A/c', amount: -50000, isDeemedPositive: false, isDebit: false, billCreditPeriodDays: null, billAllocations: [] },
+  ],
+  inventoryEntries: [],
+  partyGstin: null,
+  placeOfSupply: null,
+  partyGstRegistrationType: null,
+  gstRegistration: null,
+ currencyCode: null, exchangeRate: null };
+
+export const SAMPLE_RECEIPT_VOUCHERS: TallyVoucher[] = [SAMPLE_RECEIPT_VOUCHER];
+// VendorPaymentMapper/ExpenseMapper both receive this SAME raw array and
+// self-filter by party classification — see their own class doc comments.
+export const SAMPLE_PAYMENT_VOUCHERS: TallyVoucher[] = [
+  SAMPLE_PAYMENT_VOUCHER_VENDOR,
+  SAMPLE_PAYMENT_VOUCHER_EXPENSE,
+];
+export const SAMPLE_DEBIT_NOTE_VOUCHERS: TallyVoucher[] = [SAMPLE_DEBIT_NOTE_VOUCHER];
+export const SAMPLE_JOURNAL_VOUCHERS: TallyVoucher[] = [SAMPLE_JOURNAL_VOUCHER];
+// DepositMapper/BankTransferMapper both receive this SAME raw array and
+// self-filter by ledger-group classification.
+export const SAMPLE_CONTRA_VOUCHERS: TallyVoucher[] = [
+  SAMPLE_CONTRA_VOUCHER_DEPOSIT,
+  SAMPLE_CONTRA_VOUCHER_TRANSFER,
+];

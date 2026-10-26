@@ -85,6 +85,8 @@ describe('TallyResponseParser', () => {
         billingPincode: null,
         bankName: null,
         bankAccountNumber: null,
+        ifscCode: null,
+        accountHolderName: null,
         website: null,
         creditLimit: null,
         contactPersonName: null,
@@ -189,6 +191,9 @@ describe('TallyResponseParser', () => {
       const [ledger] = parser.mapLedgers(xml);
       expect(ledger.bankName).toBe('HDFC Bank (India)');
       expect(ledger.bankAccountNumber).toBe('50200048489591');
+      // IFSCODE/PAYMENTFAVOURING (2026-10-20) — same entry, previously parsed but unused.
+      expect(ledger.ifscCode).toBe('HDFC0000968');
+      expect(ledger.accountHolderName).toBe('Accelero Consultants');
     });
 
     it('picks the entry marked Primary when a ledger has multiple PAYMENTDETAILS.LIST entries', () => {

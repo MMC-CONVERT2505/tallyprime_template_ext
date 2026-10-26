@@ -1,8 +1,9 @@
 import { TallyVoucher } from '../tally/interfaces/tally.interfaces';
-import { deriveIntraStateTax } from './gst-rate.shared';
-import { resolveGstTreatment } from './ledger-contact.shared';
+import { deriveGstSplit, deriveIntraStateTax, gstSplitFromPostedKind } from './gst-rate.shared';
+import { resolveGstTreatment, resolvePaymentTerms } from './ledger-contact.shared';
 import {
   addDaysToTallyDate,
+  LedgerIndex,
   resolveVoucherCurrency,
   StockItemIndex,
   tallyDateToJsDate,
@@ -15,93 +16,180 @@ import {
 } from './voucher-tax.shared';
 
 /**
- * Zoho Books "Bill" import columns actually populated by this project —
- * taken from the real template (Master and Invoice or Bill/Bill.xlsx, sheet
- * "Bill"). One output row per Tally inventory line for an item-based
- * Purchase voucher (Zoho's own flat-per-line convention, same as
- * invoice.mapper.ts), PLUS — unlike Invoice.xlsx — a Purchase voucher
- * recorded with NO inventory lines at all (a pure ledger/service bill: rent,
- * professional fees, subscriptions — anything entered in Tally's "As
- * Voucher" accounting mode rather than item-invoice mode) still gets exactly
- * one row. Silently dropping those was a real, confirmed bug: a Bill's
- * TallyVoucher.inventoryEntries is legitimately empty for any non-stock
- * purchase, and the previous `if (inventoryEntries.length === 0) return []`
- * guard discarded the whole voucher — vendor, GSTIN, amount and all —
- * instead of just skipping the (nonexistent) per-item breakdown.
+ * Zoho Books "Bill" import columns — taken from the real template
+ * (backend/src/mapping/templates/Bill.xlsx, sheet "Bill"), replaced
+ * 2026-10-21 with a wider 104-column version of Zoho's own Bill bulk-import
+ * format (the previous template had 60). Same row shape as before: one row
+ * per Tally inventory line for an item-based Purchase voucher, PLUS a
+ * Purchase voucher with NO inventory lines at all (a pure ledger/service
+ * bill) still gets exactly one row — see this class's pre-2026-10-21 history
+ * for the live incident that fix was for ("Bill records missing").
  *
- * Tax on an item line still comes from the STOCK_ITEMS job's item master
- * (`itemIndex`, keyed by item name) — see invoice.mapper.ts's doc comment
- * for why per-line GST detail isn't parsed off the voucher itself. A
- * service-only row has no item to look up, so its Tax Name/Percentage/Amount
- * are instead read directly off the voucher's own posted ledger entries
- * (whichever line's name matches IGST/CGST/SGST/UTGST) — genuinely more
- * accurate than the item-rate approach where it's available, but only used
- * as a fallback here to avoid changing the already-tested item-line
- * behavior. SubTotal/Total/Balance/TDS/TCS are voucher-level (Zoho's own
- * per-line-repeats-header convention — see invoice.mapper.ts), derived from
- * ledger entries for every voucher regardless of whether it has item lines.
+ * Vendor Number (ledger.alterId, same caveat as every other *.mapper.ts's
+ * identical field — an edit-revision counter, not a stable external id) and
+ * Payment Terms/Payment Terms Label are new, joined via `ledgerIndex` (new
+ * constructor dependency, same pattern as invoice.mapper.ts's 2026-10-20
+ * pass) by voucher.partyLedgerName. Bill.xlsx's real template, unlike
+ * Invoice.xlsx/Credit Note.xlsx, has no Billing/Shipping/Contact-block
+ * columns at all — only Vendor Number/Payment Terms are added here.
  *
- * Currency Code/Exchange Rate/Account/Due Date (added 2026-09-05) — see
- * invoice.mapper.ts's doc comment for the same fields; Account here is the
- * inventory line's ACCOUNTINGALLOCATIONS.LIST ledger (or, for a service-only
- * row, the voucher's own single non-tax ledger name, when unambiguous —
- * LedgerTaxSummary.nonTaxLedgerName). This template has no per-line
- * "Discount" column (unlike Invoice.xlsx/Credit Note.xlsx), so
- * TallyInventoryEntry.discountPercent has nowhere to go here.
+ * CGST Rate %/SGST Rate %/IGST Rate % (+ CGST/SGST/IGST amount columns) are
+ * new. Unlike invoice.mapper.ts's identical-looking columns, the item-line
+ * branch here deliberately does NOT attempt the placeOfSupply-vs-home-state
+ * inter-state heustic: that heuristic was built and reasoned about for the
+ * SALES direction (home state vs. the customer's place of supply); this
+ * project has never examined whether the same signals mean the same thing
+ * for a PURCHASE voucher (home state vs. the *vendor's* side), so guessing
+ * here would be a new, unverified assumption rather than a reuse of a
+ * verified one. `deriveGstSplit(gstRate, null, null, amount)` is called with
+ * no placeOfSupply/homeState, which deterministically resolves to the
+ * intra-state (CGST+SGST) split — the exact same "always intra" assumption
+ * the old single "Tax Name" column already made unconditionally, just now
+ * visible across 3 columns instead of implied by 1. The ledger-only branch
+ * is different: a posted "Input IGST" (etc.) ledger entry is real ground
+ * truth regardless of direction, so it uses the shared
+ * `gstSplitFromPostedKind` exactly like invoice.mapper.ts's ledger-only
+ * branch. CESS has no known Tally source and stays blank throughout.
  *
- * Branch Name (added 2026-09-10) — voucher.gstRegistration, cross-referenced
- * against Zoho's own official Tally migration tool, then VERIFIED live (see
- * TallyVoucher.gstRegistration's doc comment). Item Type on the item-line
- * branch (corrected 2026-09-10) previously hardcoded 'goods'; now reads
- * TallyStockItem.itemType (GSTTYPEOFSUPPLY) — VERIFIED live that 28 of 35
- * real items are actually "Services".
+ * Discount/Discount Amount — Discount (TallyInventoryEntry.discountPercent)
+ * is new; this template, unlike the old one, now has a per-line Discount
+ * column. Discount Amount is left blank rather than back-computed, same
+ * "don't fabricate arithmetic nothing here confirms" rule as
+ * invoice.mapper.ts's identical column.
+ *
+ * PurchaseOrder / Purchase Order Number / Supplier Invoice No — all three
+ * carry the SAME voucher.reference value. Tally's own Purchase-voucher UI
+ * actually calls this field "Supplier Invoice No." (confirmed by its
+ * standard field label), making that column the most accurate of the three;
+ * "PurchaseOrder"/"Purchase Order Number" were this project's own earlier
+ * best-effort guess (see this file's pre-2026-10-21 history) that the same
+ * field doubles as a PO reference. Rather than pick one and silently drop
+ * the others, all three are populated with the one real value this project
+ * has — consistent with Invoice.xlsx's own PurchaseOrder/Buyer's Order No.
+ * precedent (one real fact, multiple plausible Zoho column names).
+ *
+ * "Amount" (new) carries the same value as "Item Total"/SubTotal on each
+ * row respectively — another same-fact-under-two-names column, not a
+ * distinct concept this project has evidence for.
+ *
+ * Everything else new (Entity Discount Percent/Amount, Submitted/Approved
+ * By/Date, Bill Status, Is Billable, Reference Invoice Type, Source/
+ * Destination of Supply, TDS Calculation Type/TaxID/Section Code/Section,
+ * Nature Of Collection, Discount Type, Is Discount Before Tax, Item
+ * TDS/Exemption Code, Reverse Charge Tax*, Supply Type, Discount
+ * Account(s), Is Landed Cost, Customer Name, Project Name, Cost Centre,
+ * Location/Branch ID, Product ID, Account Code) has no Tally source this
+ * project extracts and stays blank — in particular "Customer Name"/"Is
+ * Billable" (Zoho's "re-bill this expense to a customer" feature, which
+ * Tally's own Purchase-voucher data model has no equivalent concept for) and
+ * every Zoho-internal workflow/id column, matching every other mapper's
+ * "don't guess a value with no real source" standard.
  */
 export interface ZohoBillRow {
   'Bill Date': Date | '';
-  'Bill Number': string;
-  'Branch Name': string;
-  'GST Treatment': string;
-  'GST Identification Number (GSTIN)': string;
-  'Vendor Name': string;
   'Due Date': Date | '';
+  'Bill ID': '';
+  'Vendor Name': string;
+  'Vendor Number': number | '';
+  'Entity Discount Percent': '';
+  'Payment Terms': number | '';
+  'Payment Terms Label': string;
+  'Bill Number': string;
+  PurchaseOrder: string;
   'Currency Code': string;
   'Exchange Rate': number;
-  'Purchase Order Number': string;
-  Account: string;
-  'Item Name': string;
-  SKU: string;
-  'Item Description': string;
-  'Usage unit': string;
-  Quantity: number | '';
-  Rate: number | '';
-  'Item Type': string;
-  'Tax Name': string;
-  'Tax Percentage': number | '';
-  'Tax Amount': number | '';
-  'Tax Type': string;
-  'Item Total': number | '';
   SubTotal: number | '';
   Total: number | '';
   Balance: number | '';
+  TotalRetentionAmountFCY: '';
+  TotalRetentionAmountBCY: '';
+  'TCS Amount': number | '';
+  'Vendor Notes': string;
+  'Terms & Conditions': '';
+  Adjustment: '';
+  'Adjustment Description': '';
+  'Branch ID': '';
+  'Branch Name': string;
+  'Location Name': '';
+  'Is Inclusive Tax': '';
+  'Submitted By': '';
+  'Approved By': '';
+  'Submitted Date': '';
+  'Approved Date': '';
+  'Bill Status': '';
+  'Created By': '';
+  'Product ID': '';
+  'Item Name': string;
+  Account: string;
+  'Account Code': '';
+  Description: string;
+  Quantity: number | '';
+  'Usage unit': string;
+  'Tax Amount': number | '';
+  'Item Total': number | '';
+  'Is Billable': '';
+  'Reference Invoice Type': '';
+  'Source of Supply': '';
+  'Destination of Supply': '';
+  'GST Treatment': string;
+  'GST Identification Number (GSTIN)': string;
+  'TDS Calculation Type': '';
+  'TDS TaxID': '';
   'TDS Name': string;
   'TDS Percentage': number | '';
+  'TDS Section Code': '';
+  'TDS Section': '';
   'TDS Amount': number | '';
   'TCS Tax Name': string;
   'TCS Percentage': number | '';
-  'TCS Amount': number | '';
-  'Vendor Notes': string;
+  'Nature Of Collection': '';
+  'Line Item Location Name': '';
+  Rate: number | '';
+  'Discount Type': '';
+  'Is Discount Before Tax': '';
+  Discount: number | '';
+  'Discount Amount': '';
   'HSN/SAC': string;
-  /**
-   * Added 2026-09-05 — via STOCK_ITEMS index, TallyStockItem.itcIneligible
-   * (GSTDETAILS.LIST → GSTINELIGIBLEITC), VERIFIED live. Written as plain
-   * English ("Eligible"/"Ineligible"), not a guessed Zoho enum code — this
-   * project has no confirmed real Bill.xlsx sample value for this column to
-   * match against (unlike e.g. "Item Tax Type"/"ItemAmount", which IS
-   * confirmed from the template's own demo rows), so the literal fact is
-   * written rather than a fabricated system value. Blank for a service-only
-   * line (no item to look up).
-   */
+  'Purchase Order Number': string;
+  'Tax ID': '';
+  'Tax Name': string;
+  'Tax Percentage': number | '';
+  'Tax Type': string;
+  'Item TDS Name': '';
+  'Item TDS Percentage': '';
+  'Item TDS Amount': '';
+  'Item TDS Section Code': '';
+  'Item TDS Section': '';
+  'Item Exemption Code': '';
+  'Item Type': string;
+  'Reverse Charge Tax Name': '';
+  'Reverse Charge Tax Rate': '';
+  'Reverse Charge Tax Type': '';
+  'Supply Type': '';
   'ITC Eligibility': string;
+  'Entity Discount Amount': '';
+  'Discount Account': '';
+  'Discount Account Code': '';
+  'Item Discount Account': '';
+  'Item Discount Account Code': '';
+  'Is Landed Cost': '';
+  'Customer Name': '';
+  'Project Name': '';
+  'CGST Rate %': number | '';
+  'SGST Rate %': number | '';
+  'IGST Rate %': number | '';
+  'CESS Rate %': '';
+  'CGST(FCY)': '';
+  'SGST(FCY)': '';
+  'IGST(FCY)': '';
+  'CESS(FCY)': '';
+  CGST: number | '';
+  SGST: number | '';
+  IGST: number | '';
+  CESS: '';
+  'Cost Centre': '';
+  Amount: number | '';
+  'Supplier Invoice No': string;
 }
 
 /** See ZohoBillRow['ITC Eligibility']'s doc comment — plain English, not a
@@ -113,8 +201,122 @@ function itcEligibilityLabel(itcIneligible: boolean | null | undefined): string 
   return itcIneligible ? 'Ineligible' : 'Eligible';
 }
 
+/** Every column with no Tally source — see the interface doc comment above.
+ *  Centralized exactly like invoice.mapper.ts's BLANK_FIELDS. */
+const BLANK_FIELDS: Omit<
+  ZohoBillRow,
+  | 'Bill Date'
+  | 'Due Date'
+  | 'Vendor Name'
+  | 'Vendor Number'
+  | 'Payment Terms'
+  | 'Payment Terms Label'
+  | 'Bill Number'
+  | 'PurchaseOrder'
+  | 'Currency Code'
+  | 'Exchange Rate'
+  | 'SubTotal'
+  | 'Total'
+  | 'Balance'
+  | 'TCS Amount'
+  | 'Vendor Notes'
+  | 'Branch Name'
+  | 'Item Name'
+  | 'Account'
+  | 'Description'
+  | 'Quantity'
+  | 'Usage unit'
+  | 'Tax Amount'
+  | 'Item Total'
+  | 'GST Treatment'
+  | 'GST Identification Number (GSTIN)'
+  | 'TDS Name'
+  | 'TDS Percentage'
+  | 'TDS Amount'
+  | 'TCS Tax Name'
+  | 'TCS Percentage'
+  | 'Rate'
+  | 'Discount'
+  | 'HSN/SAC'
+  | 'Purchase Order Number'
+  | 'Tax Name'
+  | 'Tax Percentage'
+  | 'Tax Type'
+  | 'Item Type'
+  | 'ITC Eligibility'
+  | 'CGST Rate %'
+  | 'SGST Rate %'
+  | 'IGST Rate %'
+  | 'CGST'
+  | 'SGST'
+  | 'IGST'
+  | 'Amount'
+  | 'Supplier Invoice No'
+> = {
+  'Bill ID': '',
+  'Entity Discount Percent': '',
+  TotalRetentionAmountFCY: '',
+  TotalRetentionAmountBCY: '',
+  'Terms & Conditions': '',
+  Adjustment: '',
+  'Adjustment Description': '',
+  'Branch ID': '',
+  'Location Name': '',
+  'Is Inclusive Tax': '',
+  'Submitted By': '',
+  'Approved By': '',
+  'Submitted Date': '',
+  'Approved Date': '',
+  'Bill Status': '',
+  'Created By': '',
+  'Product ID': '',
+  'Account Code': '',
+  'Is Billable': '',
+  'Reference Invoice Type': '',
+  'Source of Supply': '',
+  'Destination of Supply': '',
+  'TDS Calculation Type': '',
+  'TDS TaxID': '',
+  'TDS Section Code': '',
+  'TDS Section': '',
+  'Nature Of Collection': '',
+  'Line Item Location Name': '',
+  'Discount Type': '',
+  'Is Discount Before Tax': '',
+  'Tax ID': '',
+  'Item TDS Name': '',
+  'Item TDS Percentage': '',
+  'Item TDS Amount': '',
+  'Item TDS Section Code': '',
+  'Item TDS Section': '',
+  'Item Exemption Code': '',
+  'Reverse Charge Tax Name': '',
+  'Reverse Charge Tax Rate': '',
+  'Reverse Charge Tax Type': '',
+  'Supply Type': '',
+  'Discount Amount': '',
+  'Entity Discount Amount': '',
+  'Discount Account': '',
+  'Discount Account Code': '',
+  'Item Discount Account': '',
+  'Item Discount Account Code': '',
+  'Is Landed Cost': '',
+  'Customer Name': '',
+  'Project Name': '',
+  'CESS Rate %': '',
+  'CGST(FCY)': '',
+  'SGST(FCY)': '',
+  'IGST(FCY)': '',
+  'CESS(FCY)': '',
+  CESS: '',
+  'Cost Centre': '',
+};
+
 export class BillMapper {
-  constructor(private readonly itemIndex: StockItemIndex) {}
+  constructor(
+    private readonly itemIndex: StockItemIndex,
+    private readonly ledgerIndex: LedgerIndex,
+  ) {}
 
   toBillRows(vouchers: TallyVoucher[]): ZohoBillRow[] {
     return vouchers.flatMap((voucher) => this.toBillRowsForVoucher(voucher));
@@ -123,56 +325,76 @@ export class BillMapper {
   private toBillRowsForVoucher(voucher: TallyVoucher): ZohoBillRow[] {
     const summary = summarizeLedgerEntries(voucher.ledgerEntries, voucher.partyLedgerName);
     const currency = resolveVoucherCurrency(voucher);
+    const ledger = voucher.partyLedgerName ? this.ledgerIndex.get(voucher.partyLedgerName) : undefined;
+    const paymentTerms = resolvePaymentTerms(ledger?.creditPeriod ?? null);
 
-    const common: Pick<
+    const common: Omit<
       ZohoBillRow,
-      | 'Bill Date'
-      | 'Bill Number'
-      | 'Branch Name'
-      | 'GST Treatment'
-      | 'GST Identification Number (GSTIN)'
-      | 'Vendor Name'
-      | 'Due Date'
-      | 'Currency Code'
-      | 'Exchange Rate'
-      | 'Purchase Order Number'
-      | 'Vendor Notes'
-      | 'TDS Name'
-      | 'TDS Amount'
-      | 'TCS Tax Name'
-      | 'TCS Amount'
+      | 'Account'
+      | 'Item Name'
+      | 'Description'
+      | 'Quantity'
+      | 'Usage unit'
+      | 'Tax Amount'
+      | 'Item Total'
+      | 'Rate'
+      | 'Discount'
+      | 'HSN/SAC'
+      | 'Tax Name'
+      | 'Tax Percentage'
+      | 'Tax Type'
+      | 'Item Type'
+      | 'ITC Eligibility'
+      | 'CGST Rate %'
+      | 'SGST Rate %'
+      | 'IGST Rate %'
+      | 'CGST'
+      | 'SGST'
+      | 'IGST'
+      | 'SubTotal'
+      | 'Total'
+      | 'Balance'
+      | 'TDS Percentage'
+      | 'TCS Percentage'
+      | 'Amount'
     > = {
+      ...BLANK_FIELDS,
       'Bill Date': tallyDateToJsDate(voucher.date) ?? '',
+      'Due Date': addDaysToTallyDate(voucher.date, summary.partyBillCreditPeriodDays),
+      'Vendor Name': voucher.partyLedgerName ?? '',
+      'Vendor Number': ledger?.alterId ?? '',
+      'Payment Terms': paymentTerms.days,
+      'Payment Terms Label': paymentTerms.label,
       'Bill Number': voucher.voucherNumber ?? '',
+      // See the class doc comment — the same real voucher.reference value
+      // populates all 3 of these differently-named columns.
+      PurchaseOrder: voucher.reference ?? '',
+      'Purchase Order Number': voucher.reference ?? '',
+      'Supplier Invoice No': voucher.reference ?? '',
+      'Currency Code': currency.currencyCode,
+      'Exchange Rate': currency.exchangeRate,
+      'TCS Amount': summary.tcsAmount,
+      'Vendor Notes': voucher.narration ?? '',
       'Branch Name': voucher.gstRegistration ?? '',
       'GST Treatment': resolveGstTreatment(voucher.partyGstin, voucher.partyGstRegistrationType),
       'GST Identification Number (GSTIN)': voucher.partyGstin ?? '',
-      'Vendor Name': voucher.partyLedgerName ?? '',
-      'Due Date': addDaysToTallyDate(voucher.date, summary.partyBillCreditPeriodDays),
-      'Currency Code': currency.currencyCode,
-      'Exchange Rate': currency.exchangeRate,
-      // Tally has no dedicated "linked Purchase Order" field on a Purchase
-      // voucher; the Ref# field (`reference`) is the closest genuine source
-      // — commonly used for exactly this purpose — but is a free-text field
-      // Tally doesn't validate, so treat this as best-effort, not a
-      // guaranteed PO number.
-      'Purchase Order Number': voucher.reference ?? '',
-      'Vendor Notes': voucher.narration ?? '',
       'TDS Name': summary.tdsName,
       'TDS Amount': summary.tdsAmount,
       'TCS Tax Name': summary.tcsName,
-      'TCS Amount': summary.tcsAmount,
     };
 
     if (voucher.inventoryEntries.length > 0) {
       const lines = voucher.inventoryEntries.map((line) => {
         const item = this.itemIndex.get(line.stockItemName);
-        const tax = deriveIntraStateTax(item?.gstRate ?? null);
-        const taxAmount: number | '' =
-          item?.gstRate !== null && item?.gstRate !== undefined && line.amount !== null
-            ? round2(line.amount * (item.gstRate / 100))
-            : '';
-        return { line, item, tax, taxAmount };
+        const gstRate = item?.gstRate ?? null;
+        const lineAmount = line.amount ?? 0;
+        const tax = deriveIntraStateTax(gstRate);
+        const taxAmount: number | '' = gstRate !== null ? round2((lineAmount * gstRate) / 100) : '';
+        // No home-state signal attempted for a Purchase voucher — see the
+        // class doc comment. This always resolves to the intra-state half
+        // split, same assumption `tax`/`taxAmount` above already make.
+        const split = deriveGstSplit(gstRate, null, null, lineAmount);
+        return { line, item, tax, taxAmount, split };
       });
 
       const subTotal = round2(lines.reduce((sum, { line }) => sum + (line.amount ?? 0), 0));
@@ -181,21 +403,22 @@ export class BillMapper {
       );
       const total = round2(subTotal + taxTotal);
 
-      return lines.map(({ line, item, tax, taxAmount }) => ({
+      return lines.map(({ line, item, tax, taxAmount, split }) => ({
         ...common,
         Account: line.accountLedgerName ?? '',
         'Item Name': line.stockItemName,
-        SKU: item?.alias ?? '',
-        'Item Description': item?.description ?? '',
-        'Usage unit': item?.baseUnit ?? '',
+        Description: item?.description ?? '',
+        'Usage unit': this.usageUnit(item?.baseUnit ?? null),
         Quantity: line.quantity ?? '',
         Rate: line.rate ?? '',
+        Discount: line.discountPercent ?? '',
         'Item Type': item?.itemType ?? 'goods',
         'Tax Name': tax.name,
         'Tax Percentage': tax.rate,
         'Tax Amount': taxAmount,
         'Tax Type': tax.name ? TAX_TYPE_ITEM_AMOUNT : '',
         'Item Total': line.amount ?? '',
+        Amount: line.amount ?? '',
         SubTotal: subTotal,
         Total: total,
         Balance: total,
@@ -203,6 +426,12 @@ export class BillMapper {
         'TCS Percentage': percentageOf(summary.tcsAmount, subTotal),
         'HSN/SAC': item?.hsnCode ?? '',
         'ITC Eligibility': itcEligibilityLabel(item?.itcIneligible),
+        'CGST Rate %': split.cgstRate,
+        'SGST Rate %': split.sgstRate,
+        'IGST Rate %': split.igstRate,
+        CGST: split.cgstAmount,
+        SGST: split.sgstAmount,
+        IGST: split.igstAmount,
       }));
     }
 
@@ -217,23 +446,27 @@ export class BillMapper {
     const taxName =
       summary.gstKind && taxPercentage !== '' ? `${summary.gstKind}${taxPercentage}` : '';
     const total = round2(subTotal + (summary.gstAmount ?? 0));
+    // Ground truth — see the class doc comment's reasoning for why this is
+    // used here but not on the item-line branch above.
+    const split = gstSplitFromPostedKind(summary.gstKind, summary.gstAmount, taxPercentage);
 
     return [
       {
         ...common,
         Account: summary.nonTaxLedgerName,
         'Item Name': '',
-        SKU: '',
-        'Item Description': '',
+        Description: '',
         'Usage unit': '',
         Quantity: '',
         Rate: '',
+        Discount: '',
         'Item Type': 'service',
         'Tax Name': taxName,
         'Tax Percentage': taxPercentage,
         'Tax Amount': taxAmount,
         'Tax Type': taxName ? TAX_TYPE_ITEM_AMOUNT : '',
         'Item Total': subTotal || '',
+        Amount: subTotal || '',
         SubTotal: subTotal || '',
         Total: total,
         Balance: total,
@@ -242,7 +475,19 @@ export class BillMapper {
         'HSN/SAC': '',
         // No item to look up for a service-only row — no Tally source.
         'ITC Eligibility': '',
+        'CGST Rate %': split.cgstRate,
+        'SGST Rate %': split.sgstRate,
+        'IGST Rate %': split.igstRate,
+        CGST: split.cgstAmount,
+        SGST: split.sgstAmount,
+        IGST: split.igstAmount,
       },
     ];
+  }
+
+  /** Tally's own sentinel for a stock item with no real unit of measure —
+   *  see stock-item.mapper.ts's identical UNIT_NOT_APPLICABLE handling. */
+  private usageUnit(baseUnit: string | null): string {
+    return baseUnit && baseUnit.trim().toLowerCase() !== 'not applicable' ? baseUnit : '';
   }
 }

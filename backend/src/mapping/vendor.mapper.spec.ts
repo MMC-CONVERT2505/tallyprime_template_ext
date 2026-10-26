@@ -26,6 +26,8 @@ describe('VendorMapper', () => {
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
     website: null,
     creditLimit: null,
     contactPersonName: null,
@@ -49,6 +51,27 @@ describe('VendorMapper', () => {
     ]);
     expect(row['Bank Name']).toBe('HDFC Bank');
     expect(row['Bank Account Number']).toBe('000123456789');
+  });
+
+  it('maps Account Holder Name/IFS Code from the same PAYMENTDETAILS.LIST entry as bank name/account number (2026-10-20 reviewer feedback)', () => {
+    const [row] = mapper.toVendorRows([
+      { ...baseLedger, accountHolderName: 'Reliable Supplies Co', ifscCode: 'HDFC0000968' },
+    ]);
+    expect(row['Account Holder Name']).toBe('Reliable Supplies Co');
+    expect(row['IFS Code']).toBe('HDFC0000968');
+  });
+
+  it('leaves Account Holder Name/IFS Code blank rather than guessing when the ledger has no bank details', () => {
+    const [row] = mapper.toVendorRows([baseLedger]);
+    expect(row['Account Holder Name']).toBe('');
+    expect(row['IFS Code']).toBe('');
+  });
+
+  it('always leaves SWIFT Code blank — no such field exists in Tally\'s domestic bank details at all', () => {
+    const [row] = mapper.toVendorRows([
+      { ...baseLedger, accountHolderName: 'Reliable Supplies Co', ifscCode: 'HDFC0000968' },
+    ]);
+    expect(row['SWIFT Code']).toBe('');
   });
 
   it('derives GST Treatment from GSTIN presence, same as CustomerMapper', () => {
@@ -121,5 +144,15 @@ describe('VendorMapper', () => {
     const [row] = mapper.toVendorRows([baseLedger]);
     expect(row.Website).toBe('');
     expect(row['Conact Display Name']).toBe('');
+  });
+
+  it("maps Vendor Number from the ledger's AlterID (2026-10-20 reviewer feedback)", () => {
+    const [row] = mapper.toVendorRows([{ ...baseLedger, alterId: 7 }]);
+    expect(row['Vendor Number']).toBe(7);
+  });
+
+  it('leaves Vendor Number blank rather than 0 when Tally has no AlterID at all', () => {
+    const [row] = mapper.toVendorRows([{ ...baseLedger, alterId: null }]);
+    expect(row['Vendor Number']).toBe('');
   });
 });

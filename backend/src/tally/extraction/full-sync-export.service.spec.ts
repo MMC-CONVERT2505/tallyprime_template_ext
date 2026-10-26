@@ -157,7 +157,7 @@ async function readZipEntryNames(buffer: Buffer): Promise<string[]> {
 }
 
 describe('TallyFullSyncExportService', () => {
-  it('builds one RAW sheet per known entity (masters + real voucher types, not VOUCHERS:ALL/COMPANY) plus 9 ZOHO sheets', async () => {
+  it('builds one RAW sheet per known entity (masters + real voucher types, not VOUCHERS:ALL/COMPANY) plus one ZOHO sheet per entity', async () => {
     const redis = makeFakeRedis();
     seed(redis);
     const { exportService } = makeServices(redis);
@@ -166,9 +166,11 @@ describe('TallyFullSyncExportService', () => {
     const workbook = await loadWorkbook(buffer);
     const names = workbook.worksheets.map((s) => s.name);
 
-    // 11 masters + 4 real voucher types = 15 RAW sheets, + 9 ZOHO sheets.
+    // 11 masters + 4 real voucher types = 15 RAW sheets, + 16 ZOHO sheets
+    // (one per ZohoEntityKey — DEPOSIT/BANK_TRANSFER each still get their
+    // own ZOHO sheet even though they share one real template file).
     expect(names.filter((n) => n.startsWith('RAW '))).toHaveLength(15);
-    expect(names.filter((n) => n.startsWith('ZOHO '))).toHaveLength(9);
+    expect(names.filter((n) => n.startsWith('ZOHO '))).toHaveLength(16);
     expect(names).not.toContain('RAW COMPANY');
     expect(names).not.toContain('RAW VOUCHERS ALL');
 
@@ -239,7 +241,7 @@ describe('TallyFullSyncExportService', () => {
   });
 
   describe('buildMappedZip', () => {
-    it('bundles all 9 Zoho entities, each under its real template filename', async () => {
+    it('bundles every Zoho entity, each under its real template filename (DEPOSIT/BANK_TRANSFER split so they don\'t collide on their one shared template file)', async () => {
       const redis = makeFakeRedis();
       seed(redis);
       const { exportService } = makeServices(redis);
@@ -257,6 +259,13 @@ describe('TallyFullSyncExportService', () => {
         'Bill.xlsx',
         'Credit Note.xlsx',
         'Stock Journal.xlsx',
+        'Journal.xlsx',
+        'Vendor_Credits.xlsx',
+        'Customer_Payment.xlsx',
+        'Vendor_Payment.xlsx',
+        'Expense.xlsx',
+        'Deposit.xlsx',
+        'Bank Transfer.xlsx',
       ]);
     });
 

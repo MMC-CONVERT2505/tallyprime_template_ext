@@ -42,6 +42,17 @@ export interface LedgerTaxSummary {
    * TallyLedgerEntry.billCreditPeriodDays's doc comment).
    */
   partyBillCreditPeriodDays: number | null;
+  /**
+   * Added 2026-10-20 for Invoice.xlsx's "Round Off" column — a Round Off
+   * ledger entry was already pattern-matched and excluded from
+   * nonTaxLedgerTotal above (so it never inflated the goods/expense base),
+   * but its own amount was simply discarded rather than surfaced. Signed
+   * (not absolute), summing Tally's own raw amount for every matched entry —
+   * 0 when no Round Off entry was found, distinct in meaning from "a Round
+   * Off of exactly 0" but not distinguished here since Zoho has no separate
+   * blank-vs-zero convention for this column.
+   */
+  roundOffAmount: number;
 }
 
 /** Zoho's fixed enum for "how was this line's tax computed" — a percentage
@@ -83,6 +94,7 @@ export function summarizeLedgerEntries(
   let nonTaxLedgerTotal = 0;
   const nonTaxLedgerNames = new Set<string>();
   let partyBillCreditPeriodDays: number | null = null;
+  let roundOffAmount = 0;
 
   for (const entry of entries) {
     if (partyLedgerName && entry.ledgerName === partyLedgerName) {
@@ -109,7 +121,10 @@ export function summarizeLedgerEntries(
       tcsAmount = addAmount(tcsAmount, abs);
       continue;
     }
-    if (ROUND_OFF_LEDGER_PATTERN.test(entry.ledgerName)) continue;
+    if (ROUND_OFF_LEDGER_PATTERN.test(entry.ledgerName)) {
+      roundOffAmount += entry.amount;
+      continue;
+    }
     if (partyLedgerName && entry.ledgerName === partyLedgerName) continue;
 
     nonTaxLedgerTotal += abs;
@@ -126,6 +141,7 @@ export function summarizeLedgerEntries(
     nonTaxLedgerTotal: round2(nonTaxLedgerTotal),
     nonTaxLedgerName: nonTaxLedgerNames.size === 1 ? [...nonTaxLedgerNames][0] : '',
     partyBillCreditPeriodDays,
+    roundOffAmount: round2(roundOffAmount),
   };
 }
 

@@ -1,4 +1,4 @@
-import { TallyStockItem } from '../tally/interfaces/tally.interfaces';
+import { TallyLedger, TallyStockItem } from '../tally/interfaces/tally.interfaces';
 
 /**
  * Shared helpers for the 4 VOUCHERS-derived mappers (invoice/bill/credit-note/
@@ -42,6 +42,20 @@ export type StockItemIndex = Map<string, TallyStockItem>;
 
 export function buildStockItemIndex(items: TallyStockItem[]): StockItemIndex {
   return new Map(items.map((item) => [item.name, item]));
+}
+
+/**
+ * Added 2026-10-20 for invoice.mapper.ts's Billing/Shipping/Contact/Payment
+ * Terms block — the new Invoice.xlsx template added a full customer contact
+ * block that nothing on TallyVoucher itself carries (it only has the party's
+ * name/GSTIN/place-of-supply as flat scalars), but the customer's own ledger
+ * record (already fetched for Customer.xlsx) has the real address/contact
+ * fields. Same shape/purpose as StockItemIndex above.
+ */
+export type LedgerIndex = Map<string, TallyLedger>;
+
+export function buildLedgerIndex(ledgers: TallyLedger[]): LedgerIndex {
+  return new Map(ledgers.map((ledger) => [ledger.name, ledger]));
 }
 
 const DEFAULT_CURRENCY_CODE = 'INR';

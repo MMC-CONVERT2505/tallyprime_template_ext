@@ -107,7 +107,7 @@ describe('TallyFullSyncMappingService', () => {
 
     // Row counts match full-export-pipeline.spec.ts's already-verified
     // output for this exact fixture set (sheet.rowCount - 1 for the header).
-    expect(result.COA.rows).toHaveLength(2);
+    expect(result.COA.rows).toHaveLength(4);
     expect(result.CUSTOMER.rows).toHaveLength(2);
     expect(result.VENDOR.rows).toHaveLength(1);
     expect(result.ITEM.rows).toHaveLength(3);
@@ -116,6 +116,18 @@ describe('TallyFullSyncMappingService', () => {
     expect(result.BILL.rows).toHaveLength(1);
     expect(result.CREDIT_NOTE.rows).toHaveLength(1);
     expect(result.STOCK_JOURNAL.rows).toHaveLength(2);
+    // The 7 new entities (2026-10-21) — none of their raw voucher types are
+    // seeded in this test's Redis fixture (see seed() above), so each
+    // legitimately produces zero rows rather than erroring — the same
+    // "voucher type with no cached snapshot is zero rows, not an error"
+    // contract the next test below asserts explicitly for VOUCHERS:Purchase.
+    expect(result.JOURNAL.rows).toHaveLength(0);
+    expect(result.VENDOR_CREDIT.rows).toHaveLength(0);
+    expect(result.CUSTOMER_PAYMENT.rows).toHaveLength(0);
+    expect(result.VENDOR_PAYMENT.rows).toHaveLength(0);
+    expect(result.EXPENSE.rows).toHaveLength(0);
+    expect(result.DEPOSIT.rows).toHaveLength(0);
+    expect(result.BANK_TRANSFER.rows).toHaveLength(0);
 
     // Every entity is paired with its REAL template's full header list, not
     // just the keys a mapped row happens to set — a column nothing

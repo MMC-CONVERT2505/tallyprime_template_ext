@@ -3,7 +3,7 @@ import Redis from 'ioredis';
 import { ExcelGeneratorService } from '../../excel/excel-generator.service';
 import { sanitizeSheetName } from '../../excel/sheet-name.util';
 import { ZipEntry, ZipService } from '../../excel/zip.service';
-import { ZOHO_ENTITIES, ZohoEntityKey, templatePathFor } from '../../mapping/zoho-entity.map';
+import { ZOHO_ENTITIES, ZohoEntityKey, templatePathFor, zipFilenameFor } from '../../mapping/zoho-entity.map';
 import { withLock } from '../../redis/lock.util';
 import { REDIS_CLIENT } from '../../redis/redis.module';
 import { FULL_SYNC_QUICK_LOCK_TTL_MS } from './full-sync.constants';
@@ -93,11 +93,11 @@ export class TallyFullSyncExportService {
   }
 
   /**
-   * All 9 Zoho entities, each written into its own real template file (same
+   * Every Zoho entity, each written into its own real template file (same
    * layout as the "Master and Invoice or Bill" source templates), bundled
    * into one .zip — "download every function at once" instead of clicking
-   * the per-entity download 9 times. Same filenames the production bulk
-   * export's zip uses (ZOHO_ENTITIES[key].templateFile — see
+   * the per-entity download one at a time. Same filenames the production
+   * bulk export's zip uses (`zipFilenameFor` — see
    * BulkExportService.generateAllTemplates) so the two zips look identical
    * aside from where the data came from.
    */
@@ -125,7 +125,7 @@ export class TallyFullSyncExportService {
     const mapped = await this.getOrComputeMapped(company);
     const entries: ZipEntry[] = await Promise.all(
       (Object.keys(ZOHO_ENTITIES) as ZohoEntityKey[]).map(async (key) => ({
-        filename: ZOHO_ENTITIES[key].templateFile,
+        filename: zipFilenameFor(key),
         buffer: await this.excel.writeIntoTemplate(
           templatePathFor(key),
           ZOHO_ENTITIES[key].sheetName,

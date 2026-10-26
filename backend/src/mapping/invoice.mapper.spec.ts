@@ -1,10 +1,11 @@
 import {
+  TallyLedger,
   TallyLedgerEntry,
   TallyStockItem,
   TallyVoucher,
 } from '../tally/interfaces/tally.interfaces';
 import { InvoiceMapper } from './invoice.mapper';
-import { buildStockItemIndex } from './voucher-line.shared';
+import { buildLedgerIndex, buildStockItemIndex, LedgerIndex } from './voucher-line.shared';
 
 describe('InvoiceMapper', () => {
   const item = (overrides: Partial<TallyStockItem>): TallyStockItem => ({
@@ -46,8 +47,41 @@ describe('InvoiceMapper', () => {
     currencyCode: null, exchangeRate: null, ...overrides,
   });
 
+  const ledgerRecord = (overrides: Partial<TallyLedger>): TallyLedger => ({
+    name: 'ABC Traders',
+    parent: null,
+    description: null,
+    openingBalance: null,
+    closingBalance: null,
+    alterId: null,
+    reservedName: null,
+    gstin: null,
+    gstRegistrationType: null,
+    gstPlaceOfSupply: null,
+    panNumber: null,
+    email: null,
+    phone: null,
+    mobile: null,
+    billingAddress: null,
+    billingState: null,
+    billingCountry: null,
+    billingPincode: null,
+    bankName: null,
+    bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
+    website: null,
+    creditLimit: null,
+    contactPersonName: null,
+    mailingName: null,
+    creditPeriod: null,
+    ...overrides,
+  });
+
+  const EMPTY_LEDGERS: LedgerIndex = buildLedgerIndex([]);
+
   it('emits one row per inventory line, repeating the header fields', () => {
-    const mapper = new InvoiceMapper(buildStockItemIndex([]));
+    const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
     const rows = mapper.toInvoiceRows([
       voucher({
         inventoryEntries: [
@@ -65,7 +99,7 @@ describe('InvoiceMapper', () => {
   });
 
   it('returns nothing for a voucher with neither inventory lines nor ledger entries (genuinely empty)', () => {
-    const mapper = new InvoiceMapper(buildStockItemIndex([]));
+    const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
     expect(mapper.toInvoiceRows([voucher({ inventoryEntries: [], ledgerEntries: [] })])).toEqual(
       [],
     );
@@ -75,7 +109,7 @@ describe('InvoiceMapper', () => {
     const itemIndex = buildStockItemIndex([
       item({ name: 'Widget A', hsnCode: '392321', gstRate: 18 }),
     ]);
-    const mapper = new InvoiceMapper(itemIndex);
+    const mapper = new InvoiceMapper(itemIndex, EMPTY_LEDGERS);
     const [row] = mapper.toInvoiceRows([
       voucher({
         inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
@@ -83,15 +117,25 @@ describe('InvoiceMapper', () => {
     ]);
 
     expect(row['HSN/SAC']).toBe('392321');
+    // No homeState signal anywhere in this single-voucher batch -> defaults
+    // to intra-state (see deriveGstSplit's doc comment), so the combined
+    // "Item Tax" column still reads "GST18" (the intra-state naming), not
+    // "IGST18".
     expect(row['Item Tax']).toBe('GST18');
     expect(row['Item Tax %']).toBe(18);
     // "ItemAmount", not gst-rate.shared's "Group" — matches Bill.xlsx's
     // confirmed-correct reference value for this Zoho line-item-tax enum.
     expect(row['Item Tax Type']).toBe('ItemAmount');
+    expect(row['CGST Rate %']).toBe(9);
+    expect(row['SGST Rate %']).toBe(9);
+    expect(row['IGST Rate %']).toBe('');
+    expect(row.CGST).toBe(9);
+    expect(row.SGST).toBe(9);
+    expect(row.IGST).toBe('');
   });
 
   it('leaves tax/HSN blank when the item has no match in the stock item index', () => {
-    const mapper = new InvoiceMapper(buildStockItemIndex([]));
+    const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
     const [row] = mapper.toInvoiceRows([
       voucher({
         inventoryEntries: [{ stockItemName: 'Unknown Item', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
@@ -100,10 +144,12 @@ describe('InvoiceMapper', () => {
     expect(row['HSN/SAC']).toBe('');
     expect(row['Item Tax']).toBe('');
     expect(row['Item Tax %']).toBe('');
+    expect(row['CGST Rate %']).toBe('');
+    expect(row['IGST Rate %']).toBe('');
   });
 
   it('derives GST Treatment from partyGstin and converts the Tally date to a real Date', () => {
-    const mapper = new InvoiceMapper(buildStockItemIndex([]));
+    const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
     const [withGstin] = mapper.toInvoiceRows([
       voucher({
         partyGstin: '33AAAAA1111A1Z1',
@@ -125,7 +171,7 @@ describe('InvoiceMapper', () => {
   });
 
   it('derives GST Treatment from the real GSTREGISTRATIONTYPE, not GSTIN presence alone — VERIFIED live: 113 of 602 real sampled vouchers are "Unregistered/Consumer" (a registered business, not a retail consumer), which the old GSTIN-only heuristic silently mapped to "consumer"', () => {
-    const mapper = new InvoiceMapper(buildStockItemIndex([]));
+    const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
     const [unregisteredBusiness] = mapper.toInvoiceRows([
       voucher({
         partyGstRegistrationType: 'Unregistered/Consumer',
@@ -143,26 +189,148 @@ describe('InvoiceMapper', () => {
     expect(unknownType['GST Treatment']).toBe('consumer');
   });
 
-  it('maps Branch Name from the voucher\'s own GST registration, not a caller default', () => {
-    const mapper = new InvoiceMapper(buildStockItemIndex([]));
-    const [row] = mapper.toInvoiceRows([
-      voucher({
-        gstRegistration: 'Uttar Pradesh Registration',
-        inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
-      }),
-    ]);
-    expect(row['Branch Name']).toBe('Uttar Pradesh Registration');
-  });
-
   it('reads Item Type from the stock item\'s real Product Type classification, not a hardcoded "goods"', () => {
     const itemIndex = buildStockItemIndex([item({ name: 'Support Plan', itemType: 'service' })]);
-    const mapper = new InvoiceMapper(itemIndex);
+    const mapper = new InvoiceMapper(itemIndex, EMPTY_LEDGERS);
     const [row] = mapper.toInvoiceRows([
       voucher({
         inventoryEntries: [{ stockItemName: 'Support Plan', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
       }),
     ]);
     expect(row['Item Type']).toBe('service');
+  });
+
+  describe('Customer Number/Billing/Shipping/Primary Contact (2026-10-20, from the ledger join)', () => {
+    it('leaves the whole contact block blank when the party has no matching ledger record', () => {
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
+      const [row] = mapper.toInvoiceRows([
+        voucher({
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['Customer Number']).toBe('');
+      expect(row['Billing Address']).toBe('');
+      expect(row['Primary Contact EmailID']).toBe('');
+    });
+
+    it('joins Customer Number (alterId) and the full Billing/Shipping/Contact block by partyLedgerName', () => {
+      const ledgerIndex = buildLedgerIndex([
+        ledgerRecord({
+          name: 'Rohan Traders',
+          alterId: 101,
+          mailingName: 'Rohan Traders Pvt Ltd',
+          billingAddress: '12 MG Road, Andheri\nNear Metro Station',
+          billingState: 'Maharashtra',
+          billingCountry: 'India',
+          billingPincode: '400001',
+          phone: '02212345678',
+          email: 'rohan@traders.in',
+          mobile: '9876543210',
+          creditPeriod: '30',
+        }),
+      ]);
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), ledgerIndex);
+      const [row] = mapper.toInvoiceRows([
+        voucher({
+          partyLedgerName: 'Rohan Traders',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+
+      expect(row['Customer Number']).toBe(101);
+      expect(row['Billing Attention']).toBe('Rohan Traders Pvt Ltd');
+      expect(row['Billing Address']).toBe('12 MG Road, Andheri');
+      expect(row['Billing Street2']).toBe('Near Metro Station');
+      expect(row['Billing State']).toBe('Maharashtra');
+      expect(row['Billing Country']).toBe('India');
+      expect(row['Billing Code']).toBe('400001');
+      expect(row['Billing Phone']).toBe('02212345678');
+      expect(row['Primary Contact EmailID']).toBe('rohan@traders.in');
+      expect(row['Primary Contact Mobile']).toBe('9876543210');
+      expect(row['Primary Contact Phone']).toBe('02212345678');
+      expect(row['Payment Terms']).toBe(30);
+      expect(row['Payment Terms Label']).toBe('30 Days');
+
+      // Shipping mirrors Billing — Tally doesn't track a separate ship-to
+      // address this project extracts (see class doc comment).
+      expect(row['Shipping Attention']).toBe('Rohan Traders Pvt Ltd');
+      expect(row['Shipping Address']).toBe('12 MG Road, Andheri');
+      expect(row['Shipping Street2']).toBe('Near Metro Station');
+      expect(row['Shipping State']).toBe('Maharashtra');
+      expect(row['Shipping Country']).toBe('India');
+      expect(row['Shipping Code']).toBe('400001');
+      expect(row['Shipping Phone Number']).toBe('02212345678');
+    });
+  });
+
+  describe('resolveHomeState / CGST+SGST vs IGST split on inventory lines (2026-10-20)', () => {
+    it('defaults to intra-state (CGST+SGST) when no GST Registration or Place of Supply exists anywhere in the batch', () => {
+      const itemIndex = buildStockItemIndex([item({ name: 'Widget A', gstRate: 18 })]);
+      const mapper = new InvoiceMapper(itemIndex, EMPTY_LEDGERS);
+      const [row] = mapper.toInvoiceRows([
+        voucher({
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 1000, amount: 1000, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['CGST Rate %']).toBe(9);
+      expect(row['SGST Rate %']).toBe(9);
+      expect(row['IGST Rate %']).toBe('');
+      expect(row.CGST).toBe(90);
+      expect(row.SGST).toBe(90);
+      expect(row.IGST).toBe('');
+    });
+
+    it('splits as IGST when a voucher\'s Place of Supply differs from the batch\'s resolved home state', () => {
+      const itemIndex = buildStockItemIndex([item({ name: 'Widget A', gstRate: 18 })]);
+      const mapper = new InvoiceMapper(itemIndex, EMPTY_LEDGERS);
+      // Two Maharashtra vouchers + one West Bengal voucher -> home state
+      // resolves to Maharashtra (most common Place of Supply, since no
+      // voucher carries a GST Registration at all) -> the West Bengal
+      // voucher alone is inter-state.
+      const rows = mapper.toInvoiceRows([
+        voucher({
+          voucherNumber: 'INV-1',
+          placeOfSupply: 'Maharashtra',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 1000, amount: 1000, discountPercent: null, accountLedgerName: null }],
+        }),
+        voucher({
+          voucherNumber: 'INV-2',
+          placeOfSupply: 'Maharashtra',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 1000, amount: 1000, discountPercent: null, accountLedgerName: null }],
+        }),
+        voucher({
+          voucherNumber: 'INV-3',
+          placeOfSupply: 'West Bengal',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 1000, amount: 1000, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      const [intra1, intra2, inter] = rows;
+      expect(intra1['CGST Rate %']).toBe(9);
+      expect(intra1['IGST Rate %']).toBe('');
+      expect(intra2['CGST Rate %']).toBe(9);
+      expect(inter['IGST Rate %']).toBe(18);
+      expect(inter['IGST']).toBe(180);
+      expect(inter['CGST Rate %']).toBe('');
+      expect(inter['Item Tax']).toBe('IGST18');
+    });
+
+    it('prefers GST Registration\'s state name over Place of Supply when resolving the home state', () => {
+      const itemIndex = buildStockItemIndex([item({ name: 'Widget A', gstRate: 18 })]);
+      const mapper = new InvoiceMapper(itemIndex, EMPTY_LEDGERS);
+      // gstRegistration says "Uttar Pradesh Registration" -> home state is
+      // Uttar Pradesh, even though every voucher's Place of Supply is
+      // Maharashtra (what a naive Place-of-Supply-only heuristic would have
+      // picked) -> every one of these is actually inter-state.
+      const [row] = mapper.toInvoiceRows([
+        voucher({
+          gstRegistration: 'Uttar Pradesh Registration',
+          placeOfSupply: 'Maharashtra',
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 1000, amount: 1000, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['IGST Rate %']).toBe(18);
+      expect(row['CGST Rate %']).toBe('');
+    });
   });
 
   describe('service/ledger-only invoices (no inventory lines) — regression coverage', () => {
@@ -175,11 +343,13 @@ describe('InvoiceMapper', () => {
       amount: null,
       isDeemedPositive: null,
       isDebit: null,
-      billCreditPeriodDays: null, ...overrides,
+      billCreditPeriodDays: null,
+      billAllocations: [],
+      ...overrides,
     });
 
     it('does NOT drop a real Sales voucher just because it has no stock items', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const rows = mapper.toInvoiceRows([
         voucher({
           voucherNumber: 'INV-SVC-1',
@@ -198,11 +368,15 @@ describe('InvoiceMapper', () => {
       expect(rows[0]['Item Name']).toBe('');
     });
 
-    it('derives Item Tax/TCS/TDS from posted ledger entries on a service row', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+    it('derives Item Tax/TCS/TDS AND the CGST/SGST/IGST split from the REAL posted ledger entry\'s own kind, not the home-state heuristic', () => {
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           partyLedgerName: 'Client Co',
+          // No placeOfSupply/gstRegistration at all on this voucher — the
+          // home-state heuristic has nothing to go on and would default to
+          // intra-state, but the REAL posted entry below says "Output
+          // IGST" — ground truth that must win.
           ledgerEntries: [
             ledger({ ledgerName: 'Consulting Income', amount: 100000, isDebit: false , billCreditPeriodDays: null }),
             ledger({ ledgerName: 'Output IGST', amount: 18000, isDebit: false , billCreditPeriodDays: null }),
@@ -215,13 +389,39 @@ describe('InvoiceMapper', () => {
       expect(row['Item Tax']).toBe('IGST18');
       expect(row['Item Tax %']).toBe(18);
       expect(row['Item Tax Type']).toBe('ItemAmount');
+      expect(row['IGST Rate %']).toBe(18);
+      expect(row['IGST']).toBe(18000);
+      expect(row['CGST Rate %']).toBe('');
+      expect(row['SGST Rate %']).toBe('');
       expect(row['TDS Name']).toBe('TDS Receivable');
       expect(row['TDS Amount']).toBe(10000);
       expect(row['TDS Percentage']).toBe(10);
     });
 
+    it('splits a posted CGST/SGST (non-IGST) ledger entry evenly across both columns, not as a single combined rate', () => {
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
+      const [row] = mapper.toInvoiceRows([
+        voucher({
+          partyLedgerName: 'Client Co',
+          ledgerEntries: [
+            ledger({ ledgerName: 'Consulting Income', amount: 100000, isDebit: false, billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Output CGST', amount: 9000, isDebit: false, billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Output SGST', amount: 9000, isDebit: false, billCreditPeriodDays: null }),
+            ledger({ ledgerName: 'Client Co', amount: -118000, isDebit: true, billCreditPeriodDays: null }),
+          ],
+        }),
+      ]);
+
+      expect(row['Item Tax %']).toBe(18);
+      expect(row['IGST Rate %']).toBe('');
+      expect(row['CGST Rate %']).toBe(9);
+      expect(row['SGST Rate %']).toBe(9);
+      expect(row.CGST).toBe(9000);
+      expect(row.SGST).toBe(9000);
+    });
+
     it('captures TCS on a service row', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           partyLedgerName: 'Vendor',
@@ -245,12 +445,14 @@ describe('InvoiceMapper', () => {
       amount: null,
       isDeemedPositive: null,
       isDebit: null,
-      billCreditPeriodDays: null, ...overrides,
+      billCreditPeriodDays: null,
+      billAllocations: [],
+      ...overrides,
     });
 
     it('repeats the same voucher-level TDS/TCS values on every inventory line', () => {
       const itemIndex = buildStockItemIndex([item({ name: 'Widget A', gstRate: 18 })]);
-      const mapper = new InvoiceMapper(itemIndex);
+      const mapper = new InvoiceMapper(itemIndex, EMPTY_LEDGERS);
       const rows = mapper.toInvoiceRows([
         voucher({
           partyLedgerName: 'Client Co',
@@ -274,18 +476,56 @@ describe('InvoiceMapper', () => {
     });
   });
 
-  describe('Currency Code/Exchange Rate/Account/Discount/Due Date (2026-09-05 field-mapping pass)', () => {
+  describe('Round Off (2026-10-20)', () => {
     const ledger = (overrides: Partial<TallyLedgerEntry>): TallyLedgerEntry => ({
       ledgerName: 'Some Ledger',
       amount: null,
       isDeemedPositive: null,
       isDebit: null,
       billCreditPeriodDays: null,
+      billAllocations: [],
+      ...overrides,
+    });
+
+    it('defaults to 0 when no Round Off ledger entry is posted', () => {
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
+      const [row] = mapper.toInvoiceRows([
+        voucher({
+          inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null }],
+        }),
+      ]);
+      expect(row['Round Off']).toBe(0);
+    });
+
+    it('surfaces a real Round Off ledger entry\'s own signed amount', () => {
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
+      const [row] = mapper.toInvoiceRows([
+        voucher({
+          partyLedgerName: 'Client Co',
+          ledgerEntries: [
+            ledger({ ledgerName: 'Sales', amount: 10000.4, isDebit: false }),
+            ledger({ ledgerName: 'Round Off', amount: -0.4, isDebit: true }),
+            ledger({ ledgerName: 'Client Co', amount: -10000, isDebit: true }),
+          ],
+        }),
+      ]);
+      expect(row['Round Off']).toBe(-0.4);
+    });
+  });
+
+  describe('Currency Code/Exchange Rate/Account/Discount/Due Date/PurchaseOrder (field-mapping pass)', () => {
+    const ledger = (overrides: Partial<TallyLedgerEntry>): TallyLedgerEntry => ({
+      ledgerName: 'Some Ledger',
+      amount: null,
+      isDeemedPositive: null,
+      isDebit: null,
+      billCreditPeriodDays: null,
+      billAllocations: [],
       ...overrides,
     });
 
     it('defaults to INR/1 when the voucher carries no foreign-currency data', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           inventoryEntries: [
@@ -298,7 +538,7 @@ describe('InvoiceMapper', () => {
     });
 
     it('carries the voucher\'s real foreign currency code and exchange rate onto every line', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           currencyCode: 'USD',
@@ -313,7 +553,7 @@ describe('InvoiceMapper', () => {
     });
 
     it('maps an inventory line\'s own posted account and flat discount, distinct from the item master', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           inventoryEntries: [
@@ -330,10 +570,11 @@ describe('InvoiceMapper', () => {
       ]);
       expect(row.Account).toBe('Sales - Domestic');
       expect(row.Discount).toBe(10);
+      expect(row['Item Total']).toBe(90);
     });
 
     it('leaves Account/Discount blank when the line carries none, rather than guessing', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           inventoryEntries: [
@@ -346,7 +587,7 @@ describe('InvoiceMapper', () => {
     });
 
     it('uses the single non-tax ledger name as Account on a service-only row', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           partyLedgerName: 'Acme Consulting',
@@ -361,7 +602,7 @@ describe('InvoiceMapper', () => {
     });
 
     it('computes Due Date from the voucher date plus the party\'s bill-wise credit period', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           date: '20250415',
@@ -381,7 +622,7 @@ describe('InvoiceMapper', () => {
     });
 
     it('leaves Due Date blank when no bill-wise credit period is set, rather than defaulting to the invoice date', () => {
-      const mapper = new InvoiceMapper(buildStockItemIndex([]));
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toInvoiceRows([
         voucher({
           inventoryEntries: [
@@ -390,6 +631,20 @@ describe('InvoiceMapper', () => {
         }),
       ]);
       expect(row['Due Date']).toBe('');
+    });
+
+    it('carries voucher.reference onto both PurchaseOrder and "Buyer\'s Order No." — the same real fact under two column names', () => {
+      const mapper = new InvoiceMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
+      const [row] = mapper.toInvoiceRows([
+        voucher({
+          reference: 'PO-9981',
+          inventoryEntries: [
+            { stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100, discountPercent: null, accountLedgerName: null },
+          ],
+        }),
+      ]);
+      expect(row.PurchaseOrder).toBe('PO-9981');
+      expect(row["Buyer's Order No."]).toBe('PO-9981');
     });
   });
 });

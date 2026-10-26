@@ -1,17 +1,24 @@
 import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
 import Redis from 'ioredis';
 import { ExcelGeneratorService } from '../../excel/excel-generator.service';
+import { BankTransferMapper } from '../../mapping/bank-transfer.mapper';
 import { BillMapper } from '../../mapping/bill.mapper';
 import { CostCentreMapper } from '../../mapping/cost-centre.mapper';
 import { CreditNoteMapper } from '../../mapping/credit-note.mapper';
 import { CustomerMapper } from '../../mapping/customer.mapper';
+import { CustomerPaymentMapper } from '../../mapping/customer-payment.mapper';
+import { DepositMapper } from '../../mapping/deposit.mapper';
+import { ExpenseMapper } from '../../mapping/expense.mapper';
 import { GroupHierarchyResolver } from '../../mapping/group-hierarchy.resolver';
 import { InvoiceMapper } from '../../mapping/invoice.mapper';
+import { JournalMapper } from '../../mapping/journal.mapper';
 import { LedgerMapper } from '../../mapping/ledger.mapper';
 import { StockItemMapper } from '../../mapping/stock-item.mapper';
 import { StockJournalMapper } from '../../mapping/stock-journal.mapper';
+import { VendorCreditMapper } from '../../mapping/vendor-credit.mapper';
 import { VendorMapper } from '../../mapping/vendor.mapper';
-import { buildStockItemIndex, tallyDateToJsDate } from '../../mapping/voucher-line.shared';
+import { VendorPaymentMapper } from '../../mapping/vendor-payment.mapper';
+import { buildLedgerIndex, buildStockItemIndex, tallyDateToJsDate } from '../../mapping/voucher-line.shared';
 import {
   ZOHO_ENTITIES,
   ZohoEntityKey,
@@ -34,11 +41,22 @@ export interface MappedZohoEntity {
   rows: Array<Record<string, unknown>>;
 }
 
+/** 'Payment' and 'Contra' each appear twice (VENDOR_PAYMENT/EXPENSE,
+ *  DEPOSIT/BANK_TRANSFER) — fine here since each entity key still gets its
+ *  own single voucherType, just not a unique one; see zoho-entity.map.ts's
+ *  doc comment for why. */
 const VOUCHER_TYPE_BY_ENTITY: Partial<Record<ZohoEntityKey, string>> = {
   INVOICE: 'Sales',
   BILL: 'Purchase',
   CREDIT_NOTE: 'Credit Note',
   STOCK_JOURNAL: 'Stock Journal',
+  JOURNAL: 'Journal',
+  VENDOR_CREDIT: 'Debit Note',
+  CUSTOMER_PAYMENT: 'Receipt',
+  VENDOR_PAYMENT: 'Payment',
+  EXPENSE: 'Payment',
+  DEPOSIT: 'Contra',
+  BANK_TRANSFER: 'Contra',
 };
 
 /**
@@ -142,6 +160,7 @@ export class TallyFullSyncMappingService {
 
     const resolver = new GroupHierarchyResolver(groups);
     const itemIndex = buildStockItemIndex(stockItems);
+    const ledgerIndex = buildLedgerIndex(ledgers);
 
     const salesVouchers = await this.optionalVoucherType(company, VOUCHER_TYPE_BY_ENTITY.INVOICE!);
     const purchaseVouchers = await this.optionalVoucherType(company, VOUCHER_TYPE_BY_ENTITY.BILL!);
@@ -153,11 +172,34 @@ export class TallyFullSyncMappingService {
       company,
       VOUCHER_TYPE_BY_ENTITY.STOCK_JOURNAL!,
     );
+    const journalVouchers = await this.optionalVoucherType(company, VOUCHER_TYPE_BY_ENTITY.JOURNAL!);
+    const debitNoteVouchers = await this.optionalVoucherType(
+      company,
+      VOUCHER_TYPE_BY_ENTITY.VENDOR_CREDIT!,
+    );
+    const receiptVouchers = await this.optionalVoucherType(
+      company,
+      VOUCHER_TYPE_BY_ENTITY.CUSTOMER_PAYMENT!,
+    );
+    // Fetched once, shared by VendorPaymentMapper/ExpenseMapper (and
+    // DepositMapper/BankTransferMapper below) — each mapper self-filters
+    // its own half of the same raw voucher-type array, see their own class
+    // doc comments.
+    const paymentVouchers = await this.optionalVoucherType(
+      company,
+      VOUCHER_TYPE_BY_ENTITY.VENDOR_PAYMENT!,
+    );
+    const contraVouchers = await this.optionalVoucherType(company, VOUCHER_TYPE_BY_ENTITY.DEPOSIT!);
 
     const invoiceDatesByNumber = new Map<string, Date>();
     for (const voucher of salesVouchers) {
       const date = tallyDateToJsDate(voucher.date);
       if (voucher.voucherNumber && date) invoiceDatesByNumber.set(voucher.voucherNumber, date);
+    }
+    const purchaseDatesByNumber = new Map<string, Date>();
+    for (const voucher of purchaseVouchers) {
+      const date = tallyDateToJsDate(voucher.date);
+      if (voucher.voucherNumber && date) purchaseDatesByNumber.set(voucher.voucherNumber, date);
     }
 
     // Each mapper returns its own fixed-shape row interface (ZohoAccountRow,
@@ -173,12 +215,27 @@ export class TallyFullSyncMappingService {
       VENDOR: new VendorMapper(resolver).toVendorRows(ledgers),
       ITEM: new StockItemMapper().toItemRows(stockItems),
       COST_CENTRE: new CostCentreMapper().toReportingTagRows(costCentres),
-      INVOICE: new InvoiceMapper(itemIndex).toInvoiceRows(salesVouchers),
-      BILL: new BillMapper(itemIndex).toBillRows(purchaseVouchers),
-      CREDIT_NOTE: new CreditNoteMapper(itemIndex, invoiceDatesByNumber).toCreditNoteRows(
+      INVOICE: new InvoiceMapper(itemIndex, ledgerIndex).toInvoiceRows(salesVouchers),
+      BILL: new BillMapper(itemIndex, ledgerIndex).toBillRows(purchaseVouchers),
+      CREDIT_NOTE: new CreditNoteMapper(itemIndex, ledgerIndex, invoiceDatesByNumber).toCreditNoteRows(
         creditNoteVouchers,
       ),
       STOCK_JOURNAL: new StockJournalMapper(itemIndex).toStockJournalRows(stockJournalVouchers),
+      JOURNAL: new JournalMapper().toJournalRows(journalVouchers),
+      VENDOR_CREDIT: new VendorCreditMapper(itemIndex, ledgerIndex).toVendorCreditRows(
+        debitNoteVouchers,
+      ),
+      CUSTOMER_PAYMENT: new CustomerPaymentMapper(ledgerIndex, invoiceDatesByNumber).toCustomerPaymentRows(
+        receiptVouchers,
+      ),
+      VENDOR_PAYMENT: new VendorPaymentMapper(
+        ledgerIndex,
+        resolver,
+        purchaseDatesByNumber,
+      ).toVendorPaymentRows(paymentVouchers),
+      EXPENSE: new ExpenseMapper(ledgerIndex, resolver).toExpenseRows(paymentVouchers),
+      DEPOSIT: new DepositMapper(ledgerIndex, resolver).toDepositRows(contraVouchers),
+      BANK_TRANSFER: new BankTransferMapper(ledgerIndex, resolver).toBankTransferRows(contraVouchers),
     } as unknown as Record<ZohoEntityKey, Array<Record<string, unknown>>>;
 
     const mapped: Partial<Record<ZohoEntityKey, MappedZohoEntity>> = {};

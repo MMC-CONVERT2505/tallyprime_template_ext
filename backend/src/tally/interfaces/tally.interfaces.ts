@@ -85,6 +85,22 @@ export interface TallyLedger {
   bankName: string | null;
   bankAccountNumber: string | null;
   /**
+   * IFSCODE/PAYMENTFAVOURING — added 2026-10-20, from the same
+   * PAYMENTDETAILS.LIST entry as bankName/bankAccountNumber above (see its
+   * doc comment); just never read until now. VERIFIED live against a real
+   * vendor (Accelero Consultants): IFSCODE "HDFC0000968",
+   * PAYMENTFAVOURING "Accelero Consultants" (the name the bank account is
+   * registered under — Zoho's "Account Holder Name"). The same live probe
+   * confirmed PAYMENTDETAILS.LIST has no SWIFT-code-equivalent field at
+   * all (IFSCODE/BANKNAME/ACCOUNTNUMBER/PAYMENTFAVOURING/TRANSACTIONNAME/
+   * BANKID/SETASDEFAULT/DEFAULTTRANSACTIONTYPE/BENEFICIARYCODEDETAILS.LIST
+   * is the complete real structure) — this company's vendor payments are
+   * domestic (NEFT/RTGS via IFSC), not international wire transfers, so
+   * there is genuinely nothing to map to Zoho's "SWIFT Code" column.
+   */
+  ifscCode: string | null;
+  accountHolderName: string | null;
+  /**
    * Website/CreditLimit/LedgerContact — added 2026-09-05, VERIFIED live
    * (COREDGE.IO INDIA PRIVATE LIMITED): real, flat native Ledger fields, all
    * genuinely populated for only 1 of 1409 real ledgers on this company (a
@@ -239,6 +255,22 @@ export interface TallyLedgerEntry {
    * field/parsing is correct for a company that does set one.
    */
   billCreditPeriodDays: number | null;
+  /**
+   * BILLALLOCATIONS.LIST's own NAME/AMOUNT per allocation — added 2026-10-21
+   * for Customer_Payment.xlsx/Vendor_Payment.xlsx/Vendor_Credits.xlsx's
+   * Invoice Number/Amount Applied to Invoice/Associated Bill Number columns.
+   * A single ledger entry can legitimately span multiple bills (part
+   * payments, on-account adjustments against several invoices at once);
+   * empty when Tally reports no allocation at all (e.g. a pure "On Account"
+   * receipt with nothing yet applied against a specific bill). Best-effort:
+   * NAME/AMOUNT are the standard Tally field names for this list (the same
+   * list billCreditPeriodDays above already reads BILLCREDITPERIOD from),
+   * but not yet independently live-verified against a real Receipt/Payment
+   * voucher — Tally's voucher-fetch HTTP endpoint was stuck when this was
+   * added. Re-verify once it responds again (see readBillAllocations's doc
+   * comment in response.parser.ts).
+   */
+  billAllocations: { name: string | null; amount: number | null }[];
 }
 
 export interface TallyStockItem {

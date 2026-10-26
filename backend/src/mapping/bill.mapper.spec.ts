@@ -4,9 +4,11 @@ import {
   TallyVoucher,
 } from '../tally/interfaces/tally.interfaces';
 import { BillMapper } from './bill.mapper';
-import { buildStockItemIndex } from './voucher-line.shared';
+import { buildLedgerIndex, buildStockItemIndex, LedgerIndex } from './voucher-line.shared';
 
 describe('BillMapper', () => {
+  const EMPTY_LEDGERS: LedgerIndex = buildLedgerIndex([]);
+
   const item = (overrides: Partial<TallyStockItem>): TallyStockItem => ({
     name: 'Widget A',
     parent: null,
@@ -51,13 +53,15 @@ describe('BillMapper', () => {
     amount: null,
     isDeemedPositive: null,
     isDebit: null,
-    billCreditPeriodDays: null, ...overrides,
+    billCreditPeriodDays: null,
+    billAllocations: [],
+    ...overrides,
   });
 
   describe('item-based bills (inventory lines present)', () => {
     it('computes Tax Amount from the line amount and the item GST rate', () => {
       const itemIndex = buildStockItemIndex([item({ name: 'Widget A', gstRate: 18 })]);
-      const mapper = new BillMapper(itemIndex);
+      const mapper = new BillMapper(itemIndex, EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [{ stockItemName: 'Widget A', quantity: 2, rate: 500, amount: 1000 , discountPercent: null, accountLedgerName: null }],
@@ -71,7 +75,7 @@ describe('BillMapper', () => {
 
     it('rounds Tax Amount to 2 decimal places', () => {
       const itemIndex = buildStockItemIndex([item({ name: 'Widget A', gstRate: 12.5 })]);
-      const mapper = new BillMapper(itemIndex);
+      const mapper = new BillMapper(itemIndex, EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [
@@ -83,7 +87,7 @@ describe('BillMapper', () => {
     });
 
     it('leaves Tax Amount blank when the item has no known GST rate', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [
@@ -96,7 +100,7 @@ describe('BillMapper', () => {
 
     it('uses "ItemAmount" as the Tax Type when a tax was computed — matches the real Bill.xlsx reference sample, not gst-rate.shared\'s "Group"', () => {
       const itemIndex = buildStockItemIndex([item({ name: 'Widget A', gstRate: 18 })]);
-      const mapper = new BillMapper(itemIndex);
+      const mapper = new BillMapper(itemIndex, EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
@@ -106,7 +110,7 @@ describe('BillMapper', () => {
     });
 
     it('leaves Tax Type blank alongside a blank Tax Amount', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [
@@ -122,7 +126,7 @@ describe('BillMapper', () => {
         item({ name: 'A', gstRate: 18 }),
         item({ name: 'B', gstRate: 18 }),
       ]);
-      const mapper = new BillMapper(itemIndex);
+      const mapper = new BillMapper(itemIndex, EMPTY_LEDGERS);
       const rows = mapper.toBillRows([
         voucher({
           inventoryEntries: [
@@ -143,7 +147,7 @@ describe('BillMapper', () => {
 
     it('maps HSN/SAC from the item master', () => {
       const itemIndex = buildStockItemIndex([item({ name: 'Widget A', hsnCode: '998314' })]);
-      const mapper = new BillMapper(itemIndex);
+      const mapper = new BillMapper(itemIndex, EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [{ stockItemName: 'Widget A', quantity: 1, rate: 100, amount: 100 , discountPercent: null, accountLedgerName: null }],
@@ -161,7 +165,7 @@ describe('BillMapper', () => {
     // report" and silently dropped the whole bill — vendor, GSTIN, amount,
     // everything. It must now produce exactly one row.
     it('does NOT drop a real Purchase voucher just because it has no stock items', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const rows = mapper.toBillRows([
         voucher({
           voucherNumber: 'BILL-SVC-1',
@@ -181,7 +185,7 @@ describe('BillMapper', () => {
     });
 
     it('derives SubTotal/Tax Amount/Total from the posted ledger entries — mirrors a real captured Tally voucher (Marketing Expenses + Input IGST + TDS)', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           voucherNumber: 'TI2627-158',
@@ -209,7 +213,7 @@ describe('BillMapper', () => {
     });
 
     it('classifies CGST+SGST (intra-state) ledger entries as "GST", not "IGST"', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           partyLedgerName: 'Landlord',
@@ -229,7 +233,7 @@ describe('BillMapper', () => {
     });
 
     it('captures a TCS-collected bill (Nature of Collection scenarios) via the TCS ledger entry', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           partyLedgerName: 'Vendor',
@@ -247,7 +251,7 @@ describe('BillMapper', () => {
     });
 
     it('leaves Tax fields entirely blank for a GST-exempt vendor with no tax ledger entries at all', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           partyGstin: null,
@@ -268,7 +272,7 @@ describe('BillMapper', () => {
     });
 
     it('returns nothing for a voucher with neither inventory lines nor ledger entries (genuinely empty)', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const rows = mapper.toBillRows([voucher({ ledgerEntries: [], inventoryEntries: [] })]);
       expect(rows).toHaveLength(0);
     });
@@ -276,7 +280,7 @@ describe('BillMapper', () => {
 
   describe('cross-cutting fields', () => {
     it('maps GST Treatment/GSTIN from the voucher party fields', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           partyGstin: '33AAAAA1111A1Z1',
@@ -288,7 +292,7 @@ describe('BillMapper', () => {
     });
 
     it('derives GST Treatment from the real GSTREGISTRATIONTYPE, not GSTIN presence alone', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           partyGstRegistrationType: 'Unregistered/Consumer',
@@ -299,7 +303,7 @@ describe('BillMapper', () => {
     });
 
     it('maps Branch Name from the voucher\'s own GST registration', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           gstRegistration: 'Uttar Pradesh Registration',
@@ -311,7 +315,7 @@ describe('BillMapper', () => {
 
     it('reads Item Type from the stock item\'s real Product Type classification, not a hardcoded "goods"', () => {
       const itemIndex = buildStockItemIndex([item({ name: 'Support Plan', itemType: 'service' })]);
-      const mapper = new BillMapper(itemIndex);
+      const mapper = new BillMapper(itemIndex, EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [{ stockItemName: 'Support Plan', quantity: 1, rate: 10, amount: 10, discountPercent: null, accountLedgerName: null }],
@@ -321,7 +325,7 @@ describe('BillMapper', () => {
     });
 
     it('maps Purchase Order Number from the voucher reference field', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           reference: 'PO-00031',
@@ -332,7 +336,7 @@ describe('BillMapper', () => {
     });
 
     it('maps Bill Number, Bill Date and Vendor Name straight through', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           voucherNumber: 'BILL-42',
@@ -352,7 +356,7 @@ describe('BillMapper', () => {
       const itemIndex = buildStockItemIndex([
         item({ name: 'Goods', gstRate: 28, hsnCode: '992515' }),
       ]);
-      const mapper = new BillMapper(itemIndex);
+      const mapper = new BillMapper(itemIndex, EMPTY_LEDGERS);
 
       const rows = mapper.toBillRows([
         voucher({
@@ -383,7 +387,7 @@ describe('BillMapper', () => {
 
   describe('Currency Code/Exchange Rate/Account/Due Date (2026-09-05 field-mapping pass)', () => {
     it('defaults to INR/1 when the voucher carries no foreign-currency data', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [
@@ -396,7 +400,7 @@ describe('BillMapper', () => {
     });
 
     it('carries the voucher\'s real foreign currency code and exchange rate', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           currencyCode: 'USD',
@@ -411,7 +415,7 @@ describe('BillMapper', () => {
     });
 
     it('maps an inventory line\'s own posted account, distinct from the item master', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [
@@ -430,7 +434,7 @@ describe('BillMapper', () => {
     });
 
     it('uses the single non-tax ledger name as Account on a service-only row', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           partyLedgerName: 'Acme Consulting',
@@ -444,7 +448,7 @@ describe('BillMapper', () => {
     });
 
     it('computes Due Date from the voucher date plus the vendor\'s bill-wise credit period', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           date: '20250415',
@@ -464,7 +468,7 @@ describe('BillMapper', () => {
     });
 
     it('leaves Due Date blank when no bill-wise credit period is set', () => {
-      const mapper = new BillMapper(buildStockItemIndex([]));
+      const mapper = new BillMapper(buildStockItemIndex([]), EMPTY_LEDGERS);
       const [row] = mapper.toBillRows([
         voucher({
           inventoryEntries: [

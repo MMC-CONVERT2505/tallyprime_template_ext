@@ -30,9 +30,20 @@ import {
  * Display Name" — matching Zoho's own official tool's convention of
  * putting the whole flat name there rather than splitting it; Last Name
  * stays blank (no split is performed).
+ *
+ * Customer Number (added 2026-10-20) — Tally has no stable external
+ * customer-id field on a ledger master; AlterID (Tally's own per-record
+ * edit-revision counter, already fetched/parsed for every ledger — see
+ * TallyLedger.alterId's doc comment) is the closest real identifier
+ * available and is what's used here. Worth knowing: unlike a true master
+ * id, AlterID changes every time the ledger is edited in Tally, so a
+ * re-export after an edit will carry a different number for the same
+ * customer — fine for a one-time migration import, less so if this column
+ * were ever used to match/dedupe against a previous import.
  */
 export interface ZohoCustomerRow {
   'Display Name': string;
+  'Customer Number': number | '';
   /** Added 2026-09-05 — same value as Display Name. Every ledger this
    *  project extracts as a Customer is a Sundry Debtor, which in real Tally
    *  data is overwhelmingly a registered business name (confirmed against
@@ -104,6 +115,7 @@ export class CustomerMapper {
     const paymentTerms = resolvePaymentTerms(ledger.creditPeriod);
     return {
       'Display Name': ledger.name,
+      'Customer Number': ledger.alterId ?? '',
       'Company Name': ledger.name,
       'Place Of Contact': ledger.gstPlaceOfSupply ?? '',
       'Currency Code': DEFAULT_CURRENCY_CODE,

@@ -18,6 +18,7 @@ import { Response } from 'express';
 import { JwtPayload } from '../auth/auth.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { ZohoEntityKey } from '../mapping/zoho-entity.map';
 import { BulkExportService } from './bulk-export.service';
 import { BulkExportDto } from './dto/bulk-export.dto';
 import { BulkExportRetryDto } from './dto/bulk-export-retry.dto';
@@ -179,7 +180,14 @@ export class ExtractionsController {
    * caller choice. A Credit Note export also accepts ?invoicesJobId= (a
    * completed VOUCHERS/Sales job, auto-resolved like the others) to
    * populate "Associated Invoice Date" — optional, see
-   * ExtractionsService.getExcelResult's doc comment.
+   * ExtractionsService.getExcelResult's doc comment. An Invoice export also
+   * accepts ?ledgersJobId= (a completed LEDGERS job, auto-resolved like the
+   * others) to populate the customer's Billing/Shipping/Contact/Customer
+   * Number block — also optional. A `Payment`/`Contra` job's voucherType
+   * is genuinely ambiguous between 2 possible exports each (VENDOR_PAYMENT
+   * vs. EXPENSE, DEPOSIT vs. BANK_TRANSFER — see zoho-entity.map.ts's doc
+   * comment) — ?voucherEntity= picks which; required exactly for those,
+   * ignored for every unambiguous voucherType.
    */
   @Get(':id/excel')
   async excel(
@@ -189,6 +197,8 @@ export class ExtractionsController {
     @Query('ledgerEntity') ledgerEntity: string | undefined,
     @Query('itemsJobId') itemsJobId: string | undefined,
     @Query('invoicesJobId') invoicesJobId: string | undefined,
+    @Query('ledgersJobId') ledgersJobId: string | undefined,
+    @Query('voucherEntity') voucherEntity: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
     if (ledgerEntity && !['COA', 'CUSTOMER', 'VENDOR'].includes(ledgerEntity)) {
@@ -201,6 +211,8 @@ export class ExtractionsController {
       ledgerEntity as 'COA' | 'CUSTOMER' | 'VENDOR' | undefined,
       itemsJobId,
       invoicesJobId,
+      ledgersJobId,
+      voucherEntity as ZohoEntityKey | undefined,
     );
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

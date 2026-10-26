@@ -19,9 +19,23 @@ import {
  * Source Of Supply/Billing Attention/Payment Terms/Payment Terms Label/
  * Contact First Name (added 2026-09-10) — see customer.mapper.ts's
  * identical fields' doc comment.
+ *
+ * Vendor Number (added 2026-10-20) — see customer.mapper.ts's identical
+ * field's doc comment (ledger.alterId, same caveat about it being an
+ * edit-revision counter, not a stable external id).
+ *
+ * Account Holder Name/IFS Code/SWIFT Code (added 2026-10-20) — these 3
+ * columns didn't exist in the real Vendor.xlsx template at all until now
+ * (added alongside this change); see TallyLedger.ifscCode's doc comment
+ * for the live verification of where Account Holder Name/IFS Code come
+ * from (PAYMENTDETAILS.LIST's PAYMENTFAVOURING/IFSCODE, same entry as
+ * Bank Name/Bank Account Number above) and why SWIFT Code stays
+ * permanently blank (confirmed live: no such field exists on this
+ * company's domestic, IFSC-based bank details at all).
  */
 export interface ZohoVendorRow {
   'Display Name': string;
+  'Vendor Number': number | '';
   /** Added 2026-09-05 — see customer.mapper.ts's identical field. */
   'Company Name': string;
   'Source Of Supply': string;
@@ -53,6 +67,10 @@ export interface ZohoVendorRow {
   /** Added 2026-09-05 — see customer.mapper.ts's identical fields. */
   Website: string;
   'Conact Display Name': string;
+  'Account Holder Name': string;
+  'IFS Code': string;
+  /** Always blank — see this interface's doc comment. */
+  'SWIFT Code': '';
 }
 
 /** Hardcoded — see customer.mapper.ts's identical constant doc comment for
@@ -75,6 +93,7 @@ export class VendorMapper {
     const paymentTerms = resolvePaymentTerms(ledger.creditPeriod);
     return {
       'Display Name': ledger.name,
+      'Vendor Number': ledger.alterId ?? '',
       'Company Name': ledger.name,
       'Source Of Supply': ledger.gstPlaceOfSupply ?? '',
       'Currency Code': DEFAULT_CURRENCY_CODE,
@@ -100,6 +119,9 @@ export class VendorMapper {
       'Bank Account Number': ledger.bankAccountNumber ?? '',
       Website: ledger.website ?? '',
       'Conact Display Name': ledger.contactPersonName ?? '',
+      'Account Holder Name': ledger.accountHolderName ?? '',
+      'IFS Code': ledger.ifscCode ?? '',
+      'SWIFT Code': '',
     };
   }
 }

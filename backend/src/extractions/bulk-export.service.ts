@@ -36,6 +36,11 @@ export type BulkExportStepKey =
   | 'VOUCHERS_PURCHASE'
   | 'VOUCHERS_CREDIT_NOTE'
   | 'VOUCHERS_STOCK_JOURNAL'
+  | 'VOUCHERS_JOURNAL'
+  | 'VOUCHERS_DEBIT_NOTE'
+  | 'VOUCHERS_RECEIPT'
+  | 'VOUCHERS_PAYMENT'
+  | 'VOUCHERS_CONTRA'
   | 'GENERATE_EXCEL'
   | 'ZIP';
 
@@ -105,7 +110,12 @@ const STEP_LABELS: Record<BulkExportStepKey, string> = {
   VOUCHERS_PURCHASE: 'Purchase vouchers → Bills',
   VOUCHERS_CREDIT_NOTE: 'Credit Note vouchers → Credit Notes',
   VOUCHERS_STOCK_JOURNAL: 'Stock Journal vouchers → Inventory Adjustments',
-  GENERATE_EXCEL: 'Writing all 9 Zoho templates',
+  VOUCHERS_JOURNAL: 'Journal vouchers → Journal',
+  VOUCHERS_DEBIT_NOTE: 'Debit Note vouchers → Vendor Credits',
+  VOUCHERS_RECEIPT: 'Receipt vouchers → Customer Payments',
+  VOUCHERS_PAYMENT: 'Payment vouchers → Vendor Payments / Expenses',
+  VOUCHERS_CONTRA: 'Contra vouchers → Deposits / Bank Transfers',
+  GENERATE_EXCEL: 'Writing all 16 Zoho templates',
   ZIP: 'Packaging the download (.zip)',
 };
 
@@ -118,6 +128,11 @@ const FETCH_STEP_KEYS: BulkExportStepKey[] = [
   'VOUCHERS_PURCHASE',
   'VOUCHERS_CREDIT_NOTE',
   'VOUCHERS_STOCK_JOURNAL',
+  'VOUCHERS_JOURNAL',
+  'VOUCHERS_DEBIT_NOTE',
+  'VOUCHERS_RECEIPT',
+  'VOUCHERS_PAYMENT',
+  'VOUCHERS_CONTRA',
 ];
 
 const ALL_STEP_KEYS: BulkExportStepKey[] = [...FETCH_STEP_KEYS, 'GENERATE_EXCEL', 'ZIP'];
@@ -126,11 +141,19 @@ const ALL_STEP_KEYS: BulkExportStepKey[] = [...FETCH_STEP_KEYS, 'GENERATE_EXCEL'
  *  caller's `steps` list may contain. */
 export const BULK_EXPORT_STEP_KEYS: BulkExportStepKey[] = [...ALL_STEP_KEYS];
 
+/** VOUCHERS_PAYMENT/VOUCHERS_CONTRA each feed 2 Zoho entities at generate
+ *  time (VENDOR_PAYMENT/EXPENSE, DEPOSIT/BANK_TRANSFER) — one fetch, two
+ *  outputs, see zoho-entity.map.ts's doc comment. */
 const VOUCHER_TYPE_BY_STEP: Partial<Record<BulkExportStepKey, string>> = {
   VOUCHERS_SALES: 'Sales',
   VOUCHERS_PURCHASE: 'Purchase',
   VOUCHERS_CREDIT_NOTE: 'Credit Note',
   VOUCHERS_STOCK_JOURNAL: 'Stock Journal',
+  VOUCHERS_JOURNAL: 'Journal',
+  VOUCHERS_DEBIT_NOTE: 'Debit Note',
+  VOUCHERS_RECEIPT: 'Receipt',
+  VOUCHERS_PAYMENT: 'Payment',
+  VOUCHERS_CONTRA: 'Contra',
 };
 
 interface RunContext {
@@ -993,6 +1016,76 @@ export class BulkExportService implements OnApplicationBootstrap {
       undefined,
       itemsJobId,
     );
+    const journal = await this.extractions.getExcelResult(
+      orgId,
+      jobIds.VOUCHERS_JOURNAL,
+      undefined,
+      undefined,
+      itemsJobId,
+      undefined,
+      ledgersJobId,
+    );
+    const vendorCredit = await this.extractions.getExcelResult(
+      orgId,
+      jobIds.VOUCHERS_DEBIT_NOTE,
+      undefined,
+      undefined,
+      itemsJobId,
+      undefined,
+      ledgersJobId,
+    );
+    // invoicesJobId reused as "this run's own companion Sales/Purchase job"
+    // for the per-allocation Invoice/Bill Date columns — same "own run's
+    // data, not just latest in the DB" reasoning as creditNote above.
+    const customerPayment = await this.extractions.getExcelResult(
+      orgId,
+      jobIds.VOUCHERS_RECEIPT,
+      undefined,
+      undefined,
+      itemsJobId,
+      jobIds.VOUCHERS_SALES,
+      ledgersJobId,
+    );
+    const vendorPayment = await this.extractions.getExcelResult(
+      orgId,
+      jobIds.VOUCHERS_PAYMENT,
+      groupsJobId,
+      undefined,
+      itemsJobId,
+      jobIds.VOUCHERS_PURCHASE,
+      ledgersJobId,
+      'VENDOR_PAYMENT',
+    );
+    const expense = await this.extractions.getExcelResult(
+      orgId,
+      jobIds.VOUCHERS_PAYMENT,
+      groupsJobId,
+      undefined,
+      itemsJobId,
+      undefined,
+      ledgersJobId,
+      'EXPENSE',
+    );
+    const deposit = await this.extractions.getExcelResult(
+      orgId,
+      jobIds.VOUCHERS_CONTRA,
+      groupsJobId,
+      undefined,
+      itemsJobId,
+      undefined,
+      ledgersJobId,
+      'DEPOSIT',
+    );
+    const bankTransfer = await this.extractions.getExcelResult(
+      orgId,
+      jobIds.VOUCHERS_CONTRA,
+      groupsJobId,
+      undefined,
+      itemsJobId,
+      undefined,
+      ledgersJobId,
+      'BANK_TRANSFER',
+    );
 
     return [
       { filename: 'COA.xlsx', buffer: coa.buffer },
@@ -1004,6 +1097,13 @@ export class BulkExportService implements OnApplicationBootstrap {
       { filename: 'Bill.xlsx', buffer: bill.buffer },
       { filename: 'Credit Note.xlsx', buffer: creditNote.buffer },
       { filename: 'Stock Journal.xlsx', buffer: stockJournal.buffer },
+      { filename: 'Journal.xlsx', buffer: journal.buffer },
+      { filename: 'Vendor_Credits.xlsx', buffer: vendorCredit.buffer },
+      { filename: 'Customer_Payment.xlsx', buffer: customerPayment.buffer },
+      { filename: 'Vendor_Payment.xlsx', buffer: vendorPayment.buffer },
+      { filename: 'Expense.xlsx', buffer: expense.buffer },
+      { filename: 'Deposit.xlsx', buffer: deposit.buffer },
+      { filename: 'Bank Transfer.xlsx', buffer: bankTransfer.buffer },
     ];
   }
 

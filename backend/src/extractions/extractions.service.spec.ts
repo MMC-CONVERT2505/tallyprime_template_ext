@@ -757,6 +757,10 @@ describe('ExtractionsService', () => {
         });
         prisma.extractionJob.findFirst.mockImplementation(({ where }: any) => {
           if (where.id) return Promise.resolve(jobsById[where.id] ?? null);
+          // An INVOICE export also best-effort auto-resolves a LEDGERS job
+          // for the Billing/Shipping/Contact block — irrelevant to this
+          // test's own STOCK_ITEMS assertion, so just report none found.
+          if (where.type === 'LEDGERS') return Promise.resolve(null);
           expect(where).toMatchObject({
             orgId: 'org-1',
             company: 'ABC Ltd',
@@ -818,13 +822,13 @@ describe('ExtractionsService', () => {
         ]);
       });
 
-      it('rejects a voucherType with no matching Zoho template (e.g. Payment)', async () => {
+      it('rejects a voucherType with no matching Zoho template at all (e.g. a free-text Tally voucher type nothing maps to)', async () => {
         const jobsById: Record<string, any> = {
           'voucher-job': {
             id: 'voucher-job',
             status: 'SUCCESS',
             type: 'VOUCHERS',
-            params: { voucherType: 'Payment' },
+            params: { voucherType: 'Memo' },
           },
           'items-job': { id: 'items-job', status: 'SUCCESS', type: 'STOCK_ITEMS' },
         };
@@ -837,7 +841,76 @@ describe('ExtractionsService', () => {
 
         await expect(
           service.getExcelResult('org-1', 'voucher-job', undefined, undefined, 'items-job'),
-        ).rejects.toThrow('not supported for voucher type "Payment"');
+        ).rejects.toThrow('not supported for voucher type "Memo"');
+      });
+
+      describe('Payment/Contra — ambiguous voucherType, needs voucherEntity to disambiguate (2026-10-21)', () => {
+        const jobsById: Record<string, any> = {
+          'voucher-job': {
+            id: 'voucher-job',
+            status: 'SUCCESS',
+            type: 'VOUCHERS',
+            company: 'ABC Ltd',
+            params: { voucherType: 'Payment' },
+          },
+          'items-job': { id: 'items-job', status: 'SUCCESS', type: 'STOCK_ITEMS' },
+        };
+
+        it('rejects a Payment export with no voucherEntity at all', async () => {
+          const { service, prisma } = makeDeps({
+            redisGet: jest.fn().mockResolvedValue(JSON.stringify([])),
+          });
+          prisma.extractionJob.findFirst.mockImplementation(({ where }: any) =>
+            Promise.resolve(jobsById[where.id] ?? null),
+          );
+
+          await expect(
+            service.getExcelResult('org-1', 'voucher-job', undefined, undefined, 'items-job'),
+          ).rejects.toThrow('pass ?voucherEntity= as one of: VENDOR_PAYMENT, EXPENSE');
+        });
+
+        it('rejects a Payment export whose voucherEntity is valid for a DIFFERENT voucherType (e.g. DEPOSIT)', async () => {
+          const { service, prisma } = makeDeps({
+            redisGet: jest.fn().mockResolvedValue(JSON.stringify([])),
+          });
+          prisma.extractionJob.findFirst.mockImplementation(({ where }: any) =>
+            Promise.resolve(jobsById[where.id] ?? null),
+          );
+
+          await expect(
+            service.getExcelResult(
+              'org-1',
+              'voucher-job',
+              undefined,
+              undefined,
+              'items-job',
+              undefined,
+              undefined,
+              'DEPOSIT' as any,
+            ),
+          ).rejects.toThrow('pass ?voucherEntity= as one of: VENDOR_PAYMENT, EXPENSE');
+        });
+
+        it('accepts a Payment export with a valid voucherEntity', async () => {
+          const { service, prisma } = makeDeps({
+            redisGet: jest.fn().mockResolvedValue(JSON.stringify([])),
+          });
+          prisma.extractionJob.findFirst.mockImplementation(({ where }: any) =>
+            Promise.resolve(jobsById[where.id] ?? null),
+          );
+
+          const result = await service.getExcelResult(
+            'org-1',
+            'voucher-job',
+            undefined,
+            undefined,
+            'items-job',
+            undefined,
+            undefined,
+            'EXPENSE' as any,
+          );
+          expect(result.filename).toBe('expenses-voucher-job.xlsx');
+        });
       });
 
       it('rejects when itemsJobId points at a job that is not actually a STOCK_ITEMS job', async () => {
@@ -911,6 +984,11 @@ describe('ExtractionsService', () => {
             // The itemsJobId auto-resolve lookup (type: STOCK_ITEMS) has no
             // params filter; the invoicesJobId one (type: VOUCHERS) does.
             if (where.type === 'STOCK_ITEMS') return Promise.resolve({ id: 'items-job' });
+            // A CREDIT_NOTE export also best-effort auto-resolves a LEDGERS
+            // job for the Billing/Shipping/Contact block (2026-10-21) —
+            // irrelevant to this test's own invoicesJobId assertion, so just
+            // report none found.
+            if (where.type === 'LEDGERS') return Promise.resolve(null);
             expect(where).toMatchObject({
               orgId: 'org-1',
               company: 'ABC Ltd',

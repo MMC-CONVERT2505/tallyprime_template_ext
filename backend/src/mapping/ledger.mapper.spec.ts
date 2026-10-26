@@ -23,6 +23,8 @@ describe('LedgerMapper', () => {
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
     website: null,
     creditLimit: null,
     contactPersonName: null,
@@ -125,7 +127,7 @@ describe('LedgerMapper', () => {
     expect(row['Debit or Credit']).toBe('');
   });
 
-  it('passes through Description when present, and leaves the no-Tally-source columns blank', () => {
+  it('passes through Description when present, and leaves Account Code blank (no Tally source)', () => {
     const [row] = mapper.toAccountRows([
       ledger({
         name: 'Cash',
@@ -137,7 +139,16 @@ describe('LedgerMapper', () => {
     ]);
     expect(row.Description).toBe('Petty cash float');
     expect(row['Account Code']).toBe('');
-    expect(row['Account #']).toBe('');
     expect(row.Currency).toBe('INR');
+  });
+
+  it("maps Account # (Master Id) from the ledger's AlterID (2026-10-20 reviewer feedback)", () => {
+    const [row] = mapper.toAccountRows([ledger({ name: 'Cash', parent: 'Cash-in-Hand', alterId: 99 })]);
+    expect(row['Account #']).toBe(99);
+  });
+
+  it('leaves Account # blank rather than 0 when Tally has no AlterID at all', () => {
+    const [row] = mapper.toAccountRows([ledger({ name: 'Cash', parent: 'Cash-in-Hand', alterId: null })]);
+    expect(row['Account #']).toBe('');
   });
 });

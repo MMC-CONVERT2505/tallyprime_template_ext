@@ -32,6 +32,8 @@ describe('ExtractionsController', () => {
         undefined,
         undefined,
         undefined,
+        undefined,
+        undefined,
         res as any,
       );
 
@@ -62,9 +64,17 @@ describe('ExtractionsController', () => {
       const user = { sub: 'user-1', email: 'u@example.com', orgId: 'org-1' };
 
       await expect(
-        controller.excel(user, 'job-1', undefined, 'NOT_A_REAL_ENTITY', undefined, undefined, {
-          set: jest.fn(),
-        } as any),
+        controller.excel(
+          user,
+          'job-1',
+          undefined,
+          'NOT_A_REAL_ENTITY',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { set: jest.fn() } as any,
+        ),
       ).rejects.toThrow('ledgerEntity must be one of COA, CUSTOMER, VENDOR.');
       expect(extractions.getExcelResult).not.toHaveBeenCalled();
     });

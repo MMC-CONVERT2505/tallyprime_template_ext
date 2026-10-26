@@ -6,17 +6,24 @@ import Redis from 'ioredis';
 import { PrismaService } from '../database/prisma.service';
 import { ExcelGeneratorService } from '../excel/excel-generator.service';
 import { TallyTunnelGateway } from '../gateway/tally-tunnel.gateway';
+import { BankTransferMapper } from '../mapping/bank-transfer.mapper';
 import { BillMapper } from '../mapping/bill.mapper';
 import { CostCentreMapper } from '../mapping/cost-centre.mapper';
 import { CreditNoteMapper } from '../mapping/credit-note.mapper';
 import { CustomerMapper } from '../mapping/customer.mapper';
+import { CustomerPaymentMapper } from '../mapping/customer-payment.mapper';
+import { DepositMapper } from '../mapping/deposit.mapper';
+import { ExpenseMapper } from '../mapping/expense.mapper';
 import { LedgerMapper } from '../mapping/ledger.mapper';
 import { GroupHierarchyResolver } from '../mapping/group-hierarchy.resolver';
 import { InvoiceMapper } from '../mapping/invoice.mapper';
+import { JournalMapper } from '../mapping/journal.mapper';
 import { StockItemMapper } from '../mapping/stock-item.mapper';
 import { StockJournalMapper } from '../mapping/stock-journal.mapper';
+import { VendorCreditMapper } from '../mapping/vendor-credit.mapper';
 import { VendorMapper } from '../mapping/vendor.mapper';
-import { buildStockItemIndex, tallyDateToJsDate } from '../mapping/voucher-line.shared';
+import { VendorPaymentMapper } from '../mapping/vendor-payment.mapper';
+import { buildLedgerIndex, buildStockItemIndex, tallyDateToJsDate } from '../mapping/voucher-line.shared';
 import {
   ZOHO_ENTITIES,
   ZohoEntityKey,
@@ -374,6 +381,33 @@ export class ExtractionsService {
    * "Associated Invoice Date" by invoice number (see credit-note.mapper.ts).
    * Optional: a Credit Note export with none available still succeeds,
    * just with that one column left blank rather than blocked entirely.
+   *
+   * Every voucher-derived export except STOCK_JOURNAL/JOURNAL additionally
+   * auto-resolves a LEDGERS job (same best-effort shape as `ledgersJobId`
+   * below) to join in the party's Billing/Shipping/Contact/Payment
+   * Terms/Customer or Vendor Number/bank details — an export with no
+   * LEDGERS job available still succeeds, just with those columns blank.
+   * VENDOR_PAYMENT/EXPENSE/DEPOSIT/BANK_TRANSFER additionally auto-resolve a
+   * GROUPS job (same best-effort shape) to classify each voucher's ledgers
+   * by standard group — see vendor-payment.mapper.ts/expense.mapper.ts/
+   * deposit.mapper.ts/bank-transfer.mapper.ts; with no GROUPS job
+   * resolvable, every ledger resolves to no group, so these 4 entities each
+   * conservatively produce zero rows rather than guessing a classification.
+   *
+   * `voucherType` 'Payment' and 'Contra' each match 2 possible Zoho
+   * entities (VENDOR_PAYMENT/EXPENSE, DEPOSIT/BANK_TRANSFER — see
+   * zoho-entity.map.ts's doc comment), so `zohoEntityForVoucherType` alone
+   * can't resolve them. `voucherEntity` disambiguates: required (400 if
+   * missing or not one of the 2 valid options for this job's voucherType)
+   * exactly when the type is ambiguous; ignored otherwise — the same
+   * "caller picks which of several possible exports this one raw
+   * extraction produces" shape `ledgerEntity` already has for LEDGERS jobs.
+   *
+   * An INVOICE/VENDOR_PAYMENT/CUSTOMER_PAYMENT export additionally accepts
+   * `ledgersJobId`/`invoicesJobId` as documented above/below — naming
+   * stays `invoicesJobId` even for VENDOR_PAYMENT's companion Purchase-
+   * voucher job, since it serves the identical "resolve bill/invoice dates
+   * for the per-allocation columns" purpose as CREDIT_NOTE's.
    */
   async getExcelResult(
     orgId: string,
@@ -382,6 +416,8 @@ export class ExtractionsService {
     ledgerEntity: 'COA' | 'CUSTOMER' | 'VENDOR' = 'COA',
     itemsJobId?: string,
     invoicesJobId?: string,
+    ledgersJobId?: string,
+    voucherEntity?: ZohoEntityKey,
   ): Promise<ExcelExportResult> {
     const job = await this.getStatus(orgId, id);
     this.assertSuccessful(job);
@@ -444,7 +480,25 @@ export class ExtractionsService {
     if (job.type === 'VOUCHERS') {
       const params = job.params as Record<string, unknown> | null;
       const voucherType = typeof params?.voucherType === 'string' ? params.voucherType : undefined;
-      const entityKey = zohoEntityForVoucherType(voucherType);
+      // 'Payment'/'Contra' are genuinely ambiguous (2 possible entities
+      // each) — zohoEntityForVoucherType returns undefined for them on
+      // purpose; resolve via the caller-supplied voucherEntity instead. See
+      // this method's doc comment and zoho-entity.map.ts's.
+      const AMBIGUOUS_VOUCHER_TYPES: Record<string, ZohoEntityKey[]> = {
+        Payment: ['VENDOR_PAYMENT', 'EXPENSE'],
+        Contra: ['DEPOSIT', 'BANK_TRANSFER'],
+      };
+      let entityKey = zohoEntityForVoucherType(voucherType);
+      if (!entityKey && voucherType && AMBIGUOUS_VOUCHER_TYPES[voucherType]) {
+        const options = AMBIGUOUS_VOUCHER_TYPES[voucherType];
+        if (!voucherEntity || !options.includes(voucherEntity)) {
+          throw new BadRequestException(
+            `A "${voucherType}" voucher export is ambiguous — pass ?voucherEntity= as one of: ` +
+              `${options.join(', ')}.`,
+          );
+        }
+        entityKey = voucherEntity;
+      }
       if (!entityKey) {
         throw new BadRequestException(
           `Excel export not supported for voucher type "${voucherType ?? 'unknown'}" ` +
@@ -461,12 +515,53 @@ export class ExtractionsService {
       const itemIndex = buildStockItemIndex(items as TallyStockItem[]);
       const vouchers = data as TallyVoucher[];
 
+      // Best-effort, not required: see this method's doc comment — every
+      // voucher-derived export (except STOCK_JOURNAL/JOURNAL, neither of
+      // which has a party to join) with no LEDGERS job available still
+      // succeeds, just with the ledger-joined columns (Customer/Vendor
+      // Number/Billing/Shipping/Contact/Payment Terms/bank details) left
+      // blank.
+      let ledgerIndex = buildLedgerIndex([]);
+      if (entityKey !== 'STOCK_JOURNAL' && entityKey !== 'JOURNAL') {
+        const resolvedLedgersJobId =
+          ledgersJobId ?? (await this.resolveLatestSuccessfulJobId(orgId, job.company, 'LEDGERS'));
+        if (resolvedLedgersJobId) {
+          const ledgersJob = await this.getStatus(orgId, resolvedLedgersJobId);
+          if (ledgersJob.status === 'SUCCESS' && ledgersJob.type === 'LEDGERS') {
+            const ledgers = (await this.loadResultData(resolvedLedgersJobId)) as TallyLedger[];
+            ledgerIndex = buildLedgerIndex(ledgers);
+          }
+        }
+      }
+
+      // Same best-effort shape, only for the 4 entities that actually
+      // classify ledgers by standard group — see this method's doc comment.
+      let hierarchy = new GroupHierarchyResolver([]);
+      if (
+        entityKey === 'VENDOR_PAYMENT' ||
+        entityKey === 'EXPENSE' ||
+        entityKey === 'DEPOSIT' ||
+        entityKey === 'BANK_TRANSFER'
+      ) {
+        const resolvedGroupsJobIdForVouchers =
+          groupsJobId ?? (await this.resolveLatestSuccessfulJobId(orgId, job.company, 'GROUPS'));
+        if (resolvedGroupsJobIdForVouchers) {
+          const groupsJobForVouchers = await this.getStatus(orgId, resolvedGroupsJobIdForVouchers);
+          if (groupsJobForVouchers.status === 'SUCCESS' && groupsJobForVouchers.type === 'GROUPS') {
+            const groupsForVouchers = (await this.loadResultData(
+              resolvedGroupsJobIdForVouchers,
+            )) as TallyGroup[];
+            hierarchy = new GroupHierarchyResolver(groupsForVouchers);
+          }
+        }
+      }
+
       if (entityKey === 'INVOICE') {
-        const rows = new InvoiceMapper(itemIndex).toInvoiceRows(vouchers);
+        const rows = new InvoiceMapper(itemIndex, ledgerIndex).toInvoiceRows(vouchers);
         return this.writeZohoExport('INVOICE', rows, `invoices-${id}.xlsx`);
       }
       if (entityKey === 'BILL') {
-        const rows = new BillMapper(itemIndex).toBillRows(vouchers);
+        const rows = new BillMapper(itemIndex, ledgerIndex).toBillRows(vouchers);
         return this.writeZohoExport('BILL', rows, `bills-${id}.xlsx`);
       }
       if (entityKey === 'CREDIT_NOTE') {
@@ -475,40 +570,104 @@ export class ExtractionsService {
         // at all — "Associated Invoice Date" just stays blank, the same
         // "real data or blank, never guessed" standard the mapper itself
         // follows for a reference number that doesn't resolve.
-        const resolvedInvoicesJobId =
-          invoicesJobId ??
-          (await this.resolveLatestSuccessfulJobId(
-            orgId,
-            job.company,
-            'VOUCHERS',
-            ZOHO_ENTITIES.INVOICE.voucherType,
-          ));
-        let invoiceDatesByNumber: Map<string, Date> | undefined;
-        if (resolvedInvoicesJobId) {
-          const invoicesJob = await this.getStatus(orgId, resolvedInvoicesJobId);
-          if (invoicesJob.status === 'SUCCESS' && invoicesJob.type === 'VOUCHERS') {
-            const invoiceVouchers = (await this.loadResultData(
-              resolvedInvoicesJobId,
-            )) as TallyVoucher[];
-            invoiceDatesByNumber = new Map();
-            for (const voucher of invoiceVouchers) {
-              const date = tallyDateToJsDate(voucher.date);
-              if (voucher.voucherNumber && date) {
-                invoiceDatesByNumber.set(voucher.voucherNumber, date);
-              }
-            }
-          }
-        }
-        const rows = new CreditNoteMapper(itemIndex, invoiceDatesByNumber).toCreditNoteRows(
+        const invoiceDatesByNumber = await this.resolveVoucherDateMap(
+          orgId,
+          job.company,
+          invoicesJobId,
+          ZOHO_ENTITIES.INVOICE.voucherType,
+        );
+        const rows = new CreditNoteMapper(itemIndex, ledgerIndex, invoiceDatesByNumber).toCreditNoteRows(
           vouchers,
         );
         return this.writeZohoExport('CREDIT_NOTE', rows, `credit-notes-${id}.xlsx`);
+      }
+      if (entityKey === 'VENDOR_CREDIT') {
+        const rows = new VendorCreditMapper(itemIndex, ledgerIndex).toVendorCreditRows(vouchers);
+        return this.writeZohoExport('VENDOR_CREDIT', rows, `vendor-credits-${id}.xlsx`);
+      }
+      if (entityKey === 'JOURNAL') {
+        const rows = new JournalMapper().toJournalRows(vouchers);
+        return this.writeZohoExport('JOURNAL', rows, `journals-${id}.xlsx`);
+      }
+      if (entityKey === 'CUSTOMER_PAYMENT') {
+        // Best-effort companion Sales job — same shape as CREDIT_NOTE's
+        // invoicesJobId above, resolves real bill dates for the per-
+        // allocation "Invoice Date" column (see
+        // customer-payment.mapper.ts's doc comment).
+        const invoiceDatesByNumber = await this.resolveVoucherDateMap(
+          orgId,
+          job.company,
+          invoicesJobId,
+          ZOHO_ENTITIES.INVOICE.voucherType,
+        );
+        const rows = new CustomerPaymentMapper(ledgerIndex, invoiceDatesByNumber).toCustomerPaymentRows(
+          vouchers,
+        );
+        return this.writeZohoExport('CUSTOMER_PAYMENT', rows, `customer-payments-${id}.xlsx`);
+      }
+      if (entityKey === 'VENDOR_PAYMENT') {
+        // Same best-effort shape, against the companion Purchase job
+        // instead — see vendor-payment.mapper.ts's doc comment.
+        const billDatesByNumber = await this.resolveVoucherDateMap(
+          orgId,
+          job.company,
+          invoicesJobId,
+          ZOHO_ENTITIES.BILL.voucherType,
+        );
+        const rows = new VendorPaymentMapper(ledgerIndex, hierarchy, billDatesByNumber).toVendorPaymentRows(
+          vouchers,
+        );
+        return this.writeZohoExport('VENDOR_PAYMENT', rows, `vendor-payments-${id}.xlsx`);
+      }
+      if (entityKey === 'EXPENSE') {
+        const rows = new ExpenseMapper(ledgerIndex, hierarchy).toExpenseRows(vouchers);
+        return this.writeZohoExport('EXPENSE', rows, `expenses-${id}.xlsx`);
+      }
+      if (entityKey === 'DEPOSIT') {
+        const rows = new DepositMapper(ledgerIndex, hierarchy).toDepositRows(vouchers);
+        return this.writeZohoExport('DEPOSIT', rows, `deposits-${id}.xlsx`);
+      }
+      if (entityKey === 'BANK_TRANSFER') {
+        const rows = new BankTransferMapper(ledgerIndex, hierarchy).toBankTransferRows(vouchers);
+        return this.writeZohoExport('BANK_TRANSFER', rows, `bank-transfers-${id}.xlsx`);
       }
       const rows = new StockJournalMapper(itemIndex).toStockJournalRows(vouchers);
       return this.writeZohoExport('STOCK_JOURNAL', rows, `inventory-adjustments-${id}.xlsx`);
     }
 
     throw new BadRequestException(`Excel export not yet supported for ${job.type}.`);
+  }
+
+  /**
+   * Shared by CREDIT_NOTE/CUSTOMER_PAYMENT/VENDOR_PAYMENT: resolves a
+   * companion VOUCHERS job (of `companionVoucherType`, auto-resolved like
+   * every other companion job here unless `explicitJobId` is given) into a
+   * voucherNumber -> real Date lookup — best-effort, undefined (not a
+   * throw) whenever the companion job can't be found/loaded, matching
+   * every other "real data or blank, never guessed" companion-job standard
+   * in this method.
+   */
+  private async resolveVoucherDateMap(
+    orgId: string,
+    company: string | null,
+    explicitJobId: string | undefined,
+    companionVoucherType: string | undefined,
+  ): Promise<Map<string, Date> | undefined> {
+    const resolvedJobId =
+      explicitJobId ??
+      (await this.resolveLatestSuccessfulJobId(orgId, company, 'VOUCHERS', companionVoucherType));
+    if (!resolvedJobId) return undefined;
+    const companionJob = await this.getStatus(orgId, resolvedJobId);
+    if (companionJob.status !== 'SUCCESS' || companionJob.type !== 'VOUCHERS') return undefined;
+    const companionVouchers = (await this.loadResultData(resolvedJobId)) as TallyVoucher[];
+    const datesByNumber = new Map<string, Date>();
+    for (const voucher of companionVouchers) {
+      const date = tallyDateToJsDate(voucher.date);
+      if (voucher.voucherNumber && date) {
+        datesByNumber.set(voucher.voucherNumber, date);
+      }
+    }
+    return datesByNumber;
   }
 
   /**

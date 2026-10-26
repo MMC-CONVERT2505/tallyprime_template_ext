@@ -100,6 +100,11 @@ const ALL_STEP_KEYS = [
   'VOUCHERS_PURCHASE',
   'VOUCHERS_CREDIT_NOTE',
   'VOUCHERS_STOCK_JOURNAL',
+  'VOUCHERS_JOURNAL',
+  'VOUCHERS_DEBIT_NOTE',
+  'VOUCHERS_RECEIPT',
+  'VOUCHERS_PAYMENT',
+  'VOUCHERS_CONTRA',
   'GENERATE_EXCEL',
   'ZIP',
 ];
@@ -193,7 +198,7 @@ describe('BulkExportService', () => {
     await fs.rm(exportsDir, { recursive: true, force: true });
   });
 
-  it('runs all 8 fetch steps in order, then generates and zips all 9 Zoho templates', async () => {
+  it('runs all 13 fetch steps in order, then generates and zips all 16 Zoho templates', async () => {
     const { id, status } = await service.start(
       'org-1',
       'user@example.com',
@@ -212,12 +217,25 @@ describe('BulkExportService', () => {
     expect(record.sizeBytes).toBeGreaterThan(0);
 
     // One getExcelResult call per Zoho entity: COA/CUSTOMER/VENDOR (from
-    // LEDGERS), ITEM, COST_CENTRE, and the 4 VOUCHERS-derived exports.
-    expect(extractions.getExcelResult).toHaveBeenCalledTimes(9);
+    // LEDGERS), ITEM, COST_CENTRE, and the 11 VOUCHERS-derived exports
+    // (VENDOR_PAYMENT/EXPENSE share one VOUCHERS_PAYMENT fetch;
+    // DEPOSIT/BANK_TRANSFER share one VOUCHERS_CONTRA fetch — see
+    // zoho-entity.map.ts's doc comment).
+    expect(extractions.getExcelResult).toHaveBeenCalledTimes(16);
 
     // Vouchers were fetched with the correct voucherType, in order.
     const voucherTypes = extractions.create.mock.calls.map((call) => call[2].payload.voucherType);
-    expect(voucherTypes).toEqual(['Sales', 'Purchase', 'Credit Note', 'Stock Journal']);
+    expect(voucherTypes).toEqual([
+      'Sales',
+      'Purchase',
+      'Credit Note',
+      'Stock Journal',
+      'Journal',
+      'Debit Note',
+      'Receipt',
+      'Payment',
+      'Contra',
+    ]);
 
     // The zip genuinely landed on disk with the reported size.
     const { filePath, filename } = await service.getDownload('org-1', id);
@@ -257,7 +275,7 @@ describe('BulkExportService', () => {
       for (const call of extractions.create.mock.calls) {
         expect(call[2].payload).toMatchObject({ from: '20260401', to: '20260430' });
       }
-      expect(extractions.create).toHaveBeenCalledTimes(4); // the 4 VOUCHERS steps
+      expect(extractions.create).toHaveBeenCalledTimes(9); // the 9 VOUCHERS steps
     },
   );
 
@@ -336,11 +354,11 @@ describe('BulkExportService', () => {
 
       expect(record.status).toBe('SUCCESS');
       expect(record.steps.every((s) => s.status === 'SUCCESS')).toBe(true);
-      // Only LEDGERS was re-dispatched — the 3 other masters and 4 vouchers
+      // Only LEDGERS was re-dispatched — the 3 other masters and 9 vouchers
       // steps that already succeeded were never re-fetched.
       expect(extractions.fetchMaster).toHaveBeenCalledTimes(1);
       expect(extractions.create).not.toHaveBeenCalled();
-      expect(extractions.getExcelResult).toHaveBeenCalledTimes(9);
+      expect(extractions.getExcelResult).toHaveBeenCalledTimes(16);
     });
 
     it('folds a stale (Redis-expired) SUCCESS step back into the retry set even though its own status still says SUCCESS', async () => {
@@ -390,7 +408,7 @@ describe('BulkExportService', () => {
       expect(record.status).toBe('SUCCESS');
       expect(extractions.fetchMaster).not.toHaveBeenCalled();
       expect(extractions.create).not.toHaveBeenCalled();
-      expect(extractions.getExcelResult).toHaveBeenCalledTimes(9);
+      expect(extractions.getExcelResult).toHaveBeenCalledTimes(16);
     });
 
     it('an explicit steps list is intersected with the real retryable set, never trusted blindly', async () => {
@@ -714,6 +732,11 @@ describe('BulkExportService', () => {
             status: 'SUCCESS',
             jobId: 'job-8',
           },
+          { key: 'VOUCHERS_JOURNAL', label: 'Journal', status: 'SUCCESS', jobId: 'job-9' },
+          { key: 'VOUCHERS_DEBIT_NOTE', label: 'Debit Note', status: 'SUCCESS', jobId: 'job-10' },
+          { key: 'VOUCHERS_RECEIPT', label: 'Receipt', status: 'SUCCESS', jobId: 'job-11' },
+          { key: 'VOUCHERS_PAYMENT', label: 'Payment', status: 'SUCCESS', jobId: 'job-12' },
+          { key: 'VOUCHERS_CONTRA', label: 'Contra', status: 'SUCCESS', jobId: 'job-13' },
           { key: 'GENERATE_EXCEL', label: 'Generate', status: 'RUNNING' },
           { key: 'ZIP', label: 'Zip', status: 'PENDING' },
         ],
@@ -726,7 +749,7 @@ describe('BulkExportService', () => {
       const record = await service.getStatus('org-1', 'orphan-1');
       expect(record.status).toBe('FAILED');
       expect(record.error).toContain('no re-fetching needed');
-      expect(record.steps.filter((s) => s.status === 'SUCCESS')).toHaveLength(8);
+      expect(record.steps.filter((s) => s.status === 'SUCCESS')).toHaveLength(13);
       expect(record.steps.find((s) => s.key === 'GENERATE_EXCEL')?.status).toBe('FAILED');
       expect(record.steps.find((s) => s.key === 'ZIP')?.status).toBe('FAILED');
     });

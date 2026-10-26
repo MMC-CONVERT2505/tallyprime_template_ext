@@ -26,6 +26,8 @@ describe('CustomerMapper', () => {
     billingPincode: null,
     bankName: null,
     bankAccountNumber: null,
+    ifscCode: null,
+    accountHolderName: null,
     website: null,
     creditLimit: null,
     contactPersonName: null,
@@ -162,5 +164,15 @@ describe('CustomerMapper', () => {
     expect(row.Website).toBe('');
     expect(row['Credit Limit']).toBe('');
     expect(row['Conact Display Name']).toBe('');
+  });
+
+  it("maps Customer Number from the ledger's AlterID (2026-10-20 reviewer feedback)", () => {
+    const [row] = mapper.toCustomerRows([{ ...baseLedger, alterId: 42 }]);
+    expect(row['Customer Number']).toBe(42);
+  });
+
+  it('leaves Customer Number blank rather than 0 when Tally has no AlterID at all', () => {
+    const [row] = mapper.toCustomerRows([{ ...baseLedger, alterId: null }]);
+    expect(row['Customer Number']).toBe('');
   });
 });

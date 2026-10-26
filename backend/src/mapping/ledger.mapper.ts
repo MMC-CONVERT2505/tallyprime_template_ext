@@ -5,11 +5,18 @@ import { GroupHierarchyResolver } from './group-hierarchy.resolver';
 /**
  * Zoho Books "Chart of Accounts" import columns — taken from the real
  * template (Master and Invoice or Bill/COA.xlsx, sheet "sample_accounts"),
- * not guessed. `Account Code`/`Account #` have no Tally-side source and are
- * always left blank rather than fabricated. `Currency` defaults to 'INR' — a
- * currency code, not a financial value — since every company this project
- * targets is India/GST-context; this project doesn't extract a currency
- * master (no Zoho template exists for one either, see zoho-entity.map.ts).
+ * not guessed. `Account Code` has no Tally-side source and is always left
+ * blank rather than fabricated. `Currency` defaults to 'INR' — a currency
+ * code, not a financial value — since every company this project targets is
+ * India/GST-context; this project doesn't extract a currency master (no
+ * Zoho template exists for one either, see zoho-entity.map.ts).
+ *
+ * Account # / Master Id (added 2026-10-20, reviewer feedback) — Zoho's
+ * generic numeric id column for an account row; mapped from ledger.alterId,
+ * same as Customer Number/Vendor Number (see customer.mapper.ts's doc
+ * comment on that field, including the same caveat: AlterID is Tally's
+ * edit-revision counter, not a stable external id — fine for a one-time
+ * migration import, less so for matching against a previous import).
  */
 export interface ZohoAccountRow {
   'Account Name': string;
@@ -17,7 +24,7 @@ export interface ZohoAccountRow {
   Description: string;
   'Account Type': string;
   'Parent Account': string;
-  'Account #': string;
+  'Account #': number | '';
   Currency: string;
   'Opening Balance': number | '';
   'Debit or Credit': string;
@@ -54,7 +61,7 @@ export class LedgerMapper {
       Description: ledger.description ?? '',
       'Account Type': accountType,
       'Parent Account': ledger.parent ?? '',
-      'Account #': '',
+      'Account #': ledger.alterId ?? '',
       Currency: DEFAULT_CURRENCY_CODE,
       // Tally's OPENINGBALANCE sign already encodes Dr/Cr (negative = Debit,
       // per the reference DSL's own inline comment) — Zoho wants the

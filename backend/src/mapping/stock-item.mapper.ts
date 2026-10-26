@@ -6,11 +6,6 @@ import { deriveInterStateTax, deriveIntraStateTax } from './gst-rate.shared';
  * — taken from the real template (Master and Invoice or Bill/Item.xlsx,
  * sheet "Item"), which has 67 columns total; only the subset Tally's
  * currently-extracted StockItem fields can genuinely supply is listed here.
- * Rate/Purchase Rate are left blank rather than guessed — Tally DOES have a
- * Price List feature that could supply them, confirmed live 2026-09-05 to
- * genuinely be unconfigured on this company (STANDARDPRICELIST.LIST/
- * STANDARDCOSTLIST.LIST came back empty for every item, a real field with no
- * data rather than a wrong one).
  *
  * SKU (added 2026-09-05) — the template has both a "SKU" and a separate
  * "Alias Name" column; both get the same TallyStockItem.alias value. Not a
@@ -19,30 +14,68 @@ import { deriveInterStateTax, deriveIntraStateTax } from './gst-rate.shared';
  * templates' own "SKU" column, so leaving Item.xlsx's own "SKU" blank while
  * "Alias Name" carries the same value was the actual inconsistency.
  *
- * Account/Purchase Account/Inventory Valuation Method (added 2026-09-12) —
- * see TallyStockItem.salesAccount/purchaseAccount/inventoryValuationMethod's
- * doc comments. An earlier pass wrongly attributed Account/Purchase Account
- * to the unconfigured Price List fields above — they're actually a
- * different Tally concept (SALESLIST.LIST/PURCHASELIST.LIST, the item's
- * default ledger allocation), confirmed real but likewise unconfigured for
- * every item on this company.
+ * Account/Purchase Account/Inventory Account (hardcoded 2026-10-20) —
+ * TallyStockItem.salesAccount/purchaseAccount (SALESLIST.LIST/
+ * PURCHASELIST.LIST, the item's default ledger allocation) are real Tally
+ * fields, confirmed live to be genuinely fetched but unconfigured for every
+ * item on this company — a previous pass derived these three columns from
+ * them anyway, which meant they were always blank in practice. Per
+ * reviewer feedback on the generated export, these three are meant to
+ * always carry the same fixed ledger regardless of what Tally has
+ * configured (every item lands in one Sales/COGS/Inventory Asset bucket),
+ * so they're hardcoded constants here rather than a Tally-derived lookup —
+ * same treatment as 'Item Type' below. TallyStockItem.salesAccount/
+ * purchaseAccount are left as-is on the interface (still used by the raw
+ * Full Sync browser) — just no longer read here.
+ *
+ * Rate/Purchase Rate (added 2026-10-20) — Tally DOES have a Price List
+ * feature that could supply a real per-item rate (STANDARDPRICELIST.LIST/
+ * STANDARDCOSTLIST.LIST), confirmed live 2026-09-05 to be genuinely
+ * unconfigured on this company (came back empty for every item — a real
+ * field with no data, not a wrong one) and not even fetched today. Per
+ * reviewer feedback, a blank Rate/Purchase Rate should import as 0 rather
+ * than blank, so these default to 0 rather than ''. If STANDARDPRICELIST.
+ * LIST/STANDARDCOSTLIST.LIST are ever wired up, prefer the real value with
+ * `?? 0` over this unconditional default.
  *
  * "Exemption Reason" investigated 2026-09-12, confirmed genuinely absent:
  * fetched GSTDETAILS.LIST's FULL structure live for a real Exempt item
  * (TAXABILITY/SRCOFGSTDETAILS/GSTINELIGIBLEITC/STATEWISEDETAILS.LIST) — no
  * free-text or coded exemption-reason field exists anywhere in it, unlike
  * the sibling fields this project already reads from the same list.
+ *
+ * Stock Group (added 2026-10-20) — Item.xlsx had no column for Tally's
+ * Stock Group concept at all until now (added alongside this change);
+ * TallyStockItem.parent IS Tally's real Stock Group for the item (see
+ * EnvelopeBuilder.buildStockItemsRequest's own doc comment) and was
+ * already being fetched/parsed, just never read by this mapper — unlike
+ * ledger.mapper.ts, which does use the equivalent field for Chart-of-
+ * Accounts grouping.
  */
+const ACCOUNT_SALES = 'Sales';
+const ACCOUNT_PURCHASE_COGS = 'Cost of Goods Sold';
+const ACCOUNT_INVENTORY_ASSET = 'Inventory Asset';
+/** Tally's own sentinel for a stock item with no real unit of measure
+ *  (service/subscription line items) — confirmed live on this company's
+ *  data (see master-extraction.service.ts's doc comment on period-scoped
+ *  Stock Item batching). Importing this literal into Zoho as a "unit" would
+ *  be wrong, not just unhelpful — blank is the correct value, same as a
+ *  genuinely-unset baseUnit. */
+const UNIT_NOT_APPLICABLE = 'not applicable';
+
 export interface ZohoItemRow {
   'Item Name': string;
   SKU: string;
   'Alias Name': string;
   Description: string;
   'HSN/SAC': string;
+  Rate: number;
   Account: string;
   'Purchase Account': string;
+  'Inventory Account': string;
   'Inventory Valuation Method': string;
   'Usage unit': string;
+  'Purchase Rate': number;
   'Opening Stock': number | '';
   'Opening Stock Value': number | '';
   'Stock On Hand': number | '';
@@ -105,6 +138,7 @@ export interface ZohoItemRow {
   Sellable: boolean;
   Purchasable: boolean;
   'Track Inventory': boolean;
+  'Stock Group': string;
 }
 
 export class StockItemMapper {
@@ -122,10 +156,14 @@ export class StockItemMapper {
       'Alias Name': item.alias ?? '',
       Description: item.description ?? '',
       'HSN/SAC': item.hsnCode ?? '',
-      Account: item.salesAccount ?? '',
-      'Purchase Account': item.purchaseAccount ?? '',
+      Rate: 0,
+      Account: ACCOUNT_SALES,
+      'Purchase Account': ACCOUNT_PURCHASE_COGS,
+      'Inventory Account': ACCOUNT_INVENTORY_ASSET,
       'Inventory Valuation Method': item.inventoryValuationMethod ?? '',
-      'Usage unit': item.baseUnit ?? '',
+      'Usage unit':
+        item.baseUnit && item.baseUnit.trim().toLowerCase() !== UNIT_NOT_APPLICABLE ? item.baseUnit : '',
+      'Purchase Rate': 0,
       'Opening Stock': item.openingBalance ?? '',
       'Opening Stock Value': item.openingValue ?? '',
       // TallyStockItem.closingBalance was already fetched (CLOSINGBALANCE)
@@ -147,6 +185,7 @@ export class StockItemMapper {
       Sellable: true,
       Purchasable: true,
       'Track Inventory': true,
+      'Stock Group': item.parent ?? '',
     };
   }
 }

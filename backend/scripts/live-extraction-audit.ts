@@ -50,7 +50,7 @@ import { InvoiceMapper } from '../src/mapping/invoice.mapper';
 import { BillMapper } from '../src/mapping/bill.mapper';
 import { CreditNoteMapper } from '../src/mapping/credit-note.mapper';
 import { StockJournalMapper } from '../src/mapping/stock-journal.mapper';
-import { buildStockItemIndex, tallyDateToJsDate } from '../src/mapping/voucher-line.shared';
+import { buildLedgerIndex, buildStockItemIndex, tallyDateToJsDate } from '../src/mapping/voucher-line.shared';
 import { ExcelGeneratorService } from '../src/excel/excel-generator.service';
 import { templatePathFor, ZOHO_ENTITIES } from '../src/mapping/zoho-entity.map';
 import * as ExcelJS from 'exceljs';
@@ -188,22 +188,25 @@ async function main() {
   console.log('\n[7/7] Running real mappers + writing into real Zoho templates...');
   const hierarchy = new GroupHierarchyResolver(groups);
   const itemIndex = buildStockItemIndex(stockItems);
+  const ledgerIndex = buildLedgerIndex(ledgers);
 
   const coaRows = new LedgerMapper(hierarchy).toAccountRows(ledgers);
   const customerRows = new CustomerMapper(hierarchy).toCustomerRows(ledgers);
   const vendorRows = new VendorMapper(hierarchy).toVendorRows(ledgers);
   const itemRows = new StockItemMapper().toItemRows(stockItems);
   const reportingTagRows = new CostCentreMapper().toReportingTagRows(costCentres);
-  const invoiceRows = new InvoiceMapper(itemIndex).toInvoiceRows(salesVouchers);
-  const billRows = new BillMapper(itemIndex).toBillRows(purchaseVouchers);
+  const invoiceRows = new InvoiceMapper(itemIndex, ledgerIndex).toInvoiceRows(salesVouchers);
+  const billRows = new BillMapper(itemIndex, ledgerIndex).toBillRows(purchaseVouchers);
   const invoiceDatesByNumber = new Map<string, Date>();
   for (const v of salesVouchers) {
     const date = tallyDateToJsDate(v.date);
     if (v.voucherNumber && date) invoiceDatesByNumber.set(v.voucherNumber, date);
   }
-  const creditNoteRows = new CreditNoteMapper(itemIndex, invoiceDatesByNumber).toCreditNoteRows(
-    creditNoteVouchers,
-  );
+  const creditNoteRows = new CreditNoteMapper(
+    itemIndex,
+    ledgerIndex,
+    invoiceDatesByNumber,
+  ).toCreditNoteRows(creditNoteVouchers);
   const stockJournalRows = new StockJournalMapper(itemIndex).toStockJournalRows(
     stockJournalVouchers,
   );

@@ -44,10 +44,13 @@ describe('StockItemMapper', () => {
       'Alias Name': '',
       Description: 'A widget',
       'HSN/SAC': '',
-      Account: '',
-      'Purchase Account': '',
+      Rate: 0,
+      Account: 'Sales',
+      'Purchase Account': 'Cost of Goods Sold',
+      'Inventory Account': 'Inventory Asset',
       'Inventory Valuation Method': '',
       'Usage unit': 'Nos',
+      'Purchase Rate': 0,
       'Opening Stock': 100,
       'Opening Stock Value': 5000,
       'Stock On Hand': 80,
@@ -57,6 +60,7 @@ describe('StockItemMapper', () => {
       Sellable: true,
       Purchasable: true,
       'Track Inventory': true,
+      'Stock Group': '',
       Taxable: '',
       'Taxability Type': '',
       'Intra State Tax Name': '',
@@ -81,10 +85,13 @@ describe('StockItemMapper', () => {
       'Alias Name': '',
       Description: '',
       'HSN/SAC': '',
-      Account: '',
-      'Purchase Account': '',
+      Rate: 0,
+      Account: 'Sales',
+      'Purchase Account': 'Cost of Goods Sold',
+      'Inventory Account': 'Inventory Asset',
       'Inventory Valuation Method': '',
       'Usage unit': '',
+      'Purchase Rate': 0,
       'Opening Stock': '',
       'Opening Stock Value': '',
       'Stock On Hand': '',
@@ -94,6 +101,7 @@ describe('StockItemMapper', () => {
       Sellable: true,
       Purchasable: true,
       'Track Inventory': true,
+      'Stock Group': '',
       Taxable: '',
       'Taxability Type': '',
       'Intra State Tax Name': '',
@@ -131,24 +139,50 @@ describe('StockItemMapper', () => {
     expect(unclassified['Product Type']).toBe('goods');
   });
 
-  it('maps Account/Purchase Account/Inventory Valuation Method from the item master (2026-09-12 field-mapping pass)', () => {
-    const [row] = mapper.toItemRows([
-      item({
-        name: 'Widget A',
-        salesAccount: 'Sales Account',
-        purchaseAccount: 'Purchase Account',
-        inventoryValuationMethod: 'Avg. Cost',
-      }),
-    ]);
-    expect(row.Account).toBe('Sales Account');
-    expect(row['Purchase Account']).toBe('Purchase Account');
+  it('maps Inventory Valuation Method from the item master (2026-09-12 field-mapping pass)', () => {
+    const [row] = mapper.toItemRows([item({ name: 'Widget A', inventoryValuationMethod: 'Avg. Cost' })]);
     expect(row['Inventory Valuation Method']).toBe('Avg. Cost');
   });
 
-  it('leaves Account/Purchase Account blank rather than guessing when the item has no default ledger configured', () => {
+  it('always hardcodes Account/Purchase Account/Inventory Account, ignoring whatever ledger Tally has configured (2026-10-20 reviewer feedback)', () => {
+    const [configured] = mapper.toItemRows([
+      item({ name: 'Widget A', salesAccount: 'Some Other Ledger', purchaseAccount: 'Some Other Ledger' }),
+    ]);
+    const [unconfigured] = mapper.toItemRows([item({ name: 'Widget B' })]);
+
+    for (const row of [configured, unconfigured]) {
+      expect(row.Account).toBe('Sales');
+      expect(row['Purchase Account']).toBe('Cost of Goods Sold');
+      expect(row['Inventory Account']).toBe('Inventory Asset');
+    }
+  });
+
+  it('always writes Rate/Purchase Rate as 0, never blank (2026-10-20 reviewer feedback — Tally has no per-item price list configured)', () => {
     const [row] = mapper.toItemRows([item({ name: 'Widget A' })]);
-    expect(row.Account).toBe('');
-    expect(row['Purchase Account']).toBe('');
+    expect(row.Rate).toBe(0);
+    expect(row['Purchase Rate']).toBe(0);
+  });
+
+  it('leaves Usage unit blank for Tally\'s "Not Applicable" sentinel instead of importing it as a literal unit (2026-10-20 reviewer feedback)', () => {
+    const [row] = mapper.toItemRows([item({ name: 'A Subscription', baseUnit: 'Not Applicable' })]);
+    expect(row['Usage unit']).toBe('');
+  });
+
+  it('matches the "Not Applicable" sentinel case/whitespace-insensitively, but keeps a real unit untouched', () => {
+    const [notApplicable] = mapper.toItemRows([item({ name: 'A', baseUnit: '  NOT applicable  ' })]);
+    const [realUnit] = mapper.toItemRows([item({ name: 'B', baseUnit: 'Nos' })]);
+    expect(notApplicable['Usage unit']).toBe('');
+    expect(realUnit['Usage unit']).toBe('Nos');
+  });
+
+  it("maps Stock Group from the item's parent (2026-10-20 reviewer feedback — new template column)", () => {
+    const [row] = mapper.toItemRows([item({ name: 'Widget A', parent: 'Finished Goods' })]);
+    expect(row['Stock Group']).toBe('Finished Goods');
+  });
+
+  it('leaves Stock Group blank rather than guessing when the item has no parent', () => {
+    const [row] = mapper.toItemRows([item({ name: 'Widget A', parent: null })]);
+    expect(row['Stock Group']).toBe('');
   });
 
   it('derives both Intra and Inter State tax name/rate/type from a single GST rate, matching the real template convention', () => {

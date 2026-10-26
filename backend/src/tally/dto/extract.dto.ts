@@ -12,6 +12,13 @@ const ZOHO_ENTITY_KEYS: ZohoEntityKey[] = [
   'BILL',
   'CREDIT_NOTE',
   'STOCK_JOURNAL',
+  'JOURNAL',
+  'VENDOR_CREDIT',
+  'CUSTOMER_PAYMENT',
+  'VENDOR_PAYMENT',
+  'EXPENSE',
+  'DEPOSIT',
+  'BANK_TRANSFER',
 ];
 
 const trim = ({ value }: { value: unknown }): unknown =>

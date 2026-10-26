@@ -171,6 +171,8 @@ export class TallyResponseParser {
         // setup still only has the legacy field.
         bankName: payment.bankName,
         bankAccountNumber: payment.accountNumber ?? readText(l?.BANKDETAILS),
+        ifscCode: payment.ifscCode,
+        accountHolderName: payment.accountHolderName,
         website: readText(l?.WEBSITE),
         creditLimit: parseTallyAmount(readText(l?.CREDITLIMIT)),
         contactPersonName: readText(l?.LEDGERCONTACT),
@@ -190,19 +192,31 @@ export class TallyResponseParser {
    * falling back to the first entry otherwise, never fabricating a
    * preference among equals.
    *
+   * ifscCode/accountHolderName (added 2026-10-20) read IFSCODE/
+   * PAYMENTFAVOURING from the same primary entry — see TallyLedger.
+   * ifscCode's doc comment for the live verification. No SWIFT-code
+   * equivalent is read here because none exists on this entry at all
+   * (confirmed by dumping its full real structure live), not because it
+   * was skipped.
    */
   private readPaymentDetails(paymentDetailsList: unknown): {
     bankName: string | null;
     accountNumber: string | null;
+    ifscCode: string | null;
+    accountHolderName: string | null;
   } {
     const entries = toArray<any>(paymentDetailsList);
-    if (entries.length === 0) return { bankName: null, accountNumber: null };
+    if (entries.length === 0) {
+      return { bankName: null, accountNumber: null, ifscCode: null, accountHolderName: null };
+    }
     const primary =
       entries.find((e) => (readText(e?.TRANSACTIONNAME) ?? '').toLowerCase() === 'primary') ??
       entries[0];
     return {
       bankName: readText(primary?.BANKNAME),
       accountNumber: readText(primary?.ACCOUNTNUMBER),
+      ifscCode: readText(primary?.IFSCODE),
+      accountHolderName: readText(primary?.PAYMENTFAVOURING),
     };
   }
 
@@ -563,6 +577,7 @@ export class TallyResponseParser {
           isDeemedPositive,
           isDebit: this.resolveIsDebit(amount, isDeemedPositive),
           billCreditPeriodDays: this.readBillCreditPeriod(e?.['BILLALLOCATIONS.LIST']),
+          billAllocations: this.readBillAllocations(e?.['BILLALLOCATIONS.LIST']),
         };
       });
 
@@ -623,6 +638,27 @@ export class TallyResponseParser {
       if (days !== null) return days;
     }
     return null;
+  }
+
+  /**
+   * Added 2026-10-21 alongside readBillCreditPeriod, same REPEATING-list
+   * source (BILLALLOCATIONS.LIST) — see TallyLedgerEntry.billAllocations's
+   * doc comment for why this is best-effort/not yet live-verified. Unlike
+   * readBillCreditPeriod (which only needs the first populated value, since
+   * Due Date is a single voucher-level column), every allocation is kept
+   * here — Customer_Payment.xlsx/Vendor_Payment.xlsx/Vendor_Credits.xlsx
+   * need to know about every bill a payment/credit was applied against, not
+   * just one.
+   */
+  private readBillAllocations(
+    billAllocations: unknown,
+  ): { name: string | null; amount: number | null }[] {
+    return toArray<any>(billAllocations)
+      .filter((entry) => entry !== null && typeof entry === 'object')
+      .map((entry) => ({
+        name: readText(entry?.NAME),
+        amount: parseTallyAmount(readText(entry?.AMOUNT)),
+      }));
   }
 
   /**
